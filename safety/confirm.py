@@ -2,7 +2,8 @@
 from typing import Callable
 
 OPTIONS = {"y": "允许", "n": "拒绝", "a": "本次全部允许"}
-OPTIONS_TEXT = " / ".join(f"{k}={v}" for k, v in OPTIONS.items())
+OPTIONS_TEXT = "   ".join(f"{k} = {v}" for k, v in OPTIONS.items())
+ASK_TEXT = "请输入 " + " / ".join(OPTIONS) + "："
 
 
 class Confirmer:
@@ -16,7 +17,7 @@ class Confirmer:
 
     def _choose(self, question: str) -> str:
         """只接受 y / n / a（不区分大小写），其他输入一律要求重新输入。"""
-        prompt = f"{question} [{OPTIONS_TEXT}] "
+        prompt = f"{question}\n  {OPTIONS_TEXT}\n{ASK_TEXT}"
         while True:
             try:
                 ans = self.ask(prompt).strip().lower()
@@ -24,7 +25,7 @@ class Confirmer:
                 return "n"
             if ans in OPTIONS:
                 return ans
-            prompt = f"无效输入「{ans}」，请输入 {OPTIONS_TEXT}："
+            prompt = f"无效输入「{ans}」，{ASK_TEXT}"
 
     def allow(self, tool_name: str, args: dict) -> bool:
         if tool_name != "make_dir":
@@ -35,8 +36,8 @@ class Confirmer:
                 or self.file_writes > self.threshold)
         if not need:
             return True
-        desc = " ".join(f"{k}={v}" for k, v in args.items())
-        choice = self._choose(f"允许 {tool_name} {desc} ？")
+        lines = "".join(f"\n    {k} = {v}" for k, v in args.items())
+        choice = self._choose(f"⚠ 需要确认：{tool_name}{lines}")
         if choice == "a":
             self.allow_all = True
             return True

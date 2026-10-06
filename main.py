@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 from rich.console import Console
+from rich.text import Text
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -80,8 +81,9 @@ def main():
         logs.mkdir(exist_ok=True)
         console.print(f"[bold]指令：[/]{args.instruction}  [dim](run {run_id}, 模型 {cfg['model']})")
         sb = Sandbox(cfg["sandbox"])
+        # 用 Text 输出提示：内容里的 [ ] 不会被 rich 当成样式标记吞掉
         confirmer = Confirmer(args.confirm or cfg.get("confirm", "risky"), cfg.get("confirm_threshold", 10),
-                              ask=console.input)
+                              ask=lambda q: console.input(Text(q, style="bold yellow")))
         run_agent(args.instruction, LLM(cfg), sb, cfg, console,
                   trace_path=logs / f"{run_id}.trace.jsonl", oplog=OpLog(sb, run_id), confirmer=confirmer)
         console.print(f"[dim]撤销本次运行：python main.py undo {run_id}")

@@ -124,8 +124,9 @@ def test_invalid_input_asks_again_until_valid():
     c = Confirmer("always", ask=lambda q: asked.append(q) or next(answers))
     assert c.allow("trash", {"path": "x"}) and c.allow_all and c.rejections == 0
     assert len(asked) == 5
-    assert "[y=允许 / n=拒绝 / a=本次全部允许]" in asked[0]
-    assert all(q.startswith("无效输入") for q in asked[1:]) and "「全部允许」" in asked[1]
+    assert asked[0].startswith("⚠ 需要确认：trash") and "path = x" in asked[0]
+    assert "y = 允许   n = 拒绝   a = 本次全部允许" in asked[0] and asked[0].endswith("请输入 y / n / a：")
+    assert asked[1] == "无效输入「全部允许」，请输入 y / n / a："
 
 
 def test_eof_rejects():

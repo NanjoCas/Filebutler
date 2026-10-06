@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 import tools.fs_read  # noqa: F401  导入即注册工具
@@ -101,19 +102,19 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                                                registry.TOOLS[tc.function.name].writes for tc in msg.tool_calls):
                 reflection = "fixed"  # 自检后执行了写操作，说明它发现了问题；只读检查不算
             if msg.content:
-                console.print(f"[italic dim]{msg.content}")
+                console.print(f"[italic dim]{escape(msg.content)}")
 
             for tc in msg.tool_calls:
                 name, raw = tc.function.name, tc.function.arguments
                 t1 = time.time()
-                console.print(f"[bold cyan]{name}[/] [dim]{raw}[/]")  # 先打印，确认提示才有上下文
+                console.print(f"[bold cyan]{escape(name)}[/] [dim]{escape(raw)}[/]")  # 先打印，确认提示才有上下文
                 result = registry.dispatch(name, raw, sandbox, oplog, confirmer)
                 n_calls += 1
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
                 ok = result.startswith("OK")
                 first_line = result.split("\n", 2)
                 preview = "\n".join(first_line[:2]) + (" …" if len(first_line) > 2 else "")
-                console.print(f"  [{'green' if ok else 'red'}]{preview}[/]")
+                console.print(f"  [{'green' if ok else 'red'}]{escape(preview)}[/]")
                 if trace:
                     trace.write(json.dumps({
                         "step": step, "tool": name, "args": raw, "ok": ok,
@@ -144,7 +145,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
         if trace:
             trace.close()
 
-    console.print(Panel(final, title="结果", border_style="green" if stop_reason == "done" else "yellow"))
+    console.print(Panel(escape(final), title="结果", border_style="green" if stop_reason == "done" else "yellow"))
     console.print(f"[dim]轮数 {result.steps} · 工具调用 {n_calls} · tokens {result.tokens} · "
                   f"缓存命中 {result.cache_hit_tokens} · ¥{result.cost:.4f} · 耗时 {result.seconds:.1f}s · "
                   f"越权尝试 {result.violations} · 用户拒绝 {result.rejections} · "
