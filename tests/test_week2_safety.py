@@ -107,3 +107,33 @@ def test_blocked_paths_never_reach_confirm(sb):
                        ("rename", {"path": ".oplog", "new_name": "x"})]:
         assert registry.dispatch(name, json.dumps(args), sb, confirmer=c).startswith("ERROR: 拒绝")
     assert sb.violations == 3
+
+
+@pytest.mark.parametrize("text,kind", [
+    ("全部允许", "all"), ("a", "all"), ("A", "all"), ("都允许！", "all"), ("all", "all"),
+    ("ok", "accept"), ("OK", "accept"), ("好的。", "accept"), ("y", "accept"), ("可以", "accept"), (" 允许 ", "accept"),
+    ("n", "reject"), ("不允许", "reject"), ("不行", "reject"), ("拒绝", "reject"), ("", "reject"), ("   ", "reject"),
+    ("你看着办", None), ("maybe", None),
+])
+def test_parse_answer(text, kind):
+    from safety.confirm import parse_answer
+    assert parse_answer(text) == kind
+
+
+def test_unrecognized_answer_asks_again():
+    answers = iter(["你看着办", "ok"])
+    asked = []
+    c = Confirmer("always", ask=lambda q: asked.append(q) or next(answers))
+    assert c.allow("trash", {"path": "x"}) and c.rejections == 0
+    assert len(asked) == 2 and "没看懂「你看着办」" in asked[1]
+
+
+def test_allow_all_in_chinese_stops_asking():
+    asked = []
+    c = Confirmer("always", ask=lambda q: asked.append(q) or "全部允许")
+    assert all(c.allow("move", {"src": str(i)}) for i in range(5)) and len(asked) == 1
+
+
+def test_three_unrecognized_answers_reject():
+    c = Confirmer("always", ask=lambda q: "嗯哼？")
+    assert not c.allow("trash", {"path": "x"}) and c.rejections == 1
