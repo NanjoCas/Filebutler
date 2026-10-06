@@ -109,31 +109,27 @@ def test_blocked_paths_never_reach_confirm(sb):
     assert sb.violations == 3
 
 
-@pytest.mark.parametrize("text,kind", [
-    ("全部允许", "all"), ("a", "all"), ("A", "all"), ("都允许！", "all"), ("all", "all"),
-    ("ok", "accept"), ("OK", "accept"), ("好的。", "accept"), ("y", "accept"), ("可以", "accept"), (" 允许 ", "accept"),
-    ("n", "reject"), ("不允许", "reject"), ("不行", "reject"), ("拒绝", "reject"), ("", "reject"), ("   ", "reject"),
-    ("你看着办", None), ("maybe", None),
+
+@pytest.mark.parametrize("answer,allowed,allow_all", [
+    ("y", True, False), ("Y", True, False), (" a ", True, True), ("A", True, True), ("n", False, False),
 ])
-def test_parse_answer(text, kind):
-    from safety.confirm import parse_answer
-    assert parse_answer(text) == kind
+def test_letter_options(answer, allowed, allow_all):
+    c = Confirmer("always", ask=lambda q: answer)
+    assert c.allow("trash", {"path": "x"}) is allowed and c.allow_all is allow_all
 
 
-def test_unrecognized_answer_asks_again():
-    answers = iter(["你看着办", "ok"])
+def test_invalid_input_asks_again_until_valid():
+    answers = iter(["全部允许", "ok", "", "yes", "a"])   # 只有单个字母有效，其余都要重输
     asked = []
     c = Confirmer("always", ask=lambda q: asked.append(q) or next(answers))
-    assert c.allow("trash", {"path": "x"}) and c.rejections == 0
-    assert len(asked) == 2 and "没看懂「你看着办」" in asked[1]
+    assert c.allow("trash", {"path": "x"}) and c.allow_all and c.rejections == 0
+    assert len(asked) == 5
+    assert "[y=允许 / n=拒绝 / a=本次全部允许]" in asked[0]
+    assert all(q.startswith("无效输入") for q in asked[1:]) and "「全部允许」" in asked[1]
 
 
-def test_allow_all_in_chinese_stops_asking():
-    asked = []
-    c = Confirmer("always", ask=lambda q: asked.append(q) or "全部允许")
-    assert all(c.allow("move", {"src": str(i)}) for i in range(5)) and len(asked) == 1
-
-
-def test_three_unrecognized_answers_reject():
-    c = Confirmer("always", ask=lambda q: "嗯哼？")
+def test_eof_rejects():
+    def eof(q):
+        raise EOFError
+    c = Confirmer("always", ask=eof)
     assert not c.allow("trash", {"path": "x"}) and c.rejections == 1
