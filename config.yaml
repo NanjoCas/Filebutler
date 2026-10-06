@@ -1,0 +1,16 @@
+base_url: https://api.deepseek.com
+model: deepseek-flash          # 对比实验时改成 deepseek-v4-pro；以 DeepSeek 官网的模型名为准
+api_key_env: DEEPSEEK_API_KEY  # 只写环境变量名，不写 key 本身
+temperature: 0
+sandbox: ./sandbox
+max_steps: 15
+token_budget: 50000
+confirm: risky                 # always 每次都问 / risky 回收区或超过阈值才问 / never 不问（评测用）
+confirm_threshold: 10          # risky 模式下，本次运行写操作超过这么多个文件就开始询问
+reflect: false                 # 结束前自检一次
+reflect_min_writes: 5          # 本次成功动过的文件不少于这么多个才自检（move/rename/trash 计数，make_dir 不算）
+reflect_state_lines: 120       # 自检时附带的沙盒文件清单最多多少行
+# 价格：元/百万 tokens，按高峰时段（保守估计）。来源 api-docs.deepseek.com，2026-10-06 查询
+prices:
+  deepseek-flash:   {cache_hit: 0.04, cache_miss: 2.0, output: 8.0}
+  deepseek-v4-pro:  {cache_hit: 0.30, cache_miss: 9.0, output: 27.0}

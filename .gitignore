@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.env
+sandbox/
+logs/
+eval/results/
+.DS_Store
+eval/fonts/*.ttf
+eval/.cache/

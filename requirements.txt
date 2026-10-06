@@ -1,0 +1,8 @@
+openai
+pydantic>=2
+pypdf
+pyyaml
+rich
+Pillow
+pytest
+fpdf2
