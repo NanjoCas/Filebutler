@@ -26,6 +26,19 @@ def oracle_script(task, manifest, before):
                     calls.append(("rename", {"path": src, "new_name": _fill(arg["to"], src, manifest)}))
                 else:
                     calls.append(("trash", {"path": src}))
+        elif kind == "dedup":
+            groups = {}
+            for src in select({k: v for k, v in arg.items() if k not in ("to", "keep")}, before, manifest):
+                groups.setdefault(before[src], []).append(src)
+            for g in (g for g in groups.values() if len(g) > 1):
+                keep = min(g, key=lambda p: (len(PurePosixPath(p).name), p))
+                for src in g:
+                    if src == keep:
+                        continue
+                    if "to" in arg:
+                        calls += [("make_dir", {"path": arg["to"]}), ("move", {"src": src, "dst_dir": arg["to"]})]
+                    else:
+                        calls.append(("trash", {"path": src}))
     answer = " ".join(str(a) for i in task["expect"] for k, a in i.items() if k == "answer_contains")
     return ([calls] if calls else []) + [answer or "完成"]
 
@@ -49,7 +62,7 @@ def _tmpdir(tmp_path):
 
 def test_task_ids_unique():
     ids = [t["id"] for t in TASKS]
-    assert len(ids) == len(set(ids)) == 20
+    assert len(ids) == len(set(ids)) == 37
 
 
 @pytest.mark.parametrize("task", TASKS, ids=lambda t: t["id"])
@@ -63,7 +76,7 @@ def test_oracle_passes_and_undo_restores(task, tmp_path):
 def test_idle_agent_fails_when_work_needed(task, tmp_path):
     r = run_one(task, 1, {"max_steps": 3}, tmp_path, make_llm=make_idle)
     kinds = {k for item in task["expect"] for k in item}
-    needs_work = bool(kinds & {"moved", "renamed", "trashed", "answer_contains"})
+    needs_work = bool(kinds & {"moved", "renamed", "trashed", "dedup", "answer_contains"})
     assert r["success"] != needs_work
 
 
@@ -78,3 +91,25 @@ def test_others_unchanged_catches_extra_move(tmp_path):
     res = {c["assert"]: c["ok"] for c in check(task["expect"], before, snapshot(tmp_path / "s", True), manifest)}
     assert res["others_unchanged"] is False
     assert all(v for k, v in res.items() if k.startswith("moved"))
+
+
+def test_dedup_catches_wrong_copy_kept(tmp_path):
+    """D04 要求留文件名最短的：留下“IMG_9348 副本.jpg”、删掉“IMG_9348.jpg”应判失败；D02 不限定留哪份，应判成功。"""
+    d02, d04 = (next(t for t in TASKS if t["id"] == i) for i in ("D02", "D04"))
+    manifest = prepare("photos", 42, tmp_path / "s")
+    root = tmp_path / "s"
+    before = snapshot(root, include_trash=True)
+    groups = {}
+    for p, md5 in before.items():
+        groups.setdefault(md5, []).append(p)
+    (root / ".trash").mkdir()
+    for g in (g for g in groups.values() if len(g) > 1):
+        keep = max(g, key=lambda p: len(PurePosixPath(p).name))   # 故意留最长的
+        for p in g:
+            if p != keep:
+                (root / p).rename(root / ".trash" / (PurePosixPath(p).name.replace(" ", "_") + "_x"))
+    after = snapshot(root, include_trash=True)
+    r04 = check(d04["expect"], before, after, manifest)
+    r02 = check(d02["expect"], before, after, manifest)
+    assert not all(c["ok"] for c in r04) and any("不是文件名最短的" in c["detail"] for c in r04)
+    assert all(c["ok"] for c in r02)

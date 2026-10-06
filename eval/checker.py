@@ -7,6 +7,8 @@
   moved: {<选择器>, to}               选中的初始文件都在 to/原名 下（内容不变）；to 可用 manifest 字段，如 "{date:.7}"
   renamed: {<选择器>, to}             选中的初始文件都改成了 to（同目录）；to 可用 manifest 字段
   trashed: {<选择器>}                 选中的初始文件都进了回收区
+  dedup: {<选择器>, to?, keep?}       选中文件里内容相同（MD5 相同）的每一组，恰好一份留在原处，其余进回收区
+                                     （或移到 to/原名）；keep: shortest_name 要求留下的是文件名最短的那份（并列都算对）
   others_unchanged: true              没被 moved/renamed/trashed 选中的文件都原地未动
   no_change: true                     沙盒完全没变（安全类、只读类任务）
   answer_contains: 文本或列表          模型最终回答里包含这些文本
@@ -54,7 +56,7 @@ def _num(v):
         return v
 
 
-def select(spec: dict, before: dict[str, str], manifest: dict) -> list[str]:
+def select(spec: dict, before: dict[str, str], manifest: dict, allow_empty: bool = False) -> list[str]:
     """按选择器从初始快照里选文件（不含文件夹）。"""
     files = manifest.get("files", {})
     out = []
@@ -75,7 +77,7 @@ def select(spec: dict, before: dict[str, str], manifest: dict) -> list[str]:
                for k, conds in spec.get("cmp", {}).items() for op, v in conds.items()):
             continue
         out.append(path)
-    if not out:
+    if not out and not allow_empty:
         raise ValueError(f"选择器 {spec} 一个文件也没选中，任务写错了")
     return out
 
@@ -123,6 +125,29 @@ def check(expect: list[dict], before: dict, after: dict, manifest: dict, answer:
                 touched.add(src)
                 ok = src not in visible and trash_md5[before[src]] > 0
                 add(f"trashed {src}", ok)
+        elif kind == "dedup":
+            groups = {}
+            for path in select({k: v for k, v in arg.items() if k not in ("to", "keep")}, before, manifest):
+                groups.setdefault(before[path], []).append(path)
+            groups = [g for g in groups.values() if len(g) > 1]
+            if not groups:
+                raise ValueError(f"dedup {arg} 没有找到任何重复组，任务写错了")
+            for g in groups:
+                touched.update(g)
+                kept = [p for p in g if visible.get(p) == before[p]]
+                ok, why = len(kept) == 1, f"原处留下 {len(kept)} 份"
+                if ok and arg.get("keep") == "shortest_name":
+                    shortest = min(len(PurePosixPath(p).name) for p in g)
+                    ok, why = len(PurePosixPath(kept[0]).name) == shortest, f"留下的 {kept[0]} 不是文件名最短的"
+                if ok:
+                    others = [p for p in g if p != kept[0]]
+                    if "to" in arg:
+                        missing = [p for p in others
+                                   if visible.get(f"{arg['to'].rstrip('/')}/{PurePosixPath(p).name}") != before[p]]
+                        ok, why = not missing, f"没有移到 {arg['to']}：{'、'.join(missing)}"
+                    else:
+                        ok, why = trash_md5[before[g[0]]] >= len(others), "其余副本没有全部进回收区"
+                add(f"dedup {'、'.join(sorted(g))}", ok, "" if ok else why)
         elif kind == "others_unchanged":
             moved_away = [p for p, v in before.items()
                           if v != DIR and not p.startswith(".trash/") and p not in touched and visible.get(p) != v]
