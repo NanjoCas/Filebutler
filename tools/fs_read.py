@@ -21,6 +21,31 @@ def _fmt_size(n: int) -> str:
     return f"{n:.1f}TB"
 
 
+PAGE_CHARS = 1700  # 一页的字数上限：加上页脚也不超过 registry 的 2000 字截断线
+
+
+def _paginate(lines: list[str], page: int, max_items: int) -> tuple[list[str], str]:
+    """按字数分页，只在整行之间切，不会把列表拦腰截断。返回（本页的行, 页脚）。"""
+    pages, cur, size = [], [], 0
+    for line in lines:
+        if cur and (size + len(line) + 1 > PAGE_CHARS or len(cur) >= max_items):
+            pages.append(cur)
+            cur, size = [], 0
+        cur.append(line)
+        size += len(line) + 1
+    pages.append(cur)
+    if page > len(pages):
+        raise ToolError(f"没有第 {page} 页，一共 {len(pages)} 页")
+    start = sum(len(p) for p in pages[:page - 1])
+    shown = pages[page - 1]
+    footer = f"共 {len(lines)} 项"
+    if len(pages) > 1:
+        footer += f"，这是第 {start + 1}–{start + len(shown)} 项（第 {page}/{len(pages)} 页）"
+        if page < len(pages):
+            footer += f"，下一页用 page={page + 1}"
+    return shown, footer
+
+
 def _mtime(p) -> str:
     return datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
 
@@ -35,8 +60,8 @@ def _existing(sb: Sandbox, path: str):
 # ---------- list_dir ----------
 class ListDirArgs(BaseModel):
     path: str = Field(".", description="相对沙盒的文件夹路径，沙盒根目录用 \".\"")
-    page: int = Field(1, ge=1, description="页码，从 1 开始")
-    page_size: int = Field(50, ge=1, le=100, description="每页条数")
+    page: int = Field(1, ge=1, description="页码，从 1 开始；结果末尾会提示还有没有下一页")
+    page_size: int = Field(100, ge=1, le=100, description="每页最多条数（另有字数上限，文件名长时一页会少一些）")
 
 
 @tool("list_dir",
@@ -49,17 +74,10 @@ def list_dir(a: ListDirArgs, sb: Sandbox) -> str:
     if not d.is_dir():
         raise ToolError(f"{a.path} 不是文件夹")
     entries = sorted((e for e in d.iterdir() if not is_hidden(e)), key=lambda e: e.name)
-    start = (a.page - 1) * a.page_size
-    lines = []
-    for e in entries[start:start + a.page_size]:
-        kind = "文件夹" if e.is_dir() else "文件"
-        size = "-" if e.is_dir() else _fmt_size(e.stat().st_size)
-        lines.append(f"{e.name} · {kind} · {size} · {_mtime(e)}")
-    total = len(entries)
-    footer = f"共 {total} 项，第 {a.page} 页"
-    if start + a.page_size < total:
-        footer += f"，还有下一页（page={a.page + 1}）"
-    return "OK:\n" + "\n".join(lines or ["（空）"]) + "\n" + footer
+    lines = [f"{e.name} · {'文件夹' if e.is_dir() else '文件'} · "
+             f"{'-' if e.is_dir() else _fmt_size(e.stat().st_size)} · {_mtime(e)}" for e in entries]
+    shown, footer = _paginate(lines, a.page, a.page_size)
+    return "OK:\n" + "\n".join(shown or ["（空）"]) + "\n" + footer
 
 
 # ---------- search_files ----------
@@ -69,10 +87,11 @@ class SearchArgs(BaseModel):
     modified_after: Optional[date] = Field(None, description="修改日期下限，YYYY-MM-DD（含）")
     modified_before: Optional[date] = Field(None, description="修改日期上限，YYYY-MM-DD（含）")
     path: str = Field(".", description="在哪个文件夹下递归搜索，相对沙盒")
+    page: int = Field(1, ge=1, description="页码，从 1 开始；结果多时末尾会提示下一页")
 
 
 @tool("search_files",
-      "在文件夹及其所有子文件夹里按文件名通配符、后缀、修改日期查找文件，返回相对沙盒的路径（最多 100 条）。"
+      "在文件夹及其所有子文件夹里按文件名通配符、后缀、修改日期查找文件，返回相对沙盒的路径（结果多时分页）。"
       "适合“找出所有 PDF”“找出 3 月以后修改的文件”这类问题；只看一个文件夹的直接内容时用 list_dir。"
       "例：{\"ext\": \"pdf\"}",
       SearchArgs)
@@ -92,9 +111,8 @@ def search_files(a: SearchArgs, sb: Sandbox) -> str:
         if (a.modified_after and d < a.modified_after) or (a.modified_before and d > a.modified_before):
             continue
         hits.append(rel.as_posix())
-    shown = hits[:100]
-    more = f"\n（只显示前 100 条，共 {len(hits)} 条，请加条件缩小范围）" if len(hits) > 100 else ""
-    return f"OK: 找到 {len(hits)} 个文件\n" + "\n".join(shown) + more
+    shown, footer = _paginate(hits, a.page, 100)
+    return f"OK: 找到 {len(hits)} 个文件\n" + "\n".join(shown) + ("\n" + footer if len(hits) > len(shown) else "")
 
 
 # ---------- file_info ----------

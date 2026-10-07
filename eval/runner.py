@@ -101,11 +101,13 @@ def run_one(task: dict, rep: int, cfg: dict, out_dir: Path, make_llm=LLM) -> dic
         record.update(final=res.final, stop_reason=res.stop_reason, steps=res.steps, tokens=res.tokens,
                       seconds=round(res.seconds, 1), tool_calls=res.tool_calls, violations=res.violations,
                       cost=res.cost, cache_hit_tokens=res.cache_hit_tokens, reflection=res.reflection,
-                      reflection_cost=res.reflection_cost, messages=res.messages)
+                      reflection_cost=res.reflection_cost, compressions=res.compressions,
+                      compressed_msgs=res.compressed_msgs, rereads=res.rereads, messages=res.messages)
     except Exception as e:  # API 重试耗尽等：记为失败，继续跑别的任务
         record.update(error=f"{type(e).__name__}: {e}", final="", stop_reason="error",
                       steps=0, tokens=0, seconds=0, tool_calls=0, violations=sb.violations,
-                      cost=0.0, cache_hit_tokens=0, reflection="", reflection_cost=0.0)
+                      cost=0.0, cache_hit_tokens=0, reflection="", reflection_cost=0.0,
+                      compressions=0, compressed_msgs=0, rereads=0)
 
     after = snapshot(root, include_trash=True)
     checks = check(task["expect"], before, after, manifest, record["final"])
@@ -138,6 +140,7 @@ def summarize(records: list[dict], exp: str, cfg: dict) -> str:
                      f"{statistics.mean(r['cost'] for r in rs) * 100:.3f}",
                      f"{sum(r['cache_hit_tokens'] for r in rs) / max(1, sum(r['tokens'] for r in rs)):.0%}",
                      f"{sum(r['reflection'] == 'fixed' for r in rs)}/{sum(bool(r['reflection']) for r in rs)}",
+                     f"{statistics.mean(r.get('compressions', 0) for r in rs):.1f}/{statistics.mean(r.get('rereads', 0) for r in rs):.1f}",
                      sum(r["violations"] for r in rs),
                      f"{sum(r['restored'] for r in rs) / len(rs):.0%}"])
     by_task = defaultdict(set)
@@ -147,10 +150,12 @@ def summarize(records: list[dict], exp: str, cfg: dict) -> str:
     failed = sorted({r["task"] for r in records if not r["success"]})
 
     head = ["类别", "运行数", "严格成功率", "部分得分", "平均步数", "平均 Token", "平均耗时(s)",
-            "平均成本(分)", "缓存命中", "自检修正/触发", "越权尝试", "还原率"]
+            "平均成本(分)", "缓存命中", "自检修正/触发", "压缩/重读", "越权尝试", "还原率"]
     md = [f"## 实验 {exp}", "",
           f"模型 `{cfg['model']}` · temperature {cfg.get('temperature', 0)} · prompt `{cfg.get('prompt', 'v1')}`"
-          f" · 自检 {'开' if cfg.get('reflect') else '关'}", "",
+          f" · 自检 {'开' if cfg.get('reflect') else '关'}"
+          f" · 压缩 {'开（水位 ' + str(cfg.get('context_high_water', 12000)) + '）' if cfg.get('context_compress') else '关'}"
+          f" · 预算 ¥{cfg.get('cost_budget')}", "",
           "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     md += ["| " + " | ".join(map(str, row)) + " |" for row in rows]
     total_cost = sum(r["cost"] for r in records)

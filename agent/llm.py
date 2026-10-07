@@ -23,6 +23,7 @@ class LLM:
         self.prompt_tokens = 0
         self.cache_hit_tokens = 0
         self.completion_tokens = 0
+        self.last_prompt_tokens = None  # 上一次调用的准确输入长度，上下文压缩用它估算当前长度
 
     @property
     def total_tokens(self) -> int:
@@ -53,6 +54,7 @@ class LLM:
         if resp.usage:
             u = resp.usage
             self.prompt_tokens += u.prompt_tokens
+            self.last_prompt_tokens = u.prompt_tokens
             self.completion_tokens += u.completion_tokens
             # DeepSeek 用 prompt_cache_hit_tokens；OpenAI 格式是 prompt_tokens_details.cached_tokens
             hit = getattr(u, "prompt_cache_hit_tokens", None)

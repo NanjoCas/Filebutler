@@ -3,10 +3,14 @@ model: deepseek-flash          # 对比实验时改成 deepseek-v4-pro；以 Dee
 api_key_env: DEEPSEEK_API_KEY  # 只写环境变量名，不写 key 本身
 temperature: 0
 sandbox: ./sandbox
-max_steps: 15
-token_budget: 50000
+max_steps: 25                  # 真实数据（51 篇论文）光读就要 9 轮左右，15 太紧
+cost_budget: 0.30              # 元/次运行。按费用而不是 Token 算：七八成 Token 命中缓存，单价只有 1/50
+token_budget: 200000           # 后备：只在模型没配价格时生效
 confirm: risky                 # always 每次都问 / risky 回收区或超过阈值才问 / never 不问（评测用）
 confirm_threshold: 10          # risky 模式下，本次运行写操作超过这么多个文件就开始询问
+context_compress: false        # 上下文压缩：超过高水位时把较早的工具结果换成一行摘要
+context_high_water: 12000      # 估算的上下文 Token 超过这个值就压缩一批
+context_keep_recent: 1         # 除了最新一轮，再保留最近几轮工具结果的原文
 reflect: false                 # 结束前自检一次
 reflect_min_writes: 5          # 本次成功动过的文件不少于这么多个才自检（move/rename/trash 计数，make_dir 不算）
 reflect_state_lines: 120       # 自检时附带的沙盒文件清单最多多少行
