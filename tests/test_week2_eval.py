@@ -10,7 +10,7 @@ from eval.checker import _fill, check, select, snapshot
 from eval.runner import load_tasks, prepare, run_one
 from tests.test_week1 import FakeClient
 
-TASKS = load_tasks()
+TASKS = load_tasks("synthetic")
 
 
 def oracle_script(task, manifest, before):

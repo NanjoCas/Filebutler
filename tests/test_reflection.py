@@ -68,7 +68,7 @@ def test_reflection_can_fix_recorded_c05_failure(tmp_path):
     turns = [t if isinstance(t, str) else [tuple(c) for c in t] for t in data["assistant_turns"]]
     script = turns + [[("move", {"src": "scan_2616.pdf", "dst_dir": "上半年"})], "补上了 scan_2616.pdf（05-23）"]
     make = lambda cfg, task, manifest: LLM({"model": "fake"}, client=FakeClient(script))
-    task = load_tasks(ids=["C05"])[0]
+    task = load_tasks("synthetic", ids=["C05"])[0]
     r = run_one(task, 1, {"max_steps": 15, "reflect": True}, tmp_path, make_llm=make)
     assert r["success"] and r["reflection"] == "fixed" and r["restored"]
     refl = next(m for m in r["messages"] if m["role"] == "user" and "结束前自检" in m["content"])

@@ -6,6 +6,7 @@
 import json
 import shutil
 import statistics
+import unicodedata
 import threading
 import time
 from collections import defaultdict
@@ -26,11 +27,15 @@ from safety.sandbox import Sandbox
 
 EVAL_DIR = Path(__file__).parent
 CACHE = EVAL_DIR / ".cache"
+REAL_DATA = EVAL_DIR.parent / "data" / "real"
+TASK_FILES = {"real": EVAL_DIR / "tasks_real.yaml", "synthetic": EVAL_DIR / "tasks_synthetic.yaml"}
 _cache_lock = threading.Lock()
 
 
-def load_tasks(path: Path = EVAL_DIR / "tasks.yaml", ids=None, categories=None) -> list[dict]:
-    tasks = yaml.safe_load(path.read_text(encoding="utf-8"))
+def load_tasks(which: str = "all", ids=None, categories=None) -> list[dict]:
+    """which：real（真实数据，主评测）/ synthetic（生成数据，离线自检和回归）/ all。"""
+    names = list(TASK_FILES) if which == "all" else [which]
+    tasks = [t for n in names for t in yaml.safe_load(TASK_FILES[n].read_text(encoding="utf-8")) or []]
     if ids:
         tasks = [t for t in tasks if t["id"] in ids]
     if categories:
@@ -39,16 +44,31 @@ def load_tasks(path: Path = EVAL_DIR / "tasks.yaml", ids=None, categories=None) 
 
 
 def prepare(scenario: str, seed: int, dst: Path) -> dict:
-    """场景只生成一次（生成发票要几秒），之后从缓存复制。copytree 默认 copy2，保留修改时间。"""
+    """生成场景只生成一次（生成发票要几秒），之后从缓存复制。copytree 默认 copy2，保留修改时间。
+    real:<名字> 是真实数据：复制 data/real/<名字>/，标准答案读 data/real/<名字>.labels.yaml。"""
+    if scenario.startswith("real:"):
+        return prepare_real(scenario.split(":", 1)[1], dst)
     src = CACHE / f"{scenario}-{seed}"
     with _cache_lock:
         if not (src / "manifest.json").exists():
-            manifest = generate(scenario, src / "root", seed)
+            manifest = generate(scenario, src / "root", seed, force=True)  # 缓存目录归 runner 管
             (src / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     if dst.exists():
         shutil.rmtree(dst)
     shutil.copytree(src / "root", dst)
     return json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+
+
+def prepare_real(name: str, dst: Path) -> dict:
+    src, labels_file = REAL_DATA / name, REAL_DATA / f"{name}.labels.yaml"
+    if not src.is_dir():
+        raise FileNotFoundError(f"没有真实数据 {src}")
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".DS_Store"))
+    labels = yaml.safe_load(labels_file.read_text(encoding="utf-8")) if labels_file.exists() else {}
+    files = {unicodedata.normalize("NFC", k): v for k, v in (labels or {}).items()}  # 和快照的键一致
+    return {"scenario": f"real:{name}", "seed": None, "files": files}
 
 
 def run_one(task: dict, rep: int, cfg: dict, out_dir: Path, make_llm=LLM) -> dict:
@@ -128,9 +148,12 @@ def summarize(records: list[dict], exp: str, cfg: dict) -> str:
     return "\n".join(md)
 
 
-def run_eval(cfg: dict, exp: str, repeats: int = 3, workers: int = 4, ids=None, categories=None) -> list[dict]:
+def run_eval(cfg: dict, exp: str, repeats: int = 3, workers: int = 4, ids=None, categories=None,
+             which: str = "real") -> list[dict]:
     console = Console()
-    tasks = load_tasks(ids=ids, categories=categories)
+    tasks = load_tasks(which, ids=ids, categories=categories)
+    if not tasks:
+        raise SystemExit(f"没有匹配的任务（任务集 {which}，ids={ids}，类别={categories}）")
     out_dir = EVAL_DIR / "results" / exp
     out_dir.mkdir(parents=True, exist_ok=True)
     jobs = [(t, rep) for t in tasks for rep in range(1, repeats + 1)]

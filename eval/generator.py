@@ -18,6 +18,22 @@ from pypdf import PdfWriter
 FONT = Path(__file__).parent / "fonts" / "NotoSansSC.ttf"
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf"
 BASE_TIME = datetime(2026, 9, 30, 18, 0)  # 修改时间都从这里往前推，不依赖“现在”
+MARKER = ".filebutler_generated"  # 生成器建的目录里放这个标记；没有标记的目录不允许清空
+
+
+class NotGeneratedError(Exception):
+    pass
+
+
+def check_safe_to_wipe(root: Path):
+    """目录里有可见文件却没有标记，说明里面是用户自己的文件，拒绝清空。"""
+    root = Path(root)
+    if not root.exists() or (root / MARKER).exists():
+        return
+    own = [p for p in root.rglob("*") if p.is_file() and not any(x.startswith(".") for x in p.relative_to(root).parts)]
+    if own:
+        raise NotGeneratedError(f"{root} 里有 {len(own)} 个不是生成器生成的文件（如 {own[0].relative_to(root)}），"
+                                f"为防止误删拒绝清空。确认不要它们的话请加 --force")
 
 
 # ---------- 文件写入工具 ----------
@@ -365,7 +381,12 @@ SCENARIOS = {
 }
 
 
-def generate(scenario: str, root: Path, seed: int = 42) -> dict:
+def generate(scenario: str, root: Path, seed: int = 42, force: bool = False) -> dict:
     if scenario not in SCENARIOS:
         raise ValueError(f"没有场景 {scenario}，可选：{', '.join(SCENARIOS)}")
-    return SCENARIOS[scenario](Path(root), seed)
+    if not force:
+        check_safe_to_wipe(Path(root))
+    manifest = SCENARIOS[scenario](Path(root), seed)
+    # 生成完再写标记：不参与生成过程，同一种子的输出和加标记前逐字节一致
+    (Path(root) / MARKER).write_text("由 eval/generator.py 生成，可以放心重建\n", encoding="utf-8")
+    return manifest

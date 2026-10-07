@@ -19,7 +19,7 @@ def recorded(name):
 
 def test_c05_missed_file_reproduces(tmp_path):
     data, make_llm = recorded("C05_3_missed_file.json")
-    task = load_tasks(ids=[data["task"]])[0]
+    task = load_tasks("synthetic", ids=[data["task"]])[0]
     r = run_one(task, 1, {"max_steps": 15}, tmp_path, make_llm=make_llm)
     failed = [c["assert"] for c in r["checks"] if not c["ok"]]
     assert failed == ["moved scan_2616.pdf → 上半年/scan_2616.pdf"]   # 只漏了这一个
