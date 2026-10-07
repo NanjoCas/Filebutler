@@ -5,7 +5,7 @@
 
 模型：DeepSeek（`deepseek-flash`，OpenAI 兼容接口）。截至 2026-10-07：核心代码约 1050 行、评测约 1000 行、测试 138 个，API 累计花费约 ¥23。
 
-完整的实验过程见 [docs/experiments.md](docs/experiments.md)。
+完整的实验过程见 [docs/experiments.md](docs/experiments.md)；技术取舍、踩过的坑和当前边界见 [docs/engineering-notes.md](docs/engineering-notes.md)。
 
 ## 快速开始（macOS）
 
