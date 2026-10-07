@@ -46,6 +46,19 @@ def _paginate(lines: list[str], page: int, max_items: int) -> tuple[list[str], s
     return shown, footer
 
 
+def _pdf_text(p, pages: int = 2) -> str:
+    """优先用 PyMuPDF：真实论文里有字体编码特殊的 PDF，pypdf 抽出来是乱码（51 篇里 1 篇），PyMuPDF 正常且快 3 倍。
+    PyMuPDF 不可用或出错时退回 pypdf。"""
+    try:
+        import pymupdf
+        pymupdf.TOOLS.mupdf_display_errors(False)  # 不规范的 PDF 会往终端刷 MuPDF error
+        with pymupdf.open(p) as doc:
+            return "\n".join(doc[i].get_text() for i in range(min(pages, len(doc))))
+    except Exception:
+        from pypdf import PdfReader
+        return "\n".join(page.extract_text() or "" for page in PdfReader(p).pages[:pages])
+
+
 def _mtime(p) -> str:
     return datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
 
@@ -170,8 +183,7 @@ def read_file(a: ReadArgs, sb: Sandbox) -> str:
         raise ToolError(f"{a.path} 是文件夹，请用 list_dir")
     ext = p.suffix.lower()
     if ext == ".pdf":
-        from pypdf import PdfReader
-        text = "\n".join(page.extract_text() or "" for page in PdfReader(p).pages[:2])
+        text = _pdf_text(p)
     elif ext in TEXT_EXTS:
         raw = p.read_bytes()
         for enc in ("utf-8", "gbk"):

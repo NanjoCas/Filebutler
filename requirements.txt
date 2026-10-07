@@ -1,6 +1,7 @@
 openai
 pydantic>=2
 pypdf
+pymupdf              # read_file 优先用它解析 PDF（AGPL-3.0；闭源商用需换库或买授权）
 pyyaml
 rich
 Pillow
