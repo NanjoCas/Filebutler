@@ -134,3 +134,17 @@ def test_eof_rejects():
         raise EOFError
     c = Confirmer("always", ask=eof)
     assert not c.allow("trash", {"path": "x"}) and c.rejections == 1
+
+
+
+def test_filename_with_leading_space(tmp_path):
+    """真实数据里有文件名以空格开头的论文；原样路径和丢了空格的路径都要能找到它。"""
+    sb = Sandbox(tmp_path / "s")
+    (sb.root / "t").mkdir()
+    (sb.root / "t" / " Exploiting.pdf").write_text("x")
+    (sb.root / "dst").mkdir()
+    for path in ["t/ Exploiting.pdf", "t/Exploiting.pdf"]:
+        assert sb.path(path) == (sb.root / "t" / " Exploiting.pdf").resolve()
+    out = registry.dispatch("move", json.dumps({"src": "t/Exploiting.pdf", "dst_dir": "dst"}), sb)
+    assert out.startswith("OK") and (sb.root / "dst" / " Exploiting.pdf").exists()
+    assert sb.path("  ") == sb.root                       # 空白路径仍是沙盒根目录

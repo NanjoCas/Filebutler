@@ -45,7 +45,8 @@ def load_tasks(which: str = "all", ids=None, categories=None) -> list[dict]:
 
 def prepare(scenario: str, seed: int, dst: Path) -> dict:
     """生成场景只生成一次（生成发票要几秒），之后从缓存复制。copytree 默认 copy2，保留修改时间。
-    real:<名字> 是真实数据：复制 data/real/<名字>/，标准答案读 data/real/<名字>.labels.yaml。"""
+    real:<名字> 是真实数据：复制 data/real/<名字>/，标准答案读 data/real/<名字>.labels.yaml。
+    real:<名字>/flat 是打散变体：所有文件移到根目录、子文件夹删掉，用于“从头重新分类”的任务。"""
     if scenario.startswith("real:"):
         return prepare_real(scenario.split(":", 1)[1], dst)
     src = CACHE / f"{scenario}-{seed}"
@@ -60,6 +61,7 @@ def prepare(scenario: str, seed: int, dst: Path) -> dict:
 
 
 def prepare_real(name: str, dst: Path) -> dict:
+    name, _, variant = name.partition("/")
     src, labels_file = REAL_DATA / name, REAL_DATA / f"{name}.labels.yaml"
     if not src.is_dir():
         raise FileNotFoundError(f"没有真实数据 {src}")
@@ -68,7 +70,19 @@ def prepare_real(name: str, dst: Path) -> dict:
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".DS_Store"))
     labels = yaml.safe_load(labels_file.read_text(encoding="utf-8")) if labels_file.exists() else {}
     files = {unicodedata.normalize("NFC", k): v for k, v in (labels or {}).items()}  # 和快照的键一致
-    return {"scenario": f"real:{name}", "seed": None, "files": files}
+    if variant == "flat":
+        moved = {}
+        for p in sorted(x for x in dst.rglob("*") if x.is_file() and x.parent != dst):
+            if (dst / p.name).exists():
+                raise ValueError(f"打散后重名：{p.name}")
+            moved[unicodedata.normalize("NFC", p.relative_to(dst).as_posix())] = p.name
+            p.rename(dst / p.name)
+        for d in sorted((x for x in dst.rglob("*") if x.is_dir()), key=lambda x: -len(x.parts)):
+            d.rmdir()
+        files = {unicodedata.normalize("NFC", moved.get(k, k)): v for k, v in files.items()}
+    elif variant:
+        raise ValueError(f"不认识的真实数据变体 {variant}，可选：flat")
+    return {"scenario": f"real:{name}" + (f"/{variant}" if variant else ""), "seed": None, "files": files}
 
 
 def run_one(task: dict, rep: int, cfg: dict, out_dir: Path, make_llm=LLM) -> dict:

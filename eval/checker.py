@@ -167,7 +167,8 @@ def check(expect: list[dict], before: dict, after: dict, manifest: dict, answer:
             for src in select({k: v for k, v in arg.items() if k != "field"}, before, manifest):
                 touched.add(src)
                 allowed = _label(manifest, src, arg["field"])
-                where = [k for k, v in visible.items() if v == before[src]]
+                # 排除“本来就在那里的其他文件”：内容相同的副本不能冒充这个文件的去向
+                where = [k for k, v in visible.items() if v == before[src] and (k == src or before.get(k) != v)]
                 ok = any((PurePosixPath(k).parent.name or ".") in allowed for k in where)  # 根目录记作 "."
                 add(f"placed {src} ∈ {allowed}", ok, "" if ok else f"实际在 {where or '（找不到）'}")
         elif kind == "retitled":

@@ -37,6 +37,17 @@ def test_placed_accepts_any_allowed_folder(tmp_path):
     assert not res[0]["ok"] and "x/a.pdf" in res[0]["detail"]
 
 
+def test_placed_not_fooled_by_identical_copy(tmp_path):
+    """Wang.pdf 和 强化学习/ 下的某个文件字节相同：Wang.pdf 留在根目录不应因为那个副本而判成功。"""
+    make_tree(tmp_path, {"a.pdf": "SAME", "rl/copy.pdf": "SAME"})
+    before = snapshot(tmp_path, True)
+    m = {"files": {"a.pdf": {"topic_ok": ["rl"]}}}
+    res = check([{"placed": {"names": ["a.pdf"], "field": "topic_ok"}}], before, before, m)
+    assert not res[0]["ok"]
+    (tmp_path / "a.pdf").rename(tmp_path / "rl" / "a.pdf")
+    assert check([{"placed": {"names": ["a.pdf"], "field": "topic_ok"}}], before, snapshot(tmp_path, True), m)[0]["ok"]
+
+
 def test_placed_requires_label(tmp_path):
     make_tree(tmp_path, {"c.pdf": "C"})
     before = snapshot(tmp_path, True)
@@ -86,6 +97,14 @@ def oracle_script(task, manifest, before):
                 groups.setdefault(before[src], []).append(src)
             for g in (g for g in groups.values() if len(g) > 1):
                 calls += [("trash", {"path": p}) for p in sorted(g)[1:]]
+        elif kind == "placed":
+            for src in select(sel, before, manifest):
+                allowed = manifest["files"][src][arg["field"]]
+                if (str(PurePosixPath(src).parent.name) or ".") in allowed:
+                    continue                                    # 已经在可接受的位置
+                dst = allowed[0]
+                if dst != ".":
+                    calls += [("make_dir", {"path": dst}), ("move", {"src": src, "dst_dir": dst})]
         elif kind == "retitled":
             for src in select(sel, before, manifest):
                 stem, n = manifest["files"][src][arg["field"]], 1
