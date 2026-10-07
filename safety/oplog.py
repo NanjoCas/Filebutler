@@ -45,7 +45,7 @@ def undo(sandbox: Sandbox, run_id: str | None = None) -> list[str]:
         op = row["op"]
         try:
             # 日志可能被改过，反向操作同样要过沙盒检查
-            orig, now = sandbox.path(row["src"]), sandbox.path(row["dst"])
+            orig, now = sandbox.path(row["src"], exact=True), sandbox.path(row["dst"], exact=True)
         except SandboxError as e:
             report.append(f"跳过 #{row['seq']} {op}：{e}")
             continue

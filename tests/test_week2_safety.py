@@ -1,5 +1,7 @@
 """第 2 周：操作日志、undo、确认机制。"""
 import json
+import os
+import unicodedata
 from collections import Counter
 
 import pytest
@@ -148,3 +150,26 @@ def test_filename_with_leading_space(tmp_path):
     out = registry.dispatch("move", json.dumps({"src": "t/Exploiting.pdf", "dst_dir": "dst"}), sb)
     assert out.startswith("OK") and (sb.root / "dst" / " Exploiting.pdf").exists()
     assert sb.path("  ") == sb.root                       # 空白路径仍是沙盒根目录
+
+
+
+@pytest.mark.parametrize("real,typed", [
+    ("A Di\ufb00erent Kind.pdf", "A Different Kind.pdf"),          # 连字 ﬀ（真实论文里出现过）
+    ("Report.PDF", "report.pdf"),                                     # 大小写
+    (unicodedata.normalize("NFD", "论文é.pdf"), "论文é.pdf"),          # NFD 与 NFC
+])
+def test_move_keeps_real_name_and_undo_restores(tmp_path, real, typed):
+    """macOS 不区分大小写且做 Unicode 折叠：模型写的名字和真实名字不同也能找到文件，
+    但移动后必须保留真实名字，undo 后快照必须完全一致。"""
+    sb = Sandbox(tmp_path / "s")
+    (sb.root / real).write_text("x")
+    (sb.root / "dst").mkdir()
+    if not (sb.root / typed).exists():
+        pytest.skip("当前文件系统区分大小写/不做折叠，不会出现这个问题")
+    before = snapshot(sb.root, include_trash=True)
+    log = OpLog(sb, "r")
+    out = registry.dispatch("move", json.dumps({"src": typed, "dst_dir": "dst"}, ensure_ascii=False), sb, oplog=log)
+    assert out.startswith("OK")
+    assert os.listdir(sb.root / "dst") == [real]                    # 名字没被改
+    undo(sb, "r")
+    assert os.listdir(sb.root).count(real) == 1 and snapshot(sb.root, include_trash=True) == before
