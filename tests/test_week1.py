@@ -84,7 +84,7 @@ def test_errors_are_returned_not_raised(sb):
 
 
 def test_max_steps(sb):
-    res, _ = run([[("list_dir", {})]] * 3, sb, max_steps=3)
+    res, _ = run([[("list_dir", {"page": p})] for p in range(1, 4)], sb, max_steps=3)
     assert res.stop_reason == "max_steps" and res.steps == 3
 
 
@@ -116,7 +116,7 @@ def test_write_tools(sb):
 
 def test_schemas():
     names = {s["function"]["name"] for s in registry.schemas()}
-    assert names == {"list_dir", "search_files", "file_info", "read_file", "make_dir", "move", "rename", "trash"}
+    assert names == {"list_dir", "search_files", "file_info", "read_file", "make_dir", "move", "rename", "trash", "search_content", "find_duplicates", "apply_dedup", "deduplicate", "report_findings", "paper_profiles", "submit_classification", "apply_classification"}
 
 
 def test_trace_records_instruction_and_final(sb, tmp_path):
@@ -125,5 +125,8 @@ def test_trace_records_instruction_and_final(sb, tmp_path):
               sb, {}, Console(quiet=True), trace_path=trace)
     rows = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
     assert rows[0] == {"event": "start", "instruction": "数一下 PDF", "model": "fake"}
-    assert rows[1]["tool"] == "search_files"
+    assert next(r for r in rows if "tool" in r)["tool"] == "search_files"
+    assert next(r for r in rows if r.get("event") == "llm")["ms"] >= 0
+    assert any(r.get("event") == "llm_request" for r in rows)
+    assert rows[-1]["llm_seconds"] >= 0
     assert rows[-1]["event"] == "end" and rows[-1]["final"] == "3 个" and rows[-1]["stop_reason"] == "done"

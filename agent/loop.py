@@ -3,6 +3,8 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
+from types import SimpleNamespace
 
 from rich.console import Console
 from rich.markup import escape
@@ -10,9 +12,15 @@ from rich.panel import Panel
 
 import tools.fs_read  # noqa: F401  导入即注册工具
 import tools.fs_write  # noqa: F401
+import tools.retrieval  # noqa: F401
+import tools.dedup  # noqa: F401
+import tools.findings  # noqa: F401
+import tools.classification  # noqa: F401
+from agent.runtime import LocalRuntime
 from agent.context import ContextManager
 from agent.llm import LLM
 from agent.prompts import SYSTEM_PROMPTS
+from agent.repetition import RepeatDetector
 from agent.reflect import PASS_PREFIX, file_write_count, reflection_prompt, successful_writes
 from safety.confirm import Confirmer
 from safety.oplog import OpLog
@@ -23,7 +31,7 @@ from tools import registry
 @dataclass
 class RunResult:
     final: str
-    stop_reason: str  # done / max_steps / cost_budget / token_budget
+    stop_reason: str  # done / max_steps / cost_budget / token_budget / repeated_call
     steps: int
     tokens: int
     seconds: float
@@ -37,6 +45,11 @@ class RunResult:
     compressions: int = 0           # 上下文压缩触发次数
     compressed_msgs: int = 0        # 被压缩的工具结果条数
     rereads: int = 0                # 压缩后又重读同一文件的次数
+    llm_seconds: float = 0.0        # 模型请求墙钟时间（含 SDK/封装内重试等待）
+    wait_seconds: float = 0.0
+    active_seconds: float = 0.0
+    tool_seconds: float = 0.0
+    runtime: dict = field(default_factory=dict)
     messages: list = field(default_factory=list)
 
 
@@ -59,9 +72,19 @@ def _assistant_dict(msg) -> dict:
 def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
               console: Console | None = None, trace_path: Path | None = None,
               oplog: OpLog | None = None, confirmer: Confirmer | None = None,
-              history: list[dict] | None = None) -> RunResult:
+              history: list[dict] | None = None,
+              on_event: Callable[[dict], None] | None = None,
+              artifacts=None) -> RunResult:
     """history：从一段已有对话（含 system 和 user）继续跑，用于回放失败案例。"""
     console = console or Console()
+
+    def emit(event_type: str, **data):
+        if on_event:
+            try:
+                on_event({"type": event_type, **data})
+            except Exception as exc:
+                # A UI/reporting failure must not interrupt an already authorised file operation.
+                console.print(f"[dim]运行状态通知失败：{escape(str(exc))}")
     max_steps = cfg.get("max_steps", 15)
     cost_budget = cfg.get("cost_budget")      # 元；预算按费用算（缓存命中的 Token 很便宜，按 Token 计会高估成本）
     token_budget = cfg.get("token_budget")    # 模型没配价格时的后备
@@ -76,18 +99,40 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
         {"role": "system", "content": SYSTEM_PROMPTS[cfg.get("prompt", "v1")]},
         {"role": "user", "content": instruction},
     ]
-    tool_schemas = registry.schemas()
+    if artifacts is None and cfg.get('local_runtime'):
+        from agent.artifacts import ArtifactStore
+        artifacts = ArtifactStore(sandbox)
+    if artifacts:
+        sandbox.artifacts = artifacts
+        artifacts.run_id = oplog.path.stem if oplog else str(time.time_ns())
+    runtime = LocalRuntime(instruction,cfg) if cfg.get('local_runtime') else None
+    if runtime:
+        sandbox.runtime=runtime
+        sandbox.progress=lambda message: emit('local_step',message=message)
+    retrieval = cfg.get("retrieval", True)
+    tool_schemas = [s for s in registry.schemas()
+                    if (retrieval or s["function"]["name"] != "search_content")
+                    and (runtime or s['function']['name'] not in {'report_findings','deduplicate','paper_profiles','submit_classification','apply_classification'})]
     trace = open(trace_path, "a", encoding="utf-8") if trace_path else None
     if trace:
         trace.write(json.dumps({"event": "start", "instruction": instruction, "model": llm.model},
                                ensure_ascii=False) + "\n")
-    t_start = time.time()
+    t_start = time.perf_counter()
+    wait_before = confirmer.wait_seconds if confirmer else 0.0
     final, stop_reason, n_calls, step = "", "max_steps", 0, 0
     reflect = cfg.get("reflect", False)
     reflect_min = cfg.get("reflect_min_writes", 5)
     reflection, draft_final, cost_at_reflect = "", "", None
     ctx = ContextManager(cfg.get("context_high_water", 12000), cfg.get("context_keep_recent", 1)) \
         if cfg.get("context_compress") else None
+    repeats = RepeatDetector() if cfg.get("repeat_detection", True) else None
+    llm_seconds = tool_seconds = 0.0
+    if repeats and history:
+        for m in history:
+            if m.get("role") == "user" or m.get("content", "").startswith("[本地撤销状态 run="):
+                repeats = RepeatDetector()
+            for tc in m.get("tool_calls", []):
+                repeats.observe(tc["function"]["name"], tc["function"]["arguments"])
 
     try:
         for step in range(1, max_steps + 1):
@@ -99,13 +144,47 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 if trace:
                     trace.write(json.dumps({"event": "compress", "step": step, **info}, ensure_ascii=False) + "\n")
             n_sent = len(messages)
-            msg = llm.chat(messages, tool_schemas)
-            if ctx:
+            direct=runtime.direct_call(sandbox) if runtime and step==1 else None
+            if not direct: emit("llm_start", step=step)
+            call_start = time.perf_counter()
+            def request_event(info):
+                if trace:
+                    trace.write(json.dumps({"event": "llm_request", "step": step, **info}) + "\n")
+                    trace.flush()
+                if info.get("retry"):
+                    emit("llm_retry", step=step, **info)
+            try:
+                if direct:
+                    emit('local_step',message='本地加载已保存分类计划，准备确认与批量执行')
+                    msg=SimpleNamespace(content='',tool_calls=[SimpleNamespace(id=f'local_{artifacts.run_id}',
+                        function=SimpleNamespace(name=direct[0],arguments=json.dumps(direct[1])))])
+                else:
+                    msg = llm.chat(messages, runtime.schemas(tool_schemas) if runtime else tool_schemas, on_request=request_event)
+            finally:
+                # Include failed attempts and backoff in model time as well.
+                if not direct: llm_seconds += time.perf_counter() - call_start
+            call_seconds = time.perf_counter() - call_start
+            if not direct: emit("llm_end", step=step, ms=round(call_seconds * 1000))
+            if trace and not direct:
+                trace.write(json.dumps({"event": "llm", "step": step,
+                                        "ms": round(call_seconds * 1000),
+                                        "tokens": llm.total_tokens - tokens_before}, ensure_ascii=False) + "\n")
+            if ctx and not direct:
                 ctx.after_call(n_sent, llm.last_prompt_tokens)
             messages.append(_assistant_dict(msg))
             console.rule(f"[dim]第 {step} 轮 · {llm.total_tokens - tokens_before} tokens · {time.time() - t0:.1f}s")
 
             if not msg.tool_calls:
+                if runtime and runtime.task in {'topic','classification'}:
+                    if not runtime.format_retry:
+                        runtime.format_retry=True
+                        target='submit_classification' if runtime.task=='classification' else 'report_findings'
+                        messages.append({'role':'user','content':f'【本地格式校验】请用 {target} 提交已取得的证据及结论；分类须覆盖目录快照全部文件，证据不足标 uncertain。不要编造路径或复写长清单。'})
+                        runtime.closing=True
+                        continue
+                    final='本轮未形成可校验的结构化结论。请缩小查询范围或要求继续核实；尚未核实不代表不相关。'
+                    stop_reason='unverified_answer'
+                    break
                 writes = successful_writes(messages) if reflect and not reflection else []
                 if writes and file_write_count(writes) >= reflect_min and not over_budget():
                     # 第一次准备结束且动过的文件够多：追加自检提示再跑一轮（追加在末尾，前缀命中缓存）
@@ -128,30 +207,78 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
 
             for tc in msg.tool_calls:
                 name, raw = tc.function.name, tc.function.arguments
-                t1 = time.time()
+                requested_raw=raw
+                blocked=None
+                if runtime:
+                    raw,blocked=runtime.prepare(name,raw,sandbox)
+                t1 = time.perf_counter()
+                tool_wait_before = confirmer.wait_seconds if confirmer else 0.0
+                try:
+                    event_args = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    event_args = {}
+                emit("tool_start", step=step, call_id=tc.id, tool=name,
+                     args=event_args if isinstance(event_args, dict) else {})
                 console.print(f"[bold cyan]{escape(name)}[/] [dim]{escape(raw)}[/]")  # 先打印，确认提示才有上下文
-                if ctx:
-                    ctx.on_tool_call(name, raw)
-                result = registry.dispatch(name, raw, sandbox, oplog, confirmer)
+                repeat_count = repeats.observe(name, raw) if repeats else 0
+                executed = False
+                if blocked:
+                    result=blocked
+                elif stop_reason == "repeated_call":
+                    result = "ERROR: 本次运行已因连续重复调用中止，此调用未执行"
+                elif repeat_count >= 3:
+                    stop_reason = "repeated_call"
+                    result = "ERROR: 相同工具和参数连续调用 3 次，已中止运行；此调用未执行"
+                else:
+                    if ctx:
+                        ctx.on_tool_call(name, raw)
+                    if name == "search_content" and not retrieval:
+                        result = "ERROR: 本次运行未启用内容检索，请使用 search_files 和 read_file"
+                    else:
+                        executed = True
+                        result = registry.dispatch(name, raw, sandbox, oplog, confirmer)
+                    if repeat_count == 2:
+                        result += "\n[重复调用提醒] 你已连续两次调用相同工具和参数，结果如上。请调整做法；再次原样调用将中止运行。"
+                if runtime:
+                    runtime.after(name,result,sandbox)
+                tool_wait = (confirmer.wait_seconds if confirmer else 0.0) - tool_wait_before
+                tool_elapsed = time.perf_counter() - t1
+                tool_seconds += max(0, tool_elapsed - tool_wait)
                 n_calls += 1
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
                 ok = result.startswith("OK")
+                emit("tool_end", step=step, call_id=tc.id, tool=name, ok=ok,
+                     executed=executed, ms=round(tool_elapsed * 1000),
+                     active_ms=round(max(0, tool_elapsed - tool_wait) * 1000), wait_ms=round(tool_wait * 1000),
+                     summary=result.splitlines()[0][:200] if result else "")
                 first_line = result.split("\n", 2)
                 preview = "\n".join(first_line[:2]) + (" …" if len(first_line) > 2 else "")
                 console.print(f"  [{'green' if ok else 'red'}]{escape(preview)}[/]")
                 if trace:
                     trace.write(json.dumps({
-                        "step": step, "tool": name, "args": raw, "ok": ok,
-                        "result": result[:300], "ms": int((time.time() - t1) * 1000),
+                        "step": step, "tool": name, "args": raw, "requested_args": requested_raw, "ok": ok,
+                        "result": result[:300], "ms": round(tool_elapsed * 1000),
+                        "active_ms": round(max(0, tool_elapsed - tool_wait) * 1000), "wait_ms": round(tool_wait * 1000),
+                        "repeat_count": repeat_count,
+                        "executed": executed,
                     }, ensure_ascii=False) + "\n")
 
+            if runtime and runtime.final_answer is not None:
+                final,stop_reason=runtime.final_answer,runtime.stop_reason
+                messages.append({'role':'assistant','content':final})
+                break
+            if stop_reason == "repeated_call":
+                break
             if reason := over_budget():
                 stop_reason = reason
                 break
         if stop_reason != "done":
             final = final or f"（未完成：触发终止条件 {stop_reason}）"
+        elapsed = time.perf_counter() - t_start
+        wait_seconds = (confirmer.wait_seconds if confirmer else 0.0) - wait_before
         result = RunResult(final=final, stop_reason=stop_reason, steps=step, tokens=llm.total_tokens,
-                           seconds=time.time() - t_start, tool_calls=n_calls,
+                           seconds=elapsed, wait_seconds=wait_seconds, active_seconds=max(0, elapsed - wait_seconds),
+                           tool_seconds=tool_seconds, tool_calls=n_calls,
                            violations=sandbox.violations,
                            rejections=confirmer.rejections if confirmer else 0,
                            cost=llm.cost, cache_hit_tokens=llm.cache_hit_tokens,
@@ -160,22 +287,34 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                            compressions=ctx.stats.events if ctx else 0,
                            compressed_msgs=ctx.stats.messages if ctx else 0,
                            rereads=ctx.stats.rereads if ctx else 0,
-                           messages=messages)
+                           llm_seconds=llm_seconds,
+                           runtime=runtime.stats() if runtime else {}, messages=messages)
         if trace:
             trace.write(json.dumps({"event": "end", "final": final, "stop_reason": stop_reason,
                                     "steps": step, "tool_calls": n_calls, "tokens": result.tokens,
                                     "seconds": round(result.seconds, 2), "violations": result.violations,
                                     "rejections": result.rejections, "cost": round(result.cost, 5),
                                     "reflection": result.reflection, "compressions": result.compressions,
-                                    "rereads": result.rereads},
+                                    "rereads": result.rereads, "llm_seconds": round(result.llm_seconds, 3),
+                                    "active_seconds": result.active_seconds, "wait_seconds": result.wait_seconds,
+                                    "tool_seconds": result.tool_seconds, "runtime": result.runtime},
                                    ensure_ascii=False) + "\n")
+    except BaseException:
+        elapsed = time.perf_counter() - t_start
+        wait = (confirmer.wait_seconds if confirmer else 0.0) - wait_before
+        metrics = dict(seconds=elapsed, wait_seconds=wait, active_seconds=max(0, elapsed - wait),
+                       llm_seconds=llm_seconds, tool_seconds=tool_seconds)
+        emit("run_failed", **metrics)
+        if trace:
+            trace.write(json.dumps({"event": "failed", **metrics}) + "\n")
+        raise
     finally:
         if trace:
             trace.close()
 
     console.print(Panel(escape(final), title="结果", border_style="green" if stop_reason == "done" else "yellow"))
     console.print(f"[dim]轮数 {result.steps} · 工具调用 {n_calls} · tokens {result.tokens} · "
-                  f"缓存命中 {result.cache_hit_tokens} · ¥{result.cost:.4f} · 耗时 {result.seconds:.1f}s · "
+                  f"缓存命中 {result.cache_hit_tokens} · ¥{result.cost:.4f} · 运行 {result.active_seconds:.1f}s / 确认等待 {result.wait_seconds:.1f}s · "
                   f"越权尝试 {result.violations} · 用户拒绝 {result.rejections} · "
                   f"{'自检 ' + result.reflection + ' · ' if result.reflection else ''}结束原因 {stop_reason}")
     return result

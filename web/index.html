@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FileButler</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/chat.css">
+  <link rel="stylesheet" href="/static/confirmation.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">F</span><div><strong>FileButler</strong><small id="health">正在连接本地服务…</small></div></div>
+    <button id="toggle-files" class="icon-button" title="收起或展开文件区">文件区</button>
+  </header>
+  <main class="layout">
+    <aside class="sidebar">
+      <button id="new-chat" class="new-chat">＋ <span>新建对话</span></button>
+      <div class="section-label">最近对话</div>
+      <nav id="conversation-list" class="conversation-list"></nav>
+    </aside>
+    <section class="chat-panel">
+      <div class="chat-heading"><div><h1 id="conversation-title">新对话</h1><p id="chat-subtitle">FileButler 在本机沙盒中帮你查找和整理文件</p></div><span id="run-status" class="status" role="status" aria-live="polite"></span></div>
+      <div id="messages" class="messages" role="region" aria-label="对话记录" tabindex="0"><div class="welcome"><div class="welcome-icon">✦</div><h2>你想整理什么？</h2><p>可以用自然语言查找、阅读、分类或整理沙盒里的文件。</p><div class="suggestions"><button>帮我找出有关强化学习的论文</button><button>列出文献目录里的 PDF</button><button>查看当前文件夹里有哪些文件</button></div></div></div>
+      <div id="confirmation" class="confirmation hidden" role="region" aria-label="待确认的文件操作"></div>
+      <form id="composer" class="composer"><textarea id="message-input" rows="1" maxlength="8000" placeholder="给 FileButler 发送消息…" required></textarea><div class="composer-footer"><span>Enter 发送 · Shift+Enter 换行</span><button id="send-button" type="submit">发送 <span>↗</span></button></div></form>
+      <div class="privacy-note">本地网页 · 仅访问配置的沙盒 · 模型请求使用当前 API 配置</div>
+    </section>
+    <aside id="file-panel" class="file-panel">
+      <div class="file-heading"><div><h2>沙盒文件</h2><p id="sandbox-label">加载中…</p></div><button id="refresh-files" class="icon-button" title="刷新">↻</button></div>
+      <div class="breadcrumbs"><button id="file-up" class="up-button" disabled>↑ 上级</button><span id="current-path">.</span></div>
+      <div id="file-list" class="file-list" role="region" aria-label="沙盒文件列表" tabindex="0"></div>
+      <div class="preview-heading"><span>预览</span><span id="preview-type"></span></div>
+      <div id="preview" class="preview" role="region" aria-label="文件预览" tabindex="0"><div class="empty-preview">选择文件查看内容</div></div>
+    </aside>
+  </main>
+  <dialog id="confirmation-review" class="review-dialog" aria-labelledby="review-title">
+    <header class="review-header"><div><span class="review-eyebrow">操作核对</span><h2 id="review-title">确认文件操作</h2></div><button id="review-close" class="icon-button" type="button" aria-label="关闭核对窗口">✕</button></header>
+    <div class="review-layout"><aside id="review-plan" class="review-plan" aria-label="操作清单"></aside><section id="review-preview" class="review-preview" aria-label="待确认文件预览"></section></div>
+    <footer id="review-footer" class="review-footer"></footer>
+  </dialog>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

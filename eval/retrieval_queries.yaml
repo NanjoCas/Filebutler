@@ -1,0 +1,115 @@
+# 检索层的诊断集，不是模型端到端评测，也不是独立盲测。
+# 按前两页的研究目标/提出的方法判相关；只在 related work 提到不算。
+# 同一研究的不同文件版本都算相关文件。证据在全语料逐篇检查标题/摘要时标注，非检索结果回填。
+# paired 查询保持相同 gold，观察关键词改写和跨语言差异；query 词不得从 gold 自动拼接。
+corpus: data/real/papers
+scope: PDF first two pages
+queries:
+  - id: Q01
+    kind: english
+    query: dengue outbreak prediction climatic Taiwan
+    intent: 研究台湾登革热暴发时空预测与气候因素的论文
+    relevant:
+      - path: Anno/Challenges and implications of predicting the spatiotemporal distribution of dengue fever outbreak in Chinese Taiwan using remote sensing data and dee.pdf
+        page: 1
+        evidence: predicting the spatiotemporal distribution of dengue fever
+      - path: Anno/Spatiotemporal dengue fever hotspots associated with climatic factors in Taiwan including outbreak predictions based on machine-learning.pdf
+        page: 1
+        evidence: climate-based model
+  - id: Q02
+    kind: english
+    query: influenza indirect tweets after flu peak
+    intent: 利用间接信息推文改进流感高峰后检测的论文
+    relevant:
+      - path: Twitter-Based Influenza Detection After Flu Peak via Tweets With Indirect InformationText Mining Study.pdf
+        page: 1
+        evidence: Influenza Detection After Flu Peak via Tweets With Indirect Information
+  - id: Q03
+    kind: english
+    query: weak supervision users reports reinforced selector
+    intent: 使用用户举报作为弱监督并用强化选择器筛选样本的 WeFEND 论文，含各版本
+    relevant: &wefend
+      - path: 1912.12520v2.pdf
+        page: 1
+        evidence: WeFEND
+      - path: Wang.pdf
+        page: 1
+        evidence: WeFEND
+      - path: 强化学习/Weak Supervision Reinforcement Learning.pdf
+        page: 1
+        evidence: WeFEND
+  - id: Q04
+    kind: english
+    query: domain adaptive reinforcement REAL FND
+    intent: 用强化学习做领域自适应假新闻检测的 REAL-FND 论文，含各版本
+    relevant:
+      - path: 2202.08159v1.pdf
+        page: 1
+        evidence: REAL-FND
+      - path: 强化学习/Domain Adaptive Fake News Detection via Reinforcement Learning.pdf
+        page: 1
+        evidence: REAL-FND
+  - id: Q05
+    kind: english
+    query: cross stitch semi supervised neural attention covid
+    intent: 提出 Cross-SEAN 交叉缝合半监督注意力模型的论文
+    relevant:
+      - path: covid-19/Cross_SEAN_A_cross_stitch_semi_supervise.pdf
+        page: 1
+        evidence: Cross-Stitch Semi-Supervised Neural Attention Model
+  - id: Q06
+    kind: english
+    query: incomplete labeling multi label self training
+    intent: 处理不完全标注的自训练多标签文本分类论文
+    relevant: &incomplete
+      - path: 2023.ccl-1.2.pdf
+        page: 1
+        evidence: Self-Training With Incomplete Labeling
+  - id: Q07
+    kind: chinese_bilingual_paper
+    query: 不完全标注 多标签 文本分类 自监督
+    intent: Q06 的中文关键词查询
+    relevant: *incomplete
+  - id: Q08
+    kind: cross_language
+    query: 用户举报 弱监督 强化选择器 假新闻
+    intent: Q03 的中文查询，相关论文主要为英文；测试未经翻译的跨语言短板
+    relevant: *wefend
+  - id: Q09
+    kind: paraphrase
+    query: mosquito borne outbreak forecasting Taiwan weather
+    intent: Q01 改用近义表达，仍指台湾登革热时空暴发预测
+    relevant:
+      - path: Anno/Challenges and implications of predicting the spatiotemporal distribution of dengue fever outbreak in Chinese Taiwan using remote sensing data and dee.pdf
+        page: 1
+        evidence: dengue
+      - path: Anno/Spatiotemporal dengue fever hotspots associated with climatic factors in Taiwan including outbreak predictions based on machine-learning.pdf
+        page: 1
+        evidence: dengue
+  - id: Q10
+    kind: no_relevant
+    query: quantum error correction
+    intent: 研究量子纠错的论文；该语料无相关研究，泛化词 error 可能产生误命中
+    relevant: []
+  - id: Q11
+    kind: english
+    query: graph dynamics control reinforcement
+    intent: 研究使用强化学习与图神经网络控制图动态过程的论文
+    relevant:
+      - path: 强化学习/Controlling Graph Dynamics with Reinforcement Learning and Graph Neural Networks.pdf
+        page: 1
+        evidence: Controlling Graph Dynamics with Reinforcement Learning
+  - id: Q12
+    kind: cross_language
+    query: 半监督 假新闻 检测
+    intent: 提出半监督假新闻检测方法的论文；不包含仅在相关工作提及半监督的方法或通用 ImageNet 半监督学习
+    relevant:
+      - path: Dong.pdf
+        page: 1
+        evidence: Two-path Deep Semi-supervised Learning
+      - path: Guacho.pdf
+        page: 1
+        evidence: Semi-supervised Content-based Detection of Misinformation
+      - path: covid-19/Cross_SEAN_A_cross_stitch_semi_supervise.pdf
+        page: 1
+        evidence: Cross-Stitch Semi-Supervised Neural Attention Model

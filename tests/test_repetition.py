@@ -1,0 +1,112 @@
+"""用假模型验证重复调用的提醒、拦截和恢复，不调用 API，不碰用户沙盒。"""
+import json
+
+import pytest
+from rich.console import Console
+
+from agent.llm import LLM
+from agent.loop import run_agent
+from safety.oplog import OpLog, undo
+from safety.sandbox import Sandbox
+from tests.test_week1 import FakeClient
+from tools import registry
+
+
+def run(tmp_path, script, **cfg):
+    sb = Sandbox(tmp_path / "sandbox")
+    client = FakeClient(script)
+    trace = tmp_path / "trace.jsonl"
+    res = run_agent("测试重复调用", LLM({"model": "fake"}, client=client), sb,
+                    {"max_steps": 8, **cfg}, Console(quiet=True), trace_path=trace,
+                    oplog=OpLog(sb, "repeat-test"))
+    rows = [json.loads(line) for line in trace.read_text().splitlines()]
+    return res, client, sb, rows
+
+
+def test_second_call_warns_and_model_can_recover(tmp_path):
+    res, client, _, _ = run(tmp_path, [
+        [("list_dir", {})], [("list_dir", {})], "目录为空，无需整理。",
+    ])
+    assert res.stop_reason == "done"
+    assert "重复调用提醒" not in client.seen[1][-1]["content"]
+    assert "重复调用提醒" in client.seen[2][-1]["content"]
+    assert "OK:" in client.seen[2][-1]["content"]
+
+
+def test_json_formatting_does_not_bypass_detection(tmp_path):
+    res, client, _, rows = run(tmp_path, [
+        [("list_dir", '{"path": ".", "page": 1}')],
+        [("list_dir", '{ "page":1, "path":"." }')],
+        [("list_dir", {"path": ".", "page": 1})],
+    ])
+    assert res.stop_reason == "repeated_call" and res.steps == 3
+    assert len(client.seen) == 3 and res.tool_calls == 3
+    calls = [r for r in rows if "tool" in r]
+    assert [r["repeat_count"] for r in calls] == [1, 2, 3]
+    assert [r["executed"] for r in calls] == [True, True, False]
+    assert rows[-1]["stop_reason"] == "repeated_call"
+    assert "未完成" in res.final
+
+
+@pytest.mark.parametrize("middle", [
+    ("list_dir", {"page": 2}),       # 换参数，包括合法的翻页
+    ("search_files", {}),           # 换工具
+])
+def test_different_call_resets_count(tmp_path, middle):
+    res, _, _, rows = run(tmp_path, [
+        [("list_dir", {})], [("list_dir", {})], [middle],
+        [("list_dir", {})], [("list_dir", {})], "完成",
+    ])
+    assert res.stop_reason == "done"
+    assert [r["repeat_count"] for r in rows if "tool" in r] == [1, 2, 1, 1, 2]
+
+
+def test_batch_stops_before_third_dispatch_and_remaining_writes(tmp_path, monkeypatch):
+    dispatched = []
+    original = registry.dispatch
+
+    def track(name, *args):
+        dispatched.append(name)
+        return original(name, *args)
+
+    monkeypatch.setattr(registry, "dispatch", track)
+    res, _, sb, rows = run(tmp_path, [[
+        ("make_dir", {"path": "created"}),
+        ("make_dir", {"path": "created"}),
+        ("make_dir", {"path": "created"}),
+        ("make_dir", {"path": "must-not-exist"}),
+    ]])
+    assert res.stop_reason == "repeated_call" and res.steps == 1
+    assert dispatched == ["make_dir", "make_dir"]
+    assert (sb.root / "created").is_dir() and not (sb.root / "must-not-exist").exists()
+    calls = [tc for m in res.messages for tc in m.get("tool_calls", [])]
+    replies = [m for m in res.messages if m["role"] == "tool"]
+    assert [tc["id"] for tc in calls] == [m["tool_call_id"] for m in replies]
+    assert all("未执行" in m["content"] for m in replies[2:])
+    assert [r["executed"] for r in rows if "tool" in r] == [True, True, False, False]
+    undo(sb, "repeat-test")
+    assert not (sb.root / "created").exists()
+
+
+def test_repeated_invalid_json_is_also_stopped(tmp_path):
+    res, client, _, _ = run(tmp_path, [[("move", "{bad json")]] * 3)
+    assert "参数不是合法 JSON" in client.seen[2][-1]["content"]
+    assert "重复调用提醒" in client.seen[2][-1]["content"]
+    assert res.stop_reason == "repeated_call"
+
+
+def test_detection_can_be_disabled_for_ablation(tmp_path):
+    res, _, _, rows = run(tmp_path, [[("list_dir", {})]] * 4 + ["完成"],
+                          repeat_detection=False)
+    assert res.stop_reason == "done" and res.tool_calls == 4
+    assert all(r["executed"] for r in rows if "tool" in r)
+    assert not any("重复调用提醒" in m["content"] for m in res.messages if m["role"] == "tool")
+
+
+def test_replay_history_preserves_consecutive_count(tmp_path):
+    first, _, sb, _ = run(tmp_path, [[("list_dir", {})]] * 2, max_steps=2)
+    client = FakeClient([[("list_dir", {})]])
+    res = run_agent("继续", LLM({"model": "fake"}, client=client), sb, {},
+                    Console(quiet=True), history=first.messages)
+    assert res.stop_reason == "repeated_call"
+    assert "未执行" in res.messages[-1]["content"]

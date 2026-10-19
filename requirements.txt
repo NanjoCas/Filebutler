@@ -7,3 +7,6 @@ rich
 Pillow
 pytest
 fpdf2
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+markdown-it-py>=3,<5

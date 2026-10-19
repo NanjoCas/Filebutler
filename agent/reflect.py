@@ -8,6 +8,7 @@
 - 直接附上写操作清单和沙盒文件清单，模型不用再调 list_dir 查一轮。
 """
 import json
+import re
 
 from safety.sandbox import Sandbox
 from tools import registry
@@ -29,13 +30,17 @@ def successful_writes(messages: list[dict]) -> list[str]:
                     args = ", ".join(f"{k}={v}" for k, v in args.items())
                 except json.JSONDecodeError:
                     args = tc["function"]["arguments"]
-                out.append(f"{name}({args})")
+                count = re.search(r"^OK: 已将 (\d+) 个重复文件", results[tc["id"]]) if name in ("apply_dedup", "deduplicate") else re.search(r'^OK: 已移动 (\d+) 篇',results[tc['id']]) if name=='apply_classification' else None
+                if name in ("apply_dedup", "deduplicate", "apply_classification") and (count is None or int(count.group(1))==0):
+                    continue  # 无需回收的空计划不算成功写文件
+                out.append(f"{name}({args})" + (f" [files={count.group(1)}]" if count else ""))
     return out
 
 
 def file_write_count(writes: list[str]) -> int:
     """动过的文件数：move / rename / trash 各算一个，make_dir 不算。"""
-    return sum(not w.startswith("make_dir(") for w in writes)
+    return sum(int(m.group(1)) if (m := re.search(r"\[files=(\d+)\]$", w)) else 1
+               for w in writes if not w.startswith("make_dir("))
 
 
 def sandbox_listing(sandbox: Sandbox, max_lines: int) -> str:

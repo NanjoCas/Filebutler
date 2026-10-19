@@ -2,8 +2,19 @@ base_url: https://api.deepseek.com
 model: deepseek-flash          # 对比实验时改成 deepseek-v4-pro；以 DeepSeek 官网的模型名为准
 api_key_env: DEEPSEEK_API_KEY  # 只写环境变量名，不写 key 本身
 temperature: 0
+local_runtime: true            # 文件/证据标识、本地结果生成、普通检索预算与组合清理
+topic_query_limit: 2           # 普通查找最多一次补充查询；穷尽/复合任务沿用通用流程
+topic_read_limit: 5            # 普通查找最多五次必要片段读取
+classification_read_limit: 6   # 普通核心方法分类的补读预算；不足项保留待核实
+llm_timeout: 60                # 单次请求超时；SDK 隐式重试已关闭
+llm_retries: 1                 # 项目层最多重试一次（总计最多两次请求）
+conversation_history_max_chars: 40000  # Web 长对话才归档旧工具明细；完整 UI 历史仍保留
+conversation_keep_full_turns: 2        # 保留最近两个完整任务的工具证据
+prompt: v7_classification    # 批量论文卡片、结构化分类计划、本地确认与执行
 sandbox: ./sandbox
 max_steps: 25                  # 真实数据（51 篇论文）光读就要 9 轮左右，15 太紧
+repeat_detection: true         # 相同工具和参数连续第 2 次提醒，第 3 次拦截并中止；false 用于 E5 对照
+retrieval: true                # BM25 论文主题检索（仅前两页）；false 隐藏并禁用工具，用于 E12 对照
 cost_budget: 0.30              # 元/次运行。按费用而不是 Token 算：七八成 Token 命中缓存，单价只有 1/50
 token_budget: 200000           # 后备：只在模型没配价格时生效
 confirm: risky                 # always 每次都问 / risky 回收区或超过阈值才问 / never 不问（评测用）
