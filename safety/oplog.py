@@ -29,7 +29,7 @@ def latest_run(sandbox: Sandbox) -> str | None:
     return logs[-1].stem if logs else None
 
 
-def undo(sandbox: Sandbox, run_id: str | None = None) -> list[str]:
+def undo(sandbox: Sandbox, run_id: str | None = None, *, on_restore=None) -> list[str]:
     """倒序执行反向操作。位置被占用等情况跳过并报告，不强行覆盖。返回每一步的报告。"""
     run_id = run_id or latest_run(sandbox)
     if not run_id:
@@ -67,6 +67,8 @@ def undo(sandbox: Sandbox, run_id: str | None = None) -> list[str]:
             report.append(f"跳过 #{row['seq']} {op}：原文件夹 {sandbox.rel(orig.parent)} 已不存在")
         else:
             now.rename(orig)
+            if on_restore:
+                on_restore(row["dst"], row["src"])
             report.append(f"还原 {row['dst']} → {row['src']}")
     path.rename(path.with_name(run_id + UNDONE_SUFFIX))  # 防止重复撤销
     return report

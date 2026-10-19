@@ -1,0 +1,88 @@
+/* The operation plan stays visible while the user opens files in a dedicated review dialog. */
+.confirmation { display: flex; flex-direction: column; padding: 0; border-color: #dde7e0; background: #fff; max-height: min(38dvh, 390px); box-shadow: 0 3px 18px #1c38200a; }
+.confirmation-card-header { display: flex; align-items: center; gap: 9px; padding: 12px 14px; flex-shrink: 0; border-bottom: 1px solid #edf1ee; }
+.confirmation-card-header .confirmation-title { color: #354c3e; font-size: 13px; }
+.confirmation-badge { font-size: 10px; background: #eef5f0; color: #467c5b; border-radius: 5px; padding: 3px 6px; white-space: nowrap; }
+.confirmation-badge.warning { background: #fff2e8; color: #b06c32; }
+.confirmation-expand { margin-left: auto; border: 0; color: #3572bd; background: transparent; font-size: 11px; white-space: nowrap; padding: 4px; }
+.confirmation-body { min-height: 0; overflow-y: auto; padding: 0 14px; scrollbar-gutter: stable; }
+.confirmation .confirmation-summary, .confirmation-summary { margin: 10px 0 12px; color: #7e8a82; font-size: 11px; line-height: 1.7; max-height: none; }
+.confirmation-group { margin: 10px 0 13px; }
+.confirmation-group-heading { margin: 0 0 7px; display: flex; align-items: center; gap: 8px; font-size: 11px; color: #5b7063; font-weight: 600; }
+.confirmation-group.warning .confirmation-group-heading { color: #a96b38; }
+.confirmation-group.success .confirmation-group-heading { color: #39785a; }
+.confirmation-group-count { font-size: 10px; font-weight: 400; color: #9aa69e; }
+.confirmation-file-row { padding: 7px 8px; border: 1px solid #e7ede8; border-radius: 7px; margin-bottom: 6px; background: #fff; }
+.confirmation-file-row.selected { border-color: #9cbfe9; background: #f6faff; }
+.confirmation-group:has(.file-disposition) { border: 1px solid #e0e8e2; border-radius: 9px; padding: 10px; background: #fafcfb; }
+.confirmation-group-description { margin: -2px 0 9px; color: #98a39b; font-size: 10px; line-height: 1.5; }
+.confirmation-group-items { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 7px; }
+.confirmation-group-items .confirmation-file-row { margin-bottom: 0; }
+.confirmation-file-row.trash { background: #fff0f0; border-color: #f0cece; }
+.confirmation-file-row.trash.selected { background: #ffe6e6; border-color: #cd8383; box-shadow: 0 0 0 1px #cd8383; }
+.confirmation-file-row.trash .confirmation-file-icon { color: #bc7777; }
+.confirmation-file-row.trash .confirmation-file-path, .confirmation-file-row.trash .confirmation-file-meta { color: #a58484; }
+.confirmation-file-row.retain.selected { background: #f2f8f3; border-color: #91b79a; }
+.file-disposition { display: inline-block; align-self: flex-start; width: fit-content; padding: 2px 6px; border-radius: 4px; font-size: 10px; line-height: 1.5; margin-bottom: 6px; }
+.file-disposition.trash { color: #a95454; background: #fadddd; }
+.file-disposition.retain { color: #4d7b5a; background: #eaf3ec; }
+.review-preview-heading.trash { background: #fff0f0; border-bottom-color: #edcdcd; }
+.review-preview-heading > .file-disposition.trash { color: #a95454; }
+.review-preview-heading > .file-disposition.retain { color: #4d7b5a; }
+.confirmation-file-button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0; background: transparent; border: 0; color: #286ec0; text-align: left; }
+.confirmation-file-button:disabled { cursor: default; color: #7b8880; }
+.confirmation-file-text { min-width: 0; flex: 1; }
+.confirmation-file-name { display: block; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.confirmation-file-path { display: block; margin-top: 2px; font-size: 10px; color: #9aa49d; overflow-wrap: anywhere; line-height: 1.5; }
+.confirmation-file-name + .confirmation-file-path { opacity: .9; }
+.confirmation-file-icon { font-size: 16px; color: #8aabc8; flex-shrink: 0; }
+.confirmation-file-open { font-size: 10px; white-space: nowrap; flex-shrink: 0; }
+.confirmation-file-meta { display: flex; gap: 10px; font-size: 10px; color: #9aa69e; margin: 4px 0 0 24px; }
+.confirmation-viewed { color: #71987e; margin-left: auto; }
+.confirmation-destination { font-size: 11px; color: #53775f; background: #f4f8f4; padding: 6px 8px; margin: 7px 0 0 24px; border-radius: 5px; overflow-wrap: anywhere; }
+.confirmation-more { color: #4d7cb4; background: transparent; border: 0; font-size: 11px; padding: 5px 0; }
+.confirmation-note { color: #967c53; line-height: 1.65; font-size: 11px; border-left: 2px solid #e7d8bc; padding-left: 9px; margin: 13px 0; }
+.confirmation-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-top: 1px solid #edf1ee; flex-shrink: 0; }
+.confirmation-action-buttons { display: flex; align-items: center; gap: 7px; }
+.confirmation-action-buttons button { padding: 8px 12px; font-size: 11px; border-radius: 7px; white-space: nowrap; }
+.confirmation-reject { color: #637268; border: 1px solid #dfe7e1; background: white; }
+.confirmation-approve { background: #216e52; color: white; border: 1px solid #216e52; }
+.confirmation-approve.warning { background: #a76636; border-color: #a76636; }
+.confirmation-actions button:disabled, .confirmation-allow-all input:disabled { opacity: .5; cursor: wait; }
+.confirmation-allow-all { display: flex; align-items: center; gap: 6px; color: #97a198; font-size: 10px; cursor: pointer; }
+.confirmation-allow-all input { accent-color: #367c58; margin: 0; }
+.confirmation-feedback { font-size: 11px; padding: 7px 14px; color: #8e724f; }
+.confirmation-feedback:empty { display: none; }
+.review-dialog { padding: 0; border: 1px solid #e1e9e3; border-radius: 15px; width: min(1180px, calc(100vw - 48px)); height: min(820px, calc(100dvh - 48px)); max-width: none; max-height: none; color: #334c3c; background: #fff; box-shadow: 0 28px 100px #1d352a3b; }
+.review-dialog[open] { display: flex; flex-direction: column; }
+.review-dialog::backdrop { background: #1c302663; backdrop-filter: blur(3px); }
+.review-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; flex-shrink: 0; border-bottom: 1px solid #e8eee9; }
+.review-eyebrow { color: #97a59a; font-size: 10px; }
+.review-header h2 { margin: 4px 0 0; color: #365541; font-size: 17px; font-weight: 600; }
+.review-layout { display: grid; grid-template-columns: minmax(260px, 34%) minmax(0, 1fr); flex: 1; min-height: 0; }
+.review-plan { overflow: auto; min-height: 0; padding: 5px 18px 18px; background: #fafcf9; border-right: 1px solid #e5ece7; }
+.review-preview { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: #f5f7f5; }
+.review-preview-heading { display: flex; flex-direction: column; gap: 5px; padding: 13px 18px; background: white; border-bottom: 1px solid #e8eee9; flex-shrink: 0; }
+.review-preview-heading strong { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.review-preview-heading > span { color: #97a299; font-size: 10px; overflow-wrap: anywhere; }
+.review-open-original { color: #4a7fb5; font-size: 10px; text-decoration: none; align-self: flex-start; }
+.review-preview-body { flex: 1; min-height: 0; overflow: auto; }
+.review-preview-body iframe { width: 100%; height: 100%; border: 0; display: block; }
+.review-preview-body img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.review-preview-body pre { margin: 0; padding: 20px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; color: #526658; }
+.review-preview-empty { margin: auto; display: grid; place-items: center; height: 100%; min-height: 100px; padding: 24px; color: #9aab9d; font-size: 12px; line-height: 1.7; text-align: center; }
+.review-directory-item { display: flex; width: 100%; gap: 9px; padding: 12px 16px; border: 0; border-bottom: 1px solid #e4ebe5; background: transparent; color: #4976a5; text-align: left; font-size: 12px; }
+.review-directory-item:hover { background: #edf4fa; }
+.review-directory-item > span:nth-child(2) { flex: 1; overflow-wrap: anywhere; }
+.review-directory-item small { color: #97a69a; white-space: nowrap; }
+.review-footer { flex-shrink: 0; }
+.review-footer .confirmation-actions { padding: 14px 20px; }
+@media (max-width: 680px) {
+  .confirmation-card-header { flex-wrap: wrap; gap: 5px; padding: 9px 10px; }
+  .confirmation-actions { flex-wrap: wrap; padding: 9px 10px; gap: 7px; }
+  .confirmation-action-buttons { margin-left: auto; }
+  .review-dialog { width: calc(100vw - 16px); height: calc(100dvh - 20px); border-radius: 10px; }
+  .review-header { padding: 12px 14px; }
+  .review-layout { grid-template-columns: 1fr; grid-template-rows: minmax(100px, 34%) minmax(0, 1fr); }
+  .review-plan { border-right: 0; border-bottom: 1px solid #e5ece7; padding: 0 12px; }
+}

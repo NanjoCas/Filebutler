@@ -28,12 +28,13 @@ from safety.sandbox import Sandbox
 EVAL_DIR = Path(__file__).parent
 CACHE = EVAL_DIR / ".cache"
 REAL_DATA = EVAL_DIR.parent / "data" / "real"
-TASK_FILES = {"real": EVAL_DIR / "tasks_real.yaml", "synthetic": EVAL_DIR / "tasks_synthetic.yaml"}
+TASK_FILES = {"real": EVAL_DIR / "tasks_real.yaml", "synthetic": EVAL_DIR / "tasks_synthetic.yaml",
+              "retrieval": EVAL_DIR / "tasks_retrieval.yaml"}
 _cache_lock = threading.Lock()
 
 
 def load_tasks(which: str = "all", ids=None, categories=None) -> list[dict]:
-    """which：real（真实数据，主评测）/ synthetic（生成数据，离线自检和回归）/ all。"""
+    """which：real（主评测）/ synthetic（离线回归）/ retrieval（E12 主题查找）/ all。"""
     names = list(TASK_FILES) if which == "all" else [which]
     tasks = [t for n in names for t in yaml.safe_load(TASK_FILES[n].read_text(encoding="utf-8")) or []]
     if ids:
@@ -103,6 +104,7 @@ def run_one(task: dict, rep: int, cfg: dict, out_dir: Path, make_llm=LLM) -> dic
                       cost=res.cost, cache_hit_tokens=res.cache_hit_tokens, reflection=res.reflection,
                       reflection_cost=res.reflection_cost, compressions=res.compressions,
                       compressed_msgs=res.compressed_msgs, rereads=res.rereads, messages=res.messages)
+        record["llm_seconds"] = res.llm_seconds
     except Exception as e:  # API 重试耗尽等：记为失败，继续跑别的任务
         record.update(error=f"{type(e).__name__}: {e}", final="", stop_reason="error",
                       steps=0, tokens=0, seconds=0, tool_calls=0, violations=sb.violations,
@@ -155,6 +157,8 @@ def summarize(records: list[dict], exp: str, cfg: dict) -> str:
           f"模型 `{cfg['model']}` · temperature {cfg.get('temperature', 0)} · prompt `{cfg.get('prompt', 'v1')}`"
           f" · 自检 {'开' if cfg.get('reflect') else '关'}"
           f" · 压缩 {'开（水位 ' + str(cfg.get('context_high_water', 12000)) + '）' if cfg.get('context_compress') else '关'}"
+          f" · 重复调用检测 {'开' if cfg.get('repeat_detection', True) else '关'}"
+          f" · BM25 检索 {'开' if cfg.get('retrieval', True) else '关'}"
           f" · 预算 ¥{cfg.get('cost_budget')}", "",
           "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     md += ["| " + " | ".join(map(str, row)) + " |" for row in rows]

@@ -8,3 +8,4 @@ eval/results/
 eval/fonts/*.ttf
 eval/.cache/
 data/real/
+.filebutler-ui/

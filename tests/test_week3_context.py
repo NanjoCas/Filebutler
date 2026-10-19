@@ -150,5 +150,6 @@ def test_cost_budget_stops_run(tmp_path):
     res = run_agent("x", llm, sb, {"cost_budget": 0.3, "max_steps": 10}, Console(quiet=True))
     assert res.stop_reason == "cost_budget" and res.steps == 2
     llm2 = LLM({"model": "no-price"}, client=client)                                # 没价格：退回按 Token
-    res = run_agent("x", llm2, sb, {"cost_budget": 0.3, "token_budget": 250_000, "max_steps": 10}, Console(quiet=True))
+    res = run_agent("x", llm2, sb, {"cost_budget": 0.3, "token_budget": 250_000, "max_steps": 10,
+                                 "repeat_detection": False}, Console(quiet=True))
     assert res.stop_reason == "token_budget" and res.steps == 3

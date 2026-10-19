@@ -79,7 +79,7 @@ def test_others_unchanged_except(tmp_path):
 
 
 # ---------- 真实任务的标准答案自检（需要本机有 data/real/）----------
-REAL_TASKS = load_tasks("real")
+REAL_TASKS = load_tasks("real") + load_tasks("retrieval")
 needs_data = pytest.mark.skipif(not (REAL_DATA / "papers").is_dir(), reason="本机没有 data/real/papers")
 
 
