@@ -939,3 +939,124 @@ def test_ask_user_needs_at_least_two_options_and_a_reason(tmp_path):
 def test_ask_user_is_not_shown_to_v2():
     assert 'ask_user' not in {s['function']['name'] for s in visible_schemas('v2')}
     assert 'ask_user' in {s['function']['name'] for s in visible_schemas('v3')}
+
+
+# ============================================================================ user run 2026-10-22 00:42
+# logs/20261022-004220-614628: 文献 held only .DS_Store (its PDFs had been flattened
+# earlier). The model recycled 文献 after the user confirmed, but the part "flatten
+# the files" had no plan, so the run ended partial; the answer also said "1 个文件"
+# for a folder and repeated the explanation.
+
+
+def already_empty_fixture(root):
+    (root / '文献').mkdir()
+    (root / '文献/.DS_Store').write_bytes(DS_STORE)
+    (root / 'x.pdf').write_text('flattened earlier')
+
+
+def test_part_with_nothing_to_do_is_proved_by_an_empty_selection(tmp_path):
+    already_empty_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = session.run('把文献文件夹里的所有内容平铺到根目录并删除空文件夹', [
+        step(start(PARTS), call('prepare_file_plan', dict(description='平铺', selection=MOVE_ALL, goal_ids=['organize_1']))),
+        step(call('prepare_file_plan', dict(description='回收', actions=[dict(effect='trash', source='文献', include_metadata=True)]),
+                  alias=PLAN)),
+        execute(), step(call('finish_task', dict(reply='文献 里已没有文件，无需平铺；空文件夹已回收。')))])
+    assert errors(client) == [], errors(client)
+    assert '无需操作' in client.calls('prepare_file_plan')[0]['text']
+    assert not (tmp_path / '文献').exists()
+    assert result.stop_reason == 'done' and result.runtime['task_status'] == 'completed'
+    assert result.final.startswith('已移入回收区 1 个文件夹') and '补充原因' not in result.final
+
+
+def test_empty_selection_with_several_parts_needs_goal_ids(tmp_path):
+    already_empty_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('平铺', [step(start(PARTS), call('prepare_file_plan', dict(description='平铺', selection=MOVE_ALL)))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert '没有可处理的文件' in text and 'goal_ids' in text and 'organize_1（organize）' in text
+
+
+def test_empty_proof_fails_once_files_reappear(tmp_path):
+    already_empty_fixture(tmp_path)
+    r, sb = tree_runtime(tmp_path)
+    from agent.file_plans import PrepareFilePlan, prepare
+    prepare(r, PrepareFilePlan(description='平铺', selection=MOVE_ALL, goal_ids=['organize_1']))
+    flatten_part = lambda: next(c for c in verify_task(r.current, sb) if c['goal_id'] == 'organize_1')
+    assert flatten_part()['passed']
+    (tmp_path / '文献/new.pdf').write_text('appeared later')
+    assert not flatten_part()['passed'] and '不再成立' in flatten_part()['conditions'][0]['detail']
+
+
+def test_not_needed_gives_review_never_done_and_never_covers_failed_work(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, _ = session.run('整理', [step(start([dict(id='a', kind='organize', description='归档旧报告')])),
+                                    step(call('finish_task', dict(not_needed=[dict(part_id='a', reason='没有旧报告')])))])
+    assert result.runtime['task_status'] == 'needs_review'
+    other = tmp_path / 'other'; other.mkdir(); files_fixture(other)
+    session2 = Session(other)
+    result, _ = session2.run('移动', [
+        step(start([dict(id='a', kind='organize', description='移动')]),
+             call('prepare_file_plan', dict(description='m', actions=[dict(effect='move', source='Inbox/a.txt', destination='Archive')]))),
+        step(call('finish_task', dict(not_needed=[dict(part_id='a', reason='其实不用')])))])
+    assert result.runtime['task_status'] == 'partial'  # a prepared, unexecuted plan is not "nothing to do"
+
+
+def test_recycled_folder_is_counted_as_a_folder(tmp_path):
+    flatten_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, _ = session.run('平铺', [
+        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=MOVE_ALL, actions=[
+            dict(effect='trash', source='文献', include_metadata=True)]), alias=PLAN)), execute(), finish()])
+    assert result.final.startswith('已移动 2 个文件；已移入回收区 1 个文件夹')
+
+
+# ============================================================================ round 12 follow-ups
+# policy_live_20261022_12_v3_hidden: the model's "recycle with .env" option had no
+# consent mark, and options proposed moving .env / .git or recycling a lock file,
+# which the tools cannot do.
+
+ASK_NO_CONSENT = dict(question='项目 里还有 .env，怎么办？', reason='scope_beyond_request', subject=['项目'],
+                      options=[dict(label='把 notes 和 .env 都移到根目录'), dict(label='.env 随文件夹一起回收'),
+                               dict(label='保留文件夹')])
+
+
+def test_local_consent_option_is_added_and_works(tmp_path):
+    secrets_fixture(tmp_path)
+    session = Session(tmp_path)
+    asked, _ = session.run('移出并删除项目文件夹', [step(call('ask_user', ASK_NO_CONSENT))])
+    choices = asked.report['choices']
+    assert [c['key'] for c in choices] == ['A', 'B', 'C', 'D'] and choices[-1]['consent'] == 'include_hidden'
+    assert 'D. 连同隐藏文件 .env 一起回收（可撤销）' in asked.final and '由本地根据文件夹内容补充' in asked.final
+    assert '工具不能移动或单独回收 .env' in choices[0]['detail']  # moving .env is not possible
+    result, client = session.run('D', [step(start([dict(kind='organize', description='移出并回收')]),
+                                            call('prepare_file_plan', TRASH_PROJECT, alias=PLAN)), execute(), finish()])
+    assert errors(client) == [] and not (tmp_path / '项目').exists() and result.stop_reason == 'done'
+
+
+def test_no_local_option_when_the_model_already_offers_consent(tmp_path):
+    secrets_fixture(tmp_path)
+    session = Session(tmp_path)
+    asked, _ = session.run('删除项目', [step(call('ask_user', ASK_HIDDEN))])
+    assert len(asked.report['choices']) == 3 and '由本地' not in asked.final
+
+
+def test_options_naming_special_objects_get_a_note(tmp_path):
+    (tmp_path / '代码/.git').mkdir(parents=True)
+    (tmp_path / '代码/.git/HEAD').write_text('ref')
+    session = Session(tmp_path)
+    asked, _ = session.run('删除代码', [step(call('ask_user', dict(
+        question='代码 里有 .git，怎么办？', reason='cannot_do_as_asked', subject=['代码'],
+        options=[dict(label='把 .git 移到 Backup 再回收'), dict(label='保留')])))])
+    choices = asked.report['choices']
+    assert '工具不能移动或单独回收 .git' in choices[0]['detail'] and not choices[1]['detail']
+    assert len(choices) == 2  # .git is special, not a hidden file the user could consent to
+
+
+def test_list_dir_marks_lock_files(tmp_path):
+    (tmp_path / 'Reports').mkdir()
+    (tmp_path / 'Reports/~$q4.docx').write_text('lock')
+    session = Session(tmp_path)
+    _, client = session.run('看看', [step(call('list_dir', {'path': 'Reports'}))], final='好')
+    assert '~$q4.docx · 文件' in client.calls('list_dir')[0]['text'] and '锁文件：Office 文档正被打开' in client.calls('list_dir')[0]['text']

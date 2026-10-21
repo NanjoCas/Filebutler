@@ -124,6 +124,7 @@ def fingerprint(path, label=None):
 #   hidden    other dot-files (.env, ...): only after the user agreed via ask_user, listed exactly
 #   busy      lock files of open documents: refused until the program is closed
 #   special   hidden folders, symlinks, packages, volume system folders: never recycled
+FOLDER_KINDS = {'empty_directory', 'directory_tree'}
 PACKAGES = ('.app', '.bundle', '.framework', '.photoslibrary', '.pages', '.numbers', '.key', '.rtfd')
 
 
@@ -296,6 +297,8 @@ def prepare(runtime, args):
                 dst = (Path(sel['destination']) / tail).as_posix()
             actions.append(dict(effect=sel['effect'], source=src, destination=dst))
     actions = _normalize(runtime, actions)
+    if not actions and args.selection and not args.actions and runtime.current:
+        return _empty_selection(runtime, args)
     if not actions or len(actions) > 500:
         raise ValueError('计划必须包含 1–500 项明确操作，请缩小选择范围')
     pid = 'X'+uuid.uuid4().hex[:12]
@@ -473,6 +476,39 @@ def _grant(task, plan, run_id):
     task.setdefault('scope_grants', []).append(dict(plan_id=plan['id'], run_id=run_id, **extra))
 
 
+def _selection_count(sb, sel):
+    """Visible files a selection picks now; a folder that no longer exists picks none."""
+    if not sb.path(sel['path'], exact=True).exists(): return 0
+    return len(selected(sb, sel)[0])
+
+
+def _empty_selection(runtime, args):
+    """A part with nothing to do, proved locally: the selection picks 0 files.
+
+    Recorded as a completed plan with no steps, bound to its part. No write, no
+    confirmation. It holds only while the selection stays empty (verify_plan).
+    """
+    task, sel = runtime.current, args.selection.model_dump()
+    known = {g['id'] for g in task['goals']}
+    if set(args.goal_ids) - known:
+        raise ValueError('goal_ids 引用了任务中不存在的部分：' + '、'.join(sorted(set(args.goal_ids) - known)))
+    candidates = [g['id'] for g in task['goals'] if any(c['kind'] == 'file_plan_verified' for c in g['conditions'])]
+    goal_ids = list(args.goal_ids) or (candidates if len(candidates) == 1 else [])
+    if not goal_ids:
+        from agent.intent import parts_text
+        raise ValueError(f"选择集 {sel['path']} 当前没有可处理的文件。若某个部分因此无需操作，"
+                         f"请在 goal_ids 中写明该部分，本地会记录这个核验结果。当前部分：{parts_text(task)}")
+    pid = 'X'+uuid.uuid4().hex[:12]
+    payload = dict(task_id=task['id'], revision=task['revision'], goal_ids=goal_ids, description=args.description,
+                   steps=[], classification=None, empty_selection=sel)
+    plan = dict(id=pid, payload=payload, digest=checksum(payload), status='completed', progress={}, error='')
+    runtime.store.save_file_plan(plan)
+    task['file_plan_bindings'] = dict(task.get('file_plan_bindings', {}), **{pid: dict(goal_ids=goal_ids, revision=task['revision'], pending=[])})
+    task.setdefault('file_plan_receipts', {})[pid] = copy.deepcopy(plan)
+    runtime.store.checkpoint(task)
+    return plan
+
+
 def conflicts(runtime, plan):
     """Completion conditions this plan leaves unmet or contradicts, as hints.
 
@@ -632,7 +668,7 @@ def _recover_inflight(runtime, plan):
         plan.pop('inflight'); runtime.store.save_file_plan(plan)
         row = dict(op=op,src=step['source'],dst=step['destination'],action_id=sid,
                    run_id=progress['run_id'],goal_ids=step.get('goal_ids') or plan['payload']['goal_ids'],step_id=sid,
-                   kind='文件夹' if step['snapshot']['kind']=='empty_directory' else '文件')
+                   kind='文件夹' if step['snapshot']['kind'] in FOLDER_KINDS else '文件')
         if progress['run_id'] == runtime.run_id: runtime.operations.append(row)
         else: runtime.current.setdefault('operation_history', []).append(row)
         if getattr(runtime.sb,'artifacts',None):runtime.sb.artifacts.relocate(step['source'],step['destination'])
@@ -658,7 +694,7 @@ def execute(runtime, plan_id, oplog, confirmer):
             row = dict(op='make_dir' if step['effect']=='create' else step['effect'],
                        src=step['source'] or step['destination'], dst=step['destination'],
                        action_id=step['id'], run_id=progress['run_id'], goal_ids=step.get('goal_ids') or plan['payload']['goal_ids'],
-                       step_id=step['id'], kind='文件夹' if step['effect']=='create' or step['snapshot']['kind']=='empty_directory' else '文件')
+                       step_id=step['id'], kind='文件夹' if step['effect']=='create' or step['snapshot']['kind'] in FOLDER_KINDS else '文件')
             task.setdefault('operations', []).append(row)
         history = task.setdefault('operation_history', [])
         def identity(row):
@@ -743,7 +779,7 @@ def execute(runtime, plan_id, oplog, confirmer):
                 row = dict(op='make_dir' if s['effect']=='create' else s['effect'],
                            src=s['source'] or s['destination'], dst=s['destination'],
                            run_id=runtime.run_id, action_id=s['id'], goal_ids=s.get('goal_ids') or plan['payload']['goal_ids'], step_id=s['id'],
-                           kind='文件夹' if s['effect']=='create' or s['snapshot']['kind']=='empty_directory' else '文件')
+                           kind='文件夹' if s['effect']=='create' or s['snapshot']['kind'] in FOLDER_KINDS else '文件')
                 runtime.operations.append(row)
                 runtime.current['operations'] = runtime.operations
                 runtime.store.checkpoint(runtime.current)
@@ -822,6 +858,11 @@ def _binding(task, plan):
 
 
 def verify_plan(plan, sb, partial=False):
+    sel = plan['payload'].get('empty_selection')
+    if sel:
+        count = _selection_count(sb, sel)
+        return (True, f"执行前选择集 {sel['path']} 为空，无需操作；核验时仍为空") if not count else \
+               (False, f"选择集 {sel['path']} 现在有 {count} 个文件，此前“无需操作”的结论不再成立")
     if not partial and (plan['status'] not in {'completed','executing'} or len(plan['progress']) != len(plan['payload']['steps'])):
         return False, '计划尚未全部执行：'+plan['id']
     for s in plan['payload']['steps']:

@@ -106,8 +106,12 @@ def list_dir(a: ListDirArgs, sb: Sandbox) -> str:
     if not d.is_dir():
         raise ToolError(f"{a.path} 不是文件夹")
     entries = sorted((e for e in d.iterdir() if not is_hidden(e)), key=lambda e: e.name)
+    from agent.system_files import match
+    def busy(e):
+        entry = None if e.is_dir() else match(e.name, is_dir=False)
+        return f" · 锁文件：{entry['note']}" if entry and entry['tier'] == 'busy' else ''
     lines = [f"{e.name} · {'文件夹' if e.is_dir() else '文件'} · "
-             f"{'-' if e.is_dir() else _fmt_size(e.stat().st_size)} · {_mtime(e)}" for e in entries]
+             f"{'-' if e.is_dir() else _fmt_size(e.stat().st_size)} · {_mtime(e)}{busy(e)}" for e in entries]
     shown, footer = _paginate(lines, a.page, a.page_size)
     # Hidden entries are never listed, but their existence changes what can be
     # recycled; name a few (internal folders excepted) so the model can plan.
