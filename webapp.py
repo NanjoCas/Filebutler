@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from agent.artifacts import ArtifactStore
+from agent.task import TaskPatch
 from agent.history import prepare_history, undo_note, has_undo, UNDO_MARK
 from agent.llm import LLM  # noqa: E402
 from agent.loop import run_agent  # noqa: E402
@@ -31,7 +32,7 @@ from agent.prompts import SYSTEM_PROMPTS, LATENCY_GUIDANCE, LOCAL_RUNTIME_GUIDAN
 from rich.console import Console  # noqa: E402
 from safety.confirm import Confirmer  # noqa: E402
 from safety.oplog import OpLog, undo  # noqa: E402
-from safety.sandbox import Sandbox, is_hidden  # noqa: E402
+from safety.sandbox import Sandbox, SandboxError, is_hidden  # noqa: E402
 from tools.fs_read import IMAGE_EXTS, TEXT_EXTS, _fmt_size  # noqa: E402
 from web_render import FileCatalog, WEB_PRESENTATION_GUIDANCE, render_markdown  # noqa: E402
 from web_confirm import build_confirmation  # noqa: E402
@@ -111,6 +112,7 @@ def _event(turn_id: str, event: dict):
             now = time.perf_counter()
             if event["type"] == "run_failed":
                 state.result.update({k: v for k, v in event.items() if k != "type"})
+                state.final=event.get('final',state.final)
             if event["type"] == "started":
                 state.started = now
             elif event["type"] == "confirmation_required":
@@ -189,6 +191,7 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
     with _conversation_lock(state.conversation_id):
         confirmer = None
         terminal_status = "failed"
+        working_history=history
 
         def ask_in_browser(request: dict) -> str:
             action = build_confirmation(request, Sandbox(cfg["sandbox"]))
@@ -214,7 +217,26 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
             confirmer = Confirmer(cfg.get("confirm", "risky"), cfg.get("confirm_threshold", 10),
                                   ask_action=ask_in_browser)
             sb = Sandbox(cfg['sandbox'])
-            artifacts = _artifacts(state.conversation_id, sb, persist=True) if cfg.get('local_runtime') else None
+            cfg['task_session'] = state.conversation_id
+            if cfg.get('task_runtime'):
+                # Upgrade old per-turn metadata without rewriting old messages.
+                store=_tasks(state.conversation_id)
+                with _db() as db:
+                    previous=db.execute('SELECT run_id,final,result_json FROM turns WHERE conversation_id=? AND id<>? ORDER BY created_at,rowid',
+                                        (state.conversation_id,state.id)).fetchall()
+                causes={'cost_budget':'费用预算上限','token_budget':'Token 预算上限','max_steps':'执行轮数上限',
+                        'repeated_call':'连续重复调用保护','partial':'存在未通过的完成条件','needs_review':'需要人工判断'}
+                for old in previous:
+                    result_data=json.loads(old['result_json']);reason=result_data.get('stop_reason')
+                    if not reason:continue
+                    try:store.outcome(old['run_id']);continue
+                    except ValueError:pass
+                    summary=result_data.get('report',{}).get('summary') or old['final']
+                    if reason in causes:summary='该轮结束原因：'+causes[reason]+'。\n\n'+summary
+                    store.save_outcome(dict(run_id=old['run_id'],stop_reason=reason,summary=summary[:1600],
+                        task_id=result_data.get('runtime',{}).get('task_id'),cost=result_data.get('cost',0),
+                        purpose='action',source='legacy_turn'))
+            artifacts = _artifacts(state.conversation_id, sb, persist=True) if (cfg.get('local_runtime') or cfg.get('task_runtime')) else None
             working_history, context_stats = prepare_history(history, cfg, artifacts)
             _event(state.id, {"type": "context_prepared", **context_stats})
             result = run_agent(
@@ -232,7 +254,8 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
                             "violations": result.violations, "rejections": result.rejections,
                             "active_seconds": result.active_seconds, "wait_seconds": result.wait_seconds,
                             "llm_seconds": result.llm_seconds, "tool_seconds": result.tool_seconds,
-                            "context": context_stats, "runtime": result.runtime}
+                            "context": context_stats, "runtime": result.runtime,
+                            "report": getattr(result,'report',{})}
             # Save the complete tool-call history for the next turn, while the UI gets a filtered view.
             with _db() as db:
                 db.execute("UPDATE conversations SET history_json=?, updated_at=? WHERE id=?",
@@ -240,7 +263,17 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
             terminal_status = "completed"
         except (Exception, SystemExit) as exc:
             state.result = {**_clock(state), **state.result}
-            state.error = f"{type(exc).__name__}: {exc}"
+            from agent.outcomes import stop_report
+            failure=getattr(exc,'filebutler_outcome',{})
+            report=failure.get('report') or stop_report('exception',{},None,error=exc)
+            state.final=report['summary']
+            state.error=state.final
+            state.result.update({k:v for k,v in failure.items() if k!='messages'})
+            state.result.update(report=report,stop_reason=failure.get('stop_reason','exception'))
+            failed_history=history+failure['messages'][len(working_history):] if failure.get('messages') else history+[dict(role='assistant',content=state.final)]
+            with _db() as db:
+                db.execute('UPDATE conversations SET history_json=?,updated_at=? WHERE id=?',
+                           (json.dumps(failed_history,ensure_ascii=False),_now(),state.conversation_id))
         finally:
             # Publish terminal state and release the workspace activity guard together.
             # An immediate undo must wait for the final save, not race it or get a
@@ -248,8 +281,9 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
             with ACTIVE_LOCK:
                 state.status = terminal_status
                 try:
+                    done=terminal_status=='completed' and state.result.get('stop_reason')=='done'
                     _event(state.id, {"type": terminal_status,
-                                      "message": "本轮已完成" if terminal_status == "completed" else state.error})
+                                      "message": '本轮已完成' if done else state.final or state.error})
                 finally:
                     try:
                         _save_state(state)
@@ -297,12 +331,114 @@ def create_conversation():
     return {"id": cid, "title": "新对话", "created_at": now, "updated_at": now}
 
 
+def _tasks(conversation_id):
+    from agent.task import TaskStore
+    _get_conversation(conversation_id)
+    cfg = _config()
+    root = Path(cfg['sandbox'])
+    return TaskStore(Path(cfg.get('task_db') or root / '.oplog' / 'tasks.sqlite3'), root, conversation_id)
+
+
+@app.get('/api/conversations/{conversation_id}/tasks')
+def conversation_tasks(conversation_id: str):
+    return {'items': _tasks(conversation_id).recent(limit=20)}
+
+
+@app.get('/api/conversations/{conversation_id}/tasks/{task_id}')
+def conversation_task(conversation_id: str, task_id: str):
+    try:
+        return _tasks(conversation_id).get(task_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post('/api/conversations/{conversation_id}/tasks/{task_id}/edits')
+def preview_task_edit(conversation_id: str, task_id: str, body: TaskPatch):
+    with _task_edit_lock(conversation_id):
+        try:
+            edit = _tasks(conversation_id).preview_edit(task_id, body)
+            return {k: edit[k] for k in ('id','task_id','revision','reason','changes')}
+        except (ValueError, SandboxError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+
+class ApplyEdit(BaseModel):
+    edit_id: str
+
+
+@contextmanager
+def _task_edit_lock(conversation_id):
+    with ACTIVE_LOCK:
+        if conversation_id in ACTIVE_CONVERSATIONS:
+            raise HTTPException(409, '请等待当前运行结束后再修改或复核任务')
+        with _conversation_lock(conversation_id):
+            yield
+
+
+@app.post('/api/conversations/{conversation_id}/tasks/{task_id}/edits/apply')
+def apply_task_edit(conversation_id: str, task_id: str, body: ApplyEdit):
+    with _task_edit_lock(conversation_id):
+        store = _tasks(conversation_id)
+        try:
+            edit = store.edit(body.edit_id)
+            if edit['task_id'] != task_id:
+                raise ValueError('编辑与任务不匹配')
+            return store.apply_edit(body.edit_id, '用户在任务编辑器中确认：'+edit['reason'],
+                                    'ui-edit-'+uuid.uuid4().hex, actor='user')
+        except (ValueError, SandboxError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+
+class TaskReview(BaseModel):
+    expected_revision: int = Field(ge=1)
+    goal_ids: list[str] = Field(default_factory=list)
+    constraint_ids: list[str] = Field(default_factory=list)
+    decision: Literal['accept','reject']
+    note: str = Field('', max_length=800)
+
+
+class TaskRecheck(BaseModel):
+    expected_revision: int = Field(ge=1)
+
+
+@app.post('/api/conversations/{conversation_id}/tasks/{task_id}/verify')
+def recheck_task(conversation_id: str, task_id: str, body: TaskRecheck):
+    with _task_edit_lock(conversation_id):
+        try:
+            sb=Sandbox(_config()['sandbox']);sb.artifacts=_artifacts(conversation_id,sb)
+            return _tasks(conversation_id).recheck(task_id,body.expected_revision,sb)
+        except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+
+@app.post('/api/conversations/{conversation_id}/tasks/{task_id}/review')
+def review_task(conversation_id: str, task_id: str, body: TaskReview):
+    with _task_edit_lock(conversation_id):
+        try:
+            sb = Sandbox(_config()['sandbox'])
+            sb.artifacts = _artifacts(conversation_id, sb)
+            return _tasks(conversation_id).review(task_id, body.expected_revision, body.goal_ids,
+                body.constraint_ids, body.decision, body.note, sb)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+
 @app.get("/api/conversations/{conversation_id}")
 def get_conversation(conversation_id: str):
     row = _get_conversation(conversation_id)
     history = json.loads(row["history_json"])
     display = []
     files = FileCatalog(Sandbox(_config()["sandbox"]), _artifacts(conversation_id), conversation_id)
+    # Reports are presentation data, not extra fields in the model transcript.
+    from collections import defaultdict, deque
+    from agent.reporting import legacy_report
+    reports=defaultdict(deque)
+    with _db() as db:
+        turns=db.execute('SELECT final,result_json FROM turns WHERE conversation_id=? ORDER BY created_at,rowid',
+                         (conversation_id,)).fetchall()
+    for turn in turns:
+        result=json.loads(turn['result_json'])
+        report=result.get('report') or legacy_report(turn['final'],result.get('runtime',{}))
+        if turn['final']: reports[turn['final']].append(report)
     for message in history:
         if message.get("role") == "system" and message.get("content", "").startswith(UNDO_MARK):
             report = json.loads(message["content"].rsplit("\n", 1)[-1])
@@ -311,8 +447,13 @@ def get_conversation(conversation_id: str):
         elif message.get("role") == "user":
             display.append({"role": "user", "content": message.get("content", "")})
         elif message.get("role") == "assistant" and not message.get("tool_calls") and message.get("content"):
-            display.append({"role": "assistant", "content": message["content"],
-                            "html": render_markdown(message["content"], files)})
+            content=message['content']
+            report=reports[content].popleft() if reports.get(content) else None
+            if report:
+                content=report['summary']
+                report={**report,'sections':[{**s,'html':render_markdown(s['markdown'],files)} for s in report['sections']]}
+            display.append({"role": "assistant", "content": content,
+                            "html": render_markdown(content, files), 'report':report})
     with _db() as db:
         latest = db.execute("SELECT id,status,run_id,final,error,result_json,events_json FROM turns WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
                             (conversation_id,)).fetchone()
@@ -361,13 +502,17 @@ def send_message(conversation_id: str, body: NewMessage):
             history = [{"role": "system", "content": SYSTEM_PROMPTS[prompt]}]
         for message in history:
             if message.get("role") == "system":
+                if cfg.get('task_runtime'):
+                    # A conversation created under the old keyword controller must
+                    # receive the new protocol as well as newly created chats.
+                    message['content'] = SYSTEM_PROMPTS[cfg.get('prompt', 'v8_tasks')]
                 if WEB_PRESENTATION_GUIDANCE not in message["content"]:
                     message["content"] += WEB_PRESENTATION_GUIDANCE
-                if LATENCY_GUIDANCE not in message["content"]:
+                if not cfg.get('task_runtime') and LATENCY_GUIDANCE not in message["content"]:
                     message["content"] += LATENCY_GUIDANCE
-                if cfg.get('local_runtime') and LOCAL_RUNTIME_GUIDANCE not in message['content']:
+                if cfg.get('local_runtime') and not cfg.get('task_runtime') and LOCAL_RUNTIME_GUIDANCE not in message['content']:
                     message['content'] += LOCAL_RUNTIME_GUIDANCE
-                if cfg.get('local_runtime') and CLASSIFICATION_GUIDANCE not in message['content']:
+                if cfg.get('local_runtime') and not cfg.get('task_runtime') and CLASSIFICATION_GUIDANCE not in message['content']:
                     message['content'] += CLASSIFICATION_GUIDANCE
                 break
         history.append({"role": "user", "content": content})

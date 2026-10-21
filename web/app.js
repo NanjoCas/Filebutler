@@ -54,6 +54,18 @@ function renderMessages(messages, animateLast = false) {
     else body.textContent = message.content;
     body.querySelectorAll("table").forEach(table => { const wrap = node("div", "table-scroll"); table.replaceWith(wrap); wrap.append(table); });
     bindReferences(body); item.append(body);
+    if (message.report?.sections?.length) {
+      const details=node('details','result-details');
+      details.append(node('summary','','查看核验与过程详情'));
+      for (const section of message.report.sections) {
+        const part=node('section','result-detail-section'); part.append(node('h4','',section.title));
+        const content=node('div','markdown-body');
+        if (typeof section.html==='string') content.innerHTML=section.html; else content.textContent=section.markdown;
+        content.querySelectorAll('table').forEach(table=>{const wrap=node('div','table-scroll');table.replaceWith(wrap);wrap.append(table);});
+        bindReferences(content);part.append(content);details.append(part);
+      }
+      item.append(details);
+    }
     if (message.role === "assistant") {
       const actions = node("div", "message-actions");
       const copy = node("button", "text-button", "复制回复"); copy.type = "button";
@@ -93,8 +105,8 @@ async function openConversation(id, animateLast = false) {
       setStatus(latest.status === "waiting_confirmation" ? "等待确认" : "正在处理", "running");
       pollTimer = setTimeout(() => pollTurn(id, latest.id, epoch), 100);
     } else {
-      setStatus(latest.status === "failed" ? "运行失败" : latest.result?.stop_reason === "done" ? "已完成" : "已停止", latest.status === "failed" ? "failed" : "done");
-      if (latest.status === "failed") showError(latest.error || "任务中断");
+      setStatus(latest.status === "failed" ? "运行失败" : outcomeLabel(latest.result), latest.status === "failed" ? "failed" : "done");
+      if (latest.status === "failed" && !latest.final) showError(latest.error || "任务中断");
       addRunActions(latest, epoch);
     }
   } else setStatus("");
@@ -146,11 +158,16 @@ async function pollTurn(cid, turnId, epoch) {
   }
 }
 const TOOL_LABELS = {
+  prepare_file_plan: "生成文件操作清单并预检", execute_file_plan: "本地执行并核验文件计划", inspect_file_plan: "查看文件计划和阻塞原因",
+  set_task: "登记目标、范围与约束", finish_task: "逐项核验任务完成条件", inspect_run: "只读查询运行原因", inventory_files: "本地统计文件",
   list_dir: "查看文件夹", search_files: "查找文件", search_content: "检索论文内容", read_file: "阅读文件",
   file_info: "核对文件信息", find_duplicates: "扫描重复文件", apply_dedup: "处理重复文件", deduplicate: "本地查重与清理", report_findings: "核对证据并生成答复",
   paper_profiles: "批量获取论文片段", submit_classification: "保存分类计划并生成表格", apply_classification: "本地批量执行分类计划",
-  make_dir: "创建文件夹", move: "移动文件", rename: "重命名文件", trash: "移入回收区",
+  begin_step: "准备当前任务步骤", make_dir: "创建文件夹", move: "移动文件", rename: "重命名文件", trash: "移入回收区",
 };
+function outcomeLabel(result) {
+  return ({done: "已完成", answered: "已回复", partial: "部分完成", needs_review: "结果待核实", waiting_input: "等待补充信息", cancelled: "已取消", cost_budget:'费用达上限，已中止', token_budget:'Token 达上限，已中止', max_steps:'执行轮数达上限', repeated_call:'重复调用，已中止', repair_limit:'连续失败无进展，已中止', exception:'运行失败', unverified_answer: "未形成可核验结果"})[result?.stop_reason] || "已停止";
+}
 function eventSteps(events) {
   const steps = [], indexes = new Map();
   for (const [index, event] of events.entries()) {
@@ -164,7 +181,7 @@ function eventSteps(events) {
     } else if (event.type === "tool_start") {
       const args = event.args || {}, key = event.call_id || `tool:${index}`;
       indexes.set(key, steps.length);
-      steps.push({title: TOOL_LABELS[event.tool] || "执行文件工具", detail: args.query || args.path || args.src || args.scan_id || "", state: "active"});
+      steps.push({title: TOOL_LABELS[event.tool] || "执行文件工具", detail: args.description || args.query || args.path || args.src || args.scan_id || "", state: "active"});
     } else if (event.type === "tool_end") {
       const entry = steps[indexes.get(event.call_id)];
       if (entry) { entry.state = event.ok ? "done" : "error"; entry.note = event.ok ? "" : event.summary; }
@@ -195,7 +212,7 @@ function updateActivity(turn) {
   card.className = `agent-activity ${working ? turn.status === "waiting_confirmation" ? "waiting" : "working" : turn.status === "failed" ? "failed" : "finished"}`;
   const activeStep = [...steps].reverse().find(step => step.state === "active" || step.state === "waiting");
   const toolCount = events.filter(event => event.type === "tool_end").length;
-  const title = working ? turn.status === "waiting_confirmation" ? "等待你的确认" : activeStep?.title || (turn.id === "submitting" ? "正在提交请求" : "Agent 正在准备") : turn.status === "failed" ? "本轮处理已中断" : turn.result?.stop_reason === "done" ? `处理完成 · ${toolCount || turn.result?.tool_calls || 0} 次工具调用` : "已停止本轮处理";
+  const title = working ? turn.status === "waiting_confirmation" ? "等待你的确认" : activeStep?.title || (turn.id === "submitting" ? "正在提交请求" : "Agent 正在准备") : turn.status === "failed" ? "本轮处理已中断" : turn.result?.stop_reason === "done" ? `处理完成 · ${toolCount || turn.result?.tool_calls || 0} 次工具调用` : outcomeLabel(turn.result);
   const heading = card.querySelector(".activity-title"); if (heading.textContent !== title) heading.textContent = title;
   const localStep = [...events].reverse().find(event => event.type === "local_step");
   const detail = working ? ["本地查重与清理", "本地批量执行分类计划"].includes(activeStep?.title) && localStep ? localStep.message : activeStep?.detail || "" : turn.error || "展开查看执行步骤";
@@ -320,7 +337,7 @@ function openConfirmationReview(state, selected = null) {
   if (!dialog.open) dialog.showModal();
   const item = selected || state.action.groups.flatMap(group => group.items).find(item => item.previewable);
   if (item) showReviewPreview(state, item);
-  else $("review-preview").replaceChildren(node("div", "review-preview-empty", "此操作尚无可预览的文件，请核对左侧路径。"));
+  else $("review-preview").replaceChildren(node("div", "review-preview-empty", state.action.operation === 'task_edit' ? "请核对左侧修改前后的目标、约束和范围。本次确认只更新任务。" : "此操作尚无可预览的文件，请核对左侧路径。"));
 }
 async function showReviewPreview(state, item) {
   const epoch = ++state.previewEpoch, panel = $("review-preview");

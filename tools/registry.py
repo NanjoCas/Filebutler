@@ -2,6 +2,7 @@
 import json
 from dataclasses import dataclass, field
 from typing import Callable
+from typing import Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -10,7 +11,6 @@ from safety.oplog import OpLog
 from safety.sandbox import Sandbox, SandboxError
 
 MAX_RESULT_CHARS = 2000
-PATH_FIELDS = ("path", "src", "dst_dir")  # 写操作执行前要预检查的路径参数
 
 
 class ToolError(Exception):
@@ -43,15 +43,62 @@ class Tool:
     writes: bool
     batch: bool = False
     max_result_chars: int = MAX_RESULT_CHARS
+    effects: tuple[str, ...] = ()
+    verification: str = 'tool_result_only'
+    display_result: bool = False
+    read_scope: Callable | None = None
+    write_scope: Callable | None = None
+    operation_preview: Callable | None = None
+    path_fields: tuple[str, ...] = ()
+    file_fields: tuple[str, ...] = ()
+    usage: str | None = None
+    reference_inputs: tuple[tuple[str, str], ...] = ()
+    produces: tuple[str, ...] = ()  # artifact collections whose execution receipts this tool writes
+
+    def contract(self):
+        """Machine policy metadata, separate from natural-language routing."""
+        return dict(name=self.name, input_schema=self.args_model.model_json_schema(),
+                    effects=list(self.effects),
+                    preconditions=['sandbox', 'valid_arguments'] +
+                    (['task_scope', 'confirmation_policy', 'operation_log'] if self.writes else []),
+                    retry_policy='no_automatic_retry' if self.writes else 'caller_decides',
+                    verification=self.verification, usage=self.usage,
+                    scope_adapter=self.read_scope is not None,
+                    output_schema=ToolResult.model_json_schema())
+
+
+class ToolResult(BaseModel):
+    status: Literal['ok', 'error']
+    text: str
+    error_code: str | None = None
+    retryable: bool = False
+
+
+def dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
+    """Migration adapter: never invent precise business codes from error prose."""
+    return _dispatch_result(name, raw_args, sandbox, oplog, confirmer)
+
+
+def _failure(text, code='TOOL_ERROR'):
+    return ToolResult(status='error', text=text, error_code=code)
+
 
 
 TOOLS: dict[str, Tool] = {}
 
 
 def tool(name: str, desc: str, args_model: type[BaseModel], writes: bool = False, batch: bool = False,
-         max_result_chars: int = MAX_RESULT_CHARS):
+         max_result_chars: int = MAX_RESULT_CHARS, *, effects: tuple[str, ...] | None = None,
+         verification: str = 'tool_result_only', display_result: bool = False,
+         read_scope: Callable | None = None, write_scope: Callable | None = None,
+         operation_preview: Callable | None = None, path_fields: tuple[str, ...] = (),
+         file_fields: tuple[str, ...] = (), usage: str | None = None,
+         reference_inputs: tuple[tuple[str, str], ...] = (), produces: tuple[str, ...] = ()):
     def deco(func):
-        TOOLS[name] = Tool(name, desc, args_model, func, writes, batch, max_result_chars)
+        declared = effects if effects is not None else (('unknown_write',) if writes else ())
+        TOOLS[name] = Tool(name, desc, args_model, func, writes, batch, max_result_chars,
+                           declared, verification, display_result, read_scope, write_scope,
+                           operation_preview, path_fields, file_fields, usage, reference_inputs, produces)
         return func
     return deco
 
@@ -67,19 +114,23 @@ def schemas() -> list[dict]:
 
 def dispatch(name: str, raw_args: str, sandbox: Sandbox,
              oplog: OpLog | None = None, confirmer: Confirmer | None = None) -> str:
+    return _dispatch_result(name, raw_args, sandbox, oplog, confirmer).text
+
+
+def _dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
     """JSON 解析 → pydantic 校验 → 沙盒路径检查 →（写操作）确认 → 执行 →（写操作）记日志 → 截断。
     任何错误都转成一句 ERROR 文本返回给模型，不让程序崩溃。"""
     t = TOOLS.get(name)
     if t is None:
-        return f"ERROR: 没有工具 {name}。可用工具：{', '.join(TOOLS)}"
+        return _failure(f"ERROR: 没有工具 {name}。可用工具：{', '.join(TOOLS)}", 'TOOL_ERROR')
     try:
         data = json.loads(raw_args or "{}")
     except json.JSONDecodeError as e:
-        return f"ERROR: 参数不是合法 JSON：{e}。请重新生成"
+        return _failure(f"ERROR: 参数不是合法 JSON：{e}。请重新生成", 'INVALID_ARGUMENTS')
     artifacts = getattr(sandbox, 'artifacts', None)
     try:
         if artifacts and isinstance(data, dict):
-            for key in ('path', 'src'):
+            for key in t.file_fields:
                 value=data.get(key)
                 if isinstance(value,str) and (value.startswith('file:') or value in artifacts.data['files']):
                     p, _ = artifacts.resolve(value.removeprefix('file:'), allow_trash=False)
@@ -87,20 +138,20 @@ def dispatch(name: str, raw_args: str, sandbox: Sandbox,
         args = t.args_model.model_validate(data)
     except ValidationError as e:
         errs = "；".join(f"{'.'.join(map(str, x['loc'])) or '参数'}: {x['msg']}" for x in e.errors())
-        return f"ERROR: 参数校验失败：{errs}"
+        return _failure(f"ERROR: 参数校验失败：{errs}", 'INVALID_ARGUMENTS')
     except ValueError as e:
-        return f"ERROR: {e}"
+        return _failure(f"ERROR: {e}", 'TOOL_ERROR')
     try:
         if t.writes:
             # 先查路径再问用户，不让用户去确认一个本来就会被拦下的操作
-            for f in PATH_FIELDS:
+            for f in t.path_fields:
                 if hasattr(args, f):
                     v = getattr(args, f)
                     sandbox.path(v, write=not t.batch and not (f == "dst_dir" and v.strip() in ("", ".")))
             if not t.batch and confirmer and not confirmer.allow(name, args.model_dump()):
-                return "ERROR: 用户拒绝了这个操作。请调整计划，或在总结里说明没有执行的部分"
+                return _failure("ERROR: 用户拒绝了这个操作。请调整计划，或在总结里说明没有执行的部分", 'TOOL_ERROR')
             if artifacts and not t.batch:
-                for key in ('path', 'src'):
+                for key in t.file_fields:
                     value = getattr(args, key, None)
                     if value and sandbox.path(value).is_file():
                         artifacts.register(sandbox.rel(sandbox.path(value)))
@@ -110,11 +161,11 @@ def dispatch(name: str, raw_args: str, sandbox: Sandbox,
                 raise ToolError("批量工具未返回有效回收计划")
             result = result.execute(sandbox, oplog, confirmer) if isinstance(result, LocalWriteBatch) else _trash_batch(result, sandbox, oplog, confirmer)
     except SandboxError as e:
-        return f"ERROR: {e}"
+        return _failure(f"ERROR: {e}", 'TOOL_ERROR')
     except ToolError as e:
-        return f"ERROR: {e}"
+        return _failure(f"ERROR: {e}", 'TOOL_ERROR')
     except Exception as e:  # 兜底：意外异常也回传给模型
-        return f"ERROR: {type(e).__name__}: {e}"
+        return _failure(f"ERROR: {type(e).__name__}: {e}", 'TOOL_ERROR')
     if isinstance(result, tuple):
         result, ops = result
         if oplog:
@@ -122,9 +173,16 @@ def dispatch(name: str, raw_args: str, sandbox: Sandbox,
                 oplog.record(*op)
                 if artifacts and op[0] != 'make_dir':
                     artifacts.relocate(op[1], op[2])
+    if isinstance(result, ToolResult):
+        result.text = result.text[:t.max_result_chars] if len(result.text) > t.max_result_chars else result.text
+        return result
+    if not isinstance(result, str):
+        return _failure('ERROR: 工具返回了不支持的结果类型', 'INVALID_RESULT')
     if len(result) > t.max_result_chars:
         result = result[:t.max_result_chars] + f"\n……[已截断，共 {len(result)} 字]"
-    return result
+    # Compatibility boundary for existing string-returning tools. New tools
+    # may return ToolResult directly; controller decisions use the typed status.
+    return _failure(result) if result.startswith('ERROR:') else ToolResult(status='ok', text=result)
 
 
 def _trash_batch(plan: TrashBatch, sandbox: Sandbox, oplog: OpLog | None,
@@ -138,6 +196,8 @@ def _trash_batch(plan: TrashBatch, sandbox: Sandbox, oplog: OpLog | None,
     for rel in (*plan.paths, *plan.keeps):
         sandbox.path(rel, write=True)
     plan.validate()  # 必须先核对，再显示确认；确认后重查，防止等待期间文件变化
+    from agent.constraints import enforce, operation
+    enforce(sandbox, [operation('trash', p) for p in plan.paths])
     artifacts = getattr(sandbox, 'artifacts', None)
     reference_groups = []
     if artifacts:
@@ -152,6 +212,7 @@ def _trash_batch(plan: TrashBatch, sandbox: Sandbox, oplog: OpLog | None,
                                          file_count=len(plan.paths), review_groups=plan.groups or None):
         return "ERROR: 用户拒绝了批量去重，未移动任何文件"
     plan.validate()
+    enforce(sandbox, [operation('trash', p) for p in plan.paths])
     completed = 0
     moved = []
     def failed(message):

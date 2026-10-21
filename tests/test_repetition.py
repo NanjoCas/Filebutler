@@ -45,7 +45,7 @@ def test_json_formatting_does_not_bypass_detection(tmp_path):
     assert [r["repeat_count"] for r in calls] == [1, 2, 3]
     assert [r["executed"] for r in calls] == [True, True, False]
     assert rows[-1]["stop_reason"] == "repeated_call"
-    assert "未完成" in res.final
+    assert "任务已中止" in res.final and "重复调用保护" in res.final
 
 
 @pytest.mark.parametrize("middle", [
@@ -109,4 +109,5 @@ def test_replay_history_preserves_consecutive_count(tmp_path):
     res = run_agent("继续", LLM({"model": "fake"}, client=client), sb, {},
                     Console(quiet=True), history=first.messages)
     assert res.stop_reason == "repeated_call"
-    assert "未执行" in res.messages[-1]["content"]
+    assert any(m['role']=='tool' and '未执行' in m.get('content','') for m in res.messages)
+    assert res.messages[-1]['content']==res.final and '重复调用保护' in res.final

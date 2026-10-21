@@ -31,11 +31,11 @@ def main():
     ap.add_argument('--out',type=Path,required=True)
     ap.add_argument('--price-cap',type=float,default=.15)
     args=ap.parse_args();out=args.out.resolve();out.mkdir(parents=True,exist_ok=False)
-    cfg=load_config(ROOT/'config.yaml');cfg['cost_budget']=args.price_cap
+    cfg=load_config(ROOT/'config.yaml');cfg.update(cost_budget=args.price_cap, task_runtime=False, local_runtime=True, prompt='v7_classification')
     source=Path(cfg['sandbox'])/'文献';original=snapshot(source,True)
     report=dict(model=cfg['model'],prompt=cfg['prompt'],checks=[],cases=[],estimated_cost=0,
                 limitations=['Single run on a temporary copy; not a controlled A/B latency experiment.',
-                             'Validates coverage/execution/references, not correctness of all semantic labels.'])
+                             'Legacy v7 acceptance only; does not validate the current task controller or semantic accuracy.'])
     def check(name,ok):report['checks'].append(dict(name=name,ok=bool(ok)))
     def record(name,result,requests):
         row=asdict(result);row.pop('messages')

@@ -10,23 +10,39 @@ RETRYABLE = (openai.APITimeoutError, openai.APIConnectionError,
              openai.RateLimitError, openai.InternalServerError)
 
 
+class ModelConfigurationError(RuntimeError):
+    def __init__(self, variable):
+        self.code='MISSING_API_KEY'
+        self.variable=variable
+        super().__init__(f'环境变量 {variable} 未设置，请配置后再运行需要模型的任务')
+
+
 class LLM:
     def __init__(self, cfg: dict, client=None):
         self.model = cfg["model"]
         self.temperature = cfg.get("temperature", 0)
         self.retries = max(0, min(3, int(cfg.get("llm_retries", 1))))
         self.timeout = max(1, float(cfg.get("llm_timeout", 60)))
-        if client is None:
-            key = os.environ.get(cfg["api_key_env"])
-            if not key:
-                raise SystemExit(f"环境变量 {cfg['api_key_env']} 未设置，请在 ~/.zshrc 里 export 后重开终端")
-            client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=self.timeout, max_retries=0)
         self.client = client
+        self._config = dict(cfg)
+        # Local routes must work offline, including without an API credential.
+        if client is None and not cfg.get('local_runtime'):
+            self._ensure_client()
         self.prices = (cfg.get("prices") or {}).get(self.model)  # 元/百万 tokens：cache_hit / cache_miss / output
         self.prompt_tokens = 0
         self.cache_hit_tokens = 0
         self.completion_tokens = 0
         self.last_prompt_tokens = None  # 上一次调用的准确输入长度，上下文压缩用它估算当前长度
+
+    def _ensure_client(self):
+        if self.client is not None:
+            return
+        cfg = self._config
+        key = os.environ.get(cfg['api_key_env'])
+        if not key:
+            if cfg.get('local_runtime'):raise ModelConfigurationError(cfg['api_key_env'])
+            raise SystemExit(f"环境变量 {cfg['api_key_env']} 未设置，请配置后再运行需要模型的任务")
+        self.client = OpenAI(api_key=key, base_url=cfg['base_url'], timeout=self.timeout, max_retries=0)
 
     @property
     def total_tokens(self) -> int:
@@ -44,6 +60,7 @@ class LLM:
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              retries: int | None = None, on_request=None):
         """One retry policy; diagnostics never contain prompts, keys or response bodies."""
+        self._ensure_client()
         kwargs = dict(model=self.model, messages=messages, temperature=self.temperature)
         if tools:
             kwargs["tools"] = tools

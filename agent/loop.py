@@ -16,11 +16,13 @@ import tools.retrieval  # noqa: F401
 import tools.dedup  # noqa: F401
 import tools.findings  # noqa: F401
 import tools.classification  # noqa: F401
+import tools.inventory  # noqa: F401
 from agent.runtime import LocalRuntime
 from agent.context import ContextManager
 from agent.llm import LLM
 from agent.prompts import SYSTEM_PROMPTS
-from agent.repetition import RepeatDetector
+from agent.outcomes import stop_report, close_messages, save_outcome
+from agent.repetition import RepeatDetector, NoProgressGuard
 from agent.reflect import PASS_PREFIX, file_write_count, reflection_prompt, successful_writes
 from safety.confirm import Confirmer
 from safety.oplog import OpLog
@@ -51,6 +53,7 @@ class RunResult:
     tool_seconds: float = 0.0
     runtime: dict = field(default_factory=dict)
     messages: list = field(default_factory=list)
+    report: dict = field(default_factory=dict)
 
 
 def _assistant_dict(msg) -> dict:
@@ -99,13 +102,18 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
         {"role": "system", "content": SYSTEM_PROMPTS[cfg.get("prompt", "v1")]},
         {"role": "user", "content": instruction},
     ]
-    if artifacts is None and cfg.get('local_runtime'):
+    if artifacts is None and (cfg.get('local_runtime') or cfg.get('task_runtime')):
         from agent.artifacts import ArtifactStore
         artifacts = ArtifactStore(sandbox)
     if artifacts:
         sandbox.artifacts = artifacts
         artifacts.run_id = oplog.path.stem if oplog else str(time.time_ns())
-    runtime = LocalRuntime(instruction,cfg) if cfg.get('local_runtime') else None
+    if cfg.get('task_runtime'):
+        from agent.task_runtime import TaskRuntime
+        runtime = TaskRuntime(instruction, cfg, sandbox, artifacts.run_id)
+        messages.append({'role': 'system', 'content': runtime.guidance()})
+    else:
+        runtime = LocalRuntime(instruction,cfg) if cfg.get('local_runtime') else None
     if runtime:
         sandbox.runtime=runtime
         sandbox.progress=lambda message: emit('local_step',message=message)
@@ -126,7 +134,10 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
     ctx = ContextManager(cfg.get("context_high_water", 12000), cfg.get("context_keep_recent", 1)) \
         if cfg.get("context_compress") else None
     repeats = RepeatDetector() if cfg.get("repeat_detection", True) else None
+    repair_guard = NoProgressGuard(cfg.get('task_repair_limit', 6)) if runtime and runtime.task=='structured' else None
     llm_seconds = tool_seconds = 0.0
+    failure_stage='准备运行'
+    terminal_report={}
     if repeats and history:
         for m in history:
             if m.get("role") == "user" or m.get("content", "").startswith("[本地撤销状态 run="):
@@ -136,6 +147,9 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
 
     try:
         for step in range(1, max_steps + 1):
+            if reason := over_budget():
+                stop_reason = reason
+                break
             t0 = time.time()
             tokens_before = llm.total_tokens
             if ctx and (info := ctx.maybe_compress(messages)):
@@ -154,8 +168,9 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 if info.get("retry"):
                     emit("llm_retry", step=step, **info)
             try:
+                failure_stage='模型请求' if not direct else '本地调度'
                 if direct:
-                    emit('local_step',message='本地加载已保存分类计划，准备确认与批量执行')
+                    emit('local_step',message='本地执行：'+direct[0])
                     msg=SimpleNamespace(content='',tool_calls=[SimpleNamespace(id=f'local_{artifacts.run_id}',
                         function=SimpleNamespace(name=direct[0],arguments=json.dumps(direct[1])))])
                 else:
@@ -175,6 +190,11 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
             console.rule(f"[dim]第 {step} 轮 · {llm.total_tokens - tokens_before} tokens · {time.time() - t0:.1f}s")
 
             if not msg.tool_calls:
+                if runtime and runtime.task == 'structured':
+                    runtime.finish_plain(msg.content)
+                    final, stop_reason = runtime.final_answer, runtime.stop_reason
+                    messages[-1]['content'] = final
+                    break
                 if runtime and runtime.task in {'topic','classification'}:
                     if not runtime.format_retry:
                         runtime.format_retry=True
@@ -207,6 +227,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
 
             for tc in msg.tool_calls:
                 name, raw = tc.function.name, tc.function.arguments
+                failure_stage='工具 '+name
                 requested_raw=raw
                 blocked=None
                 if runtime:
@@ -224,8 +245,8 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 executed = False
                 if blocked:
                     result=blocked
-                elif stop_reason == "repeated_call":
-                    result = "ERROR: 本次运行已因连续重复调用中止，此调用未执行"
+                elif stop_reason in {"repeated_call", "repair_limit"}:
+                    result = "ERROR: 本次运行已触发重复或无进展保护，此调用未执行"
                 elif repeat_count >= 3:
                     stop_reason = "repeated_call"
                     result = "ERROR: 相同工具和参数连续调用 3 次，已中止运行；此调用未执行"
@@ -236,17 +257,42 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                         result = "ERROR: 本次运行未启用内容检索，请使用 search_files 和 read_file"
                     else:
                         executed = True
-                        result = registry.dispatch(name, raw, sandbox, oplog, confirmer)
+                        result = (runtime.dispatch(name, raw, sandbox, oplog, confirmer)
+                                  if runtime and runtime.task == 'structured' else
+                                  registry.dispatch(name, raw, sandbox, oplog, confirmer))
                     if repeat_count == 2:
                         result += "\n[重复调用提醒] 你已连续两次调用相同工具和参数，结果如上。请调整做法；再次原样调用将中止运行。"
                 if runtime:
                     runtime.after(name,result,sandbox)
+                    if runtime.task == 'structured' and name in runtime.control_names:
+                        emit('task_updated', **runtime.stats())
                 tool_wait = (confirmer.wait_seconds if confirmer else 0.0) - tool_wait_before
                 tool_elapsed = time.perf_counter() - t1
                 tool_seconds += max(0, tool_elapsed - tool_wait)
                 n_calls += 1
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-                ok = result.startswith("OK")
+                model_result = result
+                outcome = getattr(runtime, '_outcome', None)
+                if runtime and runtime.task == 'structured':
+                    if outcome is None:
+                        outcome = registry.ToolResult(status='error', text=result,
+                                                       error_code='CONTROL_REJECTED')
+                    outcome.text = result  # Keep repeat warnings added after dispatch.
+                    model_result = outcome.model_dump_json()
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": model_result})
+                ok = outcome.status == 'ok' if runtime and runtime.task == 'structured' else result.startswith("OK")
+                if repair_guard and stop_reason not in {'repair_limit', 'repeated_call'}:
+                    task = runtime.current or {}
+                    artifacts = getattr(sandbox, 'artifacts', None)
+                    evidence = (artifacts.data.get('evidence', {}) if artifacts else {}).values()
+                    proof = {(e.get('file_id'), e.get('version'), e.get('kind'), e.get('page'), e.get('offset'), e.get('excerpt')) for e in evidence}
+                    progress = (len(task.get('operation_history', []))+len(runtime.operations), len(proof))
+                    tool = registry.TOOLS.get(name)
+                    repairable_call = (bool(tool and tool.writes) or name in
+                        {'set_task','edit_task','apply_task_edit','begin_step','prepare_file_plan','execute_file_plan'})
+                    failure = (outcome.error_code or 'TOOL_ERROR') if not ok and repairable_call else None
+                    if failure: runtime.last_failure = result[:1200]
+                    if repair_guard.observe(failure, progress): stop_reason = 'repair_limit'
+
                 emit("tool_end", step=step, call_id=tc.id, tool=name, ok=ok,
                      executed=executed, ms=round(tool_elapsed * 1000),
                      active_ms=round(max(0, tool_elapsed - tool_wait) * 1000), wait_ms=round(tool_wait * 1000),
@@ -267,13 +313,20 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 final,stop_reason=runtime.final_answer,runtime.stop_reason
                 messages.append({'role':'assistant','content':final})
                 break
-            if stop_reason == "repeated_call":
+            if stop_reason in {"repeated_call", "repair_limit"}:
                 break
             if reason := over_budget():
                 stop_reason = reason
                 break
-        if stop_reason != "done":
-            final = final or f"（未完成：触发终止条件 {stop_reason}）"
+        if runtime and runtime.task == 'structured':
+            runtime.interrupt(stop_reason)
+        if not final and stop_reason!='done':
+            report=stop_report(stop_reason,cfg,llm,runtime,oplog)
+            terminal_report=report
+            final=report['summary']
+            if runtime and runtime.task=='structured':runtime.report=report
+        close_messages(messages,final)
+        save_outcome(runtime,stop_reason,final,cfg,llm)
         elapsed = time.perf_counter() - t_start
         wait_seconds = (confirmer.wait_seconds if confirmer else 0.0) - wait_before
         result = RunResult(final=final, stop_reason=stop_reason, steps=step, tokens=llm.total_tokens,
@@ -288,7 +341,8 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                            compressed_msgs=ctx.stats.messages if ctx else 0,
                            rereads=ctx.stats.rereads if ctx else 0,
                            llm_seconds=llm_seconds,
-                           runtime=runtime.stats() if runtime else {}, messages=messages)
+                           runtime=runtime.stats() if runtime else {}, messages=messages,
+                           report=getattr(runtime,'report',{}) or terminal_report)
         if trace:
             trace.write(json.dumps({"event": "end", "final": final, "stop_reason": stop_reason,
                                     "steps": step, "tool_calls": n_calls, "tokens": result.tokens,
@@ -299,14 +353,30 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                                     "active_seconds": result.active_seconds, "wait_seconds": result.wait_seconds,
                                     "tool_seconds": result.tool_seconds, "runtime": result.runtime},
                                    ensure_ascii=False) + "\n")
-    except BaseException:
+    except BaseException as exc:
+        if runtime and runtime.task == 'structured':
+            # A failed checkpoint must not hide the original failure.
+            try:runtime.interrupt('exception')
+            except Exception:pass
         elapsed = time.perf_counter() - t_start
         wait = (confirmer.wait_seconds if confirmer else 0.0) - wait_before
         metrics = dict(seconds=elapsed, wait_seconds=wait, active_seconds=max(0, elapsed - wait),
                        llm_seconds=llm_seconds, tool_seconds=tool_seconds)
-        emit("run_failed", **metrics)
+        reason='cancelled' if isinstance(exc,KeyboardInterrupt) else 'exception'
+        report=stop_report(reason,cfg,llm,runtime,oplog,error=exc,stage=failure_stage)
+        final=report['summary']
+        close_messages(messages,final)
+        try:save_outcome(runtime,reason,final,cfg,llm,error=exc)
+        except Exception:pass
+        failure=dict(final=final,report=report,stop_reason=reason,error_type=type(exc).__name__,
+                     error_stage=failure_stage,
+                     runtime=runtime.stats() if runtime else {},cost=llm.cost,tokens=llm.total_tokens,
+                     tool_calls=n_calls,steps=step,**metrics)
+        exc.filebutler_outcome={**failure,'messages':messages}
+        emit("run_failed", **failure)
         if trace:
-            trace.write(json.dumps({"event": "failed", **metrics}) + "\n")
+            trace.write(json.dumps({"event": "failed", **failure},ensure_ascii=False) + "\n")
+        console.print(Panel(escape(final),title='运行中止' if reason=='cancelled' else '运行失败',border_style='yellow'))
         raise
     finally:
         if trace:

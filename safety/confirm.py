@@ -32,12 +32,12 @@ class Confirmer:
             prompt = f"无效输入「{ans}」，{ASK_TEXT}"
 
     def allow(self, tool_name: str, args: dict, file_count: int | None = None,
-              *, review_groups: list[dict] | None = None) -> bool:
+              *, review_groups: list[dict] | None = None, force: bool = False) -> bool:
         count = int(tool_name != "make_dir") if file_count is None else file_count
         self.file_writes += count
         if self.mode == "never" or self.allow_all:
             return True
-        need = (self.mode == "always" or tool_name in ("trash", "trash_many")
+        need = (force or self.mode == "always" or tool_name in ("trash", "trash_many")
                 or self.file_writes > self.threshold)
         if not need:
             return True

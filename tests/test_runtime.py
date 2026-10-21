@@ -68,7 +68,7 @@ def test_retry_reason_required_and_query_limit_enforced():
     assert r.prepare('search_content','{"query":"bad","top_k":null}',None)[1]  # already exhausted, no crash
 
 
-def test_evidence_submission_rejects_wrong_file_stale_version_and_fulltext_claims(tmp_path):
+def test_evidence_submission_rejects_wrong_file_and_stale_version_labels_interpretations(tmp_path):
     sb=Sandbox(tmp_path)
     for n in ('a.txt','b.txt'):(tmp_path/n).write_text('same')
     sb.artifacts=ArtifactStore(sb);sb.runtime=LocalRuntime('查找论文',{})
@@ -77,8 +77,9 @@ def test_evidence_submission_rejects_wrong_file_stale_version_and_fulltext_claim
     def submit(fid,reason='支持该主题'):
         return registry.dispatch('report_findings',json.dumps({'findings':[{'file_id':fid,'evidence_ids':[eid],'relation':'method','reason':reason}]}),sb)
     assert submit(b).startswith('ERROR')
-    assert submit(a,'两个文件全文完全相同').startswith('ERROR')
-    assert sb.runtime.final_answer is None
+    assert submit(a,'两个文件全文完全相同').startswith('OK')
+    assert '模型判断（待复核）' in sb.runtime.final_answer
+    sb.runtime.final_answer = None
     (tmp_path/'a.txt').write_text('modified')
     assert submit(a).startswith('ERROR') and sb.runtime.final_answer is None
 

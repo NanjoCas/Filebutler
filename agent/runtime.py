@@ -5,6 +5,7 @@ semantic confidence estimator: no BM25 threshold is used to declare relevance.
 """
 import json
 import re
+from agent.local_tasks import local_task, duplicate_summary
 
 
 def classification_followup(instruction):
@@ -55,6 +56,10 @@ class LocalRuntime:
         self.format_retry=False
         self.failed_reports=0
         self.stop_reason="done"
+        self.local_route = local_task(instruction) if cfg.get('local_dispatch', True) else None
+        if self.local_route:
+            self.task = 'dedup' if self.local_route[0] == 'duplicate_cleanup' else 'local_readonly'
+            self.allow_apply = self.local_route[0] == 'duplicate_cleanup'
 
     def schemas(self, schemas):
         if self.task in {'classification','classification_apply'}:
@@ -74,6 +79,8 @@ class LocalRuntime:
                 and (self.allow_classification_apply or s['function']['name'] != 'apply_classification')]
 
     def direct_call(self,sb):
+        if self.local_route:
+            return self.local_route[1], self.local_route[2]
         if self.task=='classification_apply':
             return 'apply_classification',{'plan_id':'latest'}
 
@@ -135,6 +142,14 @@ class LocalRuntime:
 
     def after(self,name,result,sb):
         self.had_error=result.startswith('ERROR')
+        if self.local_route:
+            if self.had_error and '用户拒绝' not in result:
+                self.final_answer='本地任务未完成：'+result.removeprefix('ERROR: ')
+                self.stop_reason='operation_error'
+            elif self.local_route[0] == 'inventory':
+                self.final_answer=result.removeprefix('OK: ')
+            elif self.local_route[0] == 'duplicate_scan':
+                self.final_answer=duplicate_summary(sb)
         if self.task=='classification' and name=='read_file' and result.startswith('OK'):
             self.reads+=1
             if self.reads>=self.classification_read_limit:self.closing=True
@@ -158,4 +173,6 @@ class LocalRuntime:
 
     def stats(self):
         return dict(task=self.task,queries=self.queries,reads=self.reads,blocked_calls=self.blocked,dedup_scan=self.dedup_scan,
-                    classification=self.classification_stats)
+                    classification=self.classification_stats, route=self.local_route[0] if self.local_route else
+                    ('classification_apply' if self.task=='classification_apply' else 'model'),
+                    execution='local' if self.local_route or self.task=='classification_apply' else 'model')
