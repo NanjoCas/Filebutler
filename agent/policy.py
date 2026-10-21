@@ -38,7 +38,13 @@ def active_goals(runtime):
     if runtime.active_step:
         return runtime.active_step['goal_ids']
     goals = (runtime.current or {}).get('goals', [])
-    return [goals[0]['id']] if len(goals) == 1 else []
+    if len(goals) == 1:
+        return [goals[0]['id']]
+    # A write tool's receipt names its purpose when exactly one goal verifies it.
+    from agent.verifier import CONSUMERS
+    kinds = {k for p in getattr(runtime, '_producers', ()) or () for k in CONSUMERS.get(p, ())}
+    matches = [g['id'] for g in goals if kinds and any(c['kind'] in kinds for c in g['conditions'])]
+    return matches if len(matches) == 1 else []
 
 
 def applies(constraint, goal_ids):

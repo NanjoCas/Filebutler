@@ -335,9 +335,13 @@ def main(argv=None):
     ap.add_argument('--suite', choices=sorted(SUITES), default='regression')
     ap.add_argument('--out', type=Path, required=True)
     ap.add_argument('--total-cap', type=float, default=1.2)
+    ap.add_argument('--protocol', choices=['v2', 'v3'], default=None,
+                    help='model-visible task protocol; default from config.yaml (v2 = pre-P1-4 baseline)')
     args = ap.parse_args(argv)
     cfg = load_config(ROOT/'config.yaml')
     cfg.update(llm_retries=0, task_session='live-policy-acceptance')
+    if args.protocol:
+        cfg.update(protocol=args.protocol, prompt={'v2': 'v8_tasks', 'v3': 'v9_intent'}[args.protocol])
     cases = SUITES[args.suite]
     if args.dry_run:
         from eval.dryrun import SCRIPTS, scripted_llm_factory

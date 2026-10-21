@@ -436,7 +436,10 @@ class TaskStore:
         previous = previous or {}
         data['usage'] = deepcopy(previous.get('usage', {}))
         data['file_plan_receipts'] = deepcopy(previous.get('file_plan_receipts', {}))
-        data['file_plan_bindings'] = deepcopy(previous.get('file_plan_bindings', {}))
+        # A plan proves the goal it was prepared for; a rewritten goal starts over.
+        unchanged = {g['id'] for g in previous.get('goals', []) if g in data.get('goals', [])}
+        data['file_plan_bindings'] = {pid: dict(deepcopy(b), goal_ids=[g for g in b['goal_ids'] if g in unchanged])
+                                      for pid, b in previous.get('file_plan_bindings', {}).items()}
         # Blockers keep their history; open ones belong to the old contract.
         data['blockers'] = deepcopy(previous.get('blockers', []))
         for b in data['blockers']:

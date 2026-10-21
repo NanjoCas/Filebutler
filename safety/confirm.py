@@ -32,7 +32,8 @@ class Confirmer:
             prompt = f"无效输入「{ans}」，{ASK_TEXT}"
 
     def allow(self, tool_name: str, args: dict, file_count: int | None = None,
-              *, review_groups: list[dict] | None = None, force: bool = False) -> bool:
+              *, review_groups: list[dict] | None = None, force: bool = False,
+              notes: list[str] | None = None) -> bool:
         count = int(tool_name != "make_dir") if file_count is None else file_count
         self.file_writes += count
         if self.mode == "never" or self.allow_all:
@@ -42,7 +43,10 @@ class Confirmer:
         if not need:
             return True
         lines = "".join(f"\n    {k} = {v}" for k, v in args.items())
+        lines += "".join(f"\n    ⚠ {n}" for n in notes or [])
         request = {"tool": tool_name, "args": args, "file_count": count}
+        if notes:
+            request["notes"] = list(notes)
         if review_groups:
             request["groups"] = review_groups
         started = time.perf_counter()

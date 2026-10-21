@@ -53,6 +53,7 @@ class PrepareFilePlan(StrictModel):
     classification_plan_id: str | None = Field(None, description='已有分类计划的精确 P 标识；本地展开全部来源和目标，不必抄写文件路径')
     goal_ids: list[str] = Field(default_factory=list, max_length=30,
         description='已有任务中此计划服务的目标；可省略，本地按完成条件逐项归属，无法确定时才要求提供')
+    task_id: str | None = Field(None, description='续做近期任务时填写其 ID，沿用原限制；本轮已登记任务时留空')
     semantic_review: bool = Field(False, description='分类或相关性等语义结论须为 true，本地只能证明文件操作')
 
 
@@ -141,6 +142,7 @@ def prepare(runtime, args):
                 tail = Path(src).relative_to(sel['path']) if sel['preserve_tree'] else Path(src).name
                 dst = (Path(sel['destination']) / tail).as_posix()
             actions.append(dict(effect=sel['effect'], source=src, destination=dst))
+    actions = _normalize(runtime, actions)
     if not actions or len(actions) > 500:
         raise ValueError('计划必须包含 1–500 项明确操作，请缩小选择范围')
     pid = 'X'+uuid.uuid4().hex[:12]
@@ -200,8 +202,10 @@ def prepare(runtime, args):
     producers = ['file_plans'] + (['classification_plans'] if classification else [])
     # For an existing task, bindings are explicit or locally derived; neither grants access.
     task = runtime.current
+    additions = {}
     if task:
         goal_ids = _attribute_steps(runtime, task, steps, args.goal_ids, producers)
+        additions = _additions(runtime, task, steps)
     else:
         if args.goal_ids: raise ValueError('新计划的目标 ID 由本地生成，请省略 goal_ids')
         goal_ids = ['files']
@@ -219,6 +223,7 @@ def prepare(runtime, args):
         runtime.store.checkpoint(task)
     payload = dict(task_id=task['id'], revision=task['revision'], goal_ids=goal_ids,
                    description=args.description, steps=steps, classification=classification)
+    if additions: payload['scope_additions'] = additions
     plan = dict(id=pid, payload=payload, digest=checksum(payload), status='ready', progress={}, error='')
     _validate(runtime, plan)
     runtime.store.save_file_plan(plan)
@@ -234,6 +239,67 @@ def prepare(runtime, args):
                     collection='classification_plans', id=classification['id'], goal_ids=[goal['id']], step_id=pid))
     runtime.store.checkpoint(task)
     return plan
+
+
+def _normalize(runtime, actions):
+    """`mv` semantics for a move whose destination is a directory.
+
+    A destination names a directory when it exists as one, when this plan
+    creates it, or when several moves share it (one file path cannot receive
+    them all). The file keeps its name; the manifest shows the full target.
+    """
+    from collections import Counter
+    sb = runtime.sb
+    creates = {a['destination'] for a in actions if a['effect'] == 'create'}
+    shared = Counter(a['destination'] for a in actions if a['effect'] == 'move')
+    result, seen = [], set()
+    for action in actions:
+        action = dict(action)
+        if action['effect'] == 'create':
+            # Declaring a directory twice, or one the plan creates anyway, is one step.
+            if action['destination'] in seen: continue
+            seen.add(action['destination'])
+        elif action['effect'] == 'move' and action['source'] and action['destination']:
+            dst = action['destination'].rstrip('/')
+            try: is_dir = sb.path(dst, exact=True).is_dir()
+            except Exception: is_dir = False
+            if is_dir or dst in creates or shared[action['destination']] > 1:
+                name = Path(runtime._resolve(action['source'])).name
+                action['destination'] = (Path(dst) / name).as_posix()
+        result.append(action)
+    return result
+
+
+def _additions(runtime, task, steps):
+    """Exact objects this plan writes outside the task's registered write roots.
+
+    write_roots are the model's reading of the request, not the user's words,
+    so a plan may go beyond them by listing the extra paths on its confirmation.
+    Effects are not widened (a read-only task stays read-only), and user limits
+    (constraints) still apply in full.
+    """
+    from agent.constraints import within
+    if not task['allowed_effects']: return {}
+    roots = []
+    for s in steps:
+        for path in (s['source'], s['destination'] if s['effect'] != 'trash' else None):
+            if path and not within(runtime.sb, path, task['write_roots']) and path not in roots:
+                roots.append(path)
+    return dict(write_roots=roots) if roots else {}
+
+
+def _granted(task, plan):
+    """The task as this plan's confirmation would leave it."""
+    extra = plan['payload'].get('scope_additions') or {}
+    if not extra: return task
+    return dict(task, write_roots=list(dict.fromkeys(task['write_roots'] + extra['write_roots'])))
+
+
+def _grant(task, plan, run_id):
+    extra = plan['payload'].get('scope_additions') or {}
+    if not extra: return
+    task['write_roots'] = _granted(task, plan)['write_roots']
+    task.setdefault('scope_grants', []).append(dict(plan_id=plan['id'], run_id=run_id, **extra))
 
 
 def conflicts(runtime, plan):
@@ -309,13 +375,19 @@ def _validate(runtime, plan, pending=None):
     task = runtime.current
     payload = plan['payload']
     if checksum(payload) != plan['digest']: raise ValueError('计划内容摘要不一致')
-    if not task or task['id'] != payload['task_id'] or task['revision'] != payload['revision']:
-        raise ValueError('任务版本已变化，必须重新预览计划')
+    if not task or task['id'] != payload['task_id']:
+        raise ValueError('计划不属于当前任务 '+((task or {}).get('id') or '（无）')+'，不能切换任务执行')
+    if task['revision'] != payload['revision']:
+        raise ValueError(f"任务版本已变化（计划基于第 {payload['revision']} 版，当前第 {task['revision']} 版），"
+                         '必须重新预览计划')
     if task.get('unresolved_questions'): raise ValueError('任务仍有待确认问题')
     if task.get('constraint_failures'): raise ValueError('任务有未处理的约束失败')
     require_valid_snapshots(task)
     # Every action carries its own goals; no global step is borrowed for the plan.
-    runtime.validate_operations(_operations(plan, pending))
+    # Scope the plan lists for confirmation counts; user limits apply in full.
+    runtime.current = _granted(task, plan)
+    try: runtime.validate_operations(_operations(plan, pending))
+    finally: runtime.current = task
 
 
 def _check_remaining(runtime, plan):
@@ -398,6 +470,9 @@ def execute(runtime, plan_id, oplog, confirmer):
         if runtime.current and runtime.current['id'] != task['id']:
             raise ValueError('计划不属于当前任务，不能切换任务绕过约束')
         runtime.current = task
+        if task['revision'] != plan['payload']['revision'] and _rebasable(plan):
+            plan = _rebase(runtime, plan, task)
+            plan_id = plan['id']
         known = {row.get('action_id') for row in task.get('operation_history', [])+task.get('operations', [])+runtime.operations if row.get('action_id')}
         for step in plan['payload']['steps']:
             progress = plan['progress'].get(step['id'])
@@ -421,7 +496,10 @@ def execute(runtime, plan_id, oplog, confirmer):
         task['operations'] = runtime.operations
         try:
             if task['revision'] != plan['payload']['revision']:
-                raise ValueError('任务版本已变化，必须重新预览计划')
+                # Unstarted plans were rebased above; this one already ran in part.
+                raise ValueError(f"任务版本已变化（计划基于第 {plan['payload']['revision']} 版，当前第 {task['revision']} 版），"
+                                 f"且此计划已执行 {len(plan['progress'])}/{len(plan['payload']['steps'])} 项，不能自动迁移。"
+                                 '请用 inspect_file_plan 查看已完成项，只为剩余对象准备新计划，不要重复已完成的操作')
             if checksum(plan['payload']) != plan['digest']:
                 raise ValueError('计划内容摘要不一致')
             if plan.get('inflight'):
@@ -440,8 +518,13 @@ def execute(runtime, plan_id, oplog, confirmer):
             if not ok: raise ValueError(detail)
             review = dict(plan_id=plan_id, digest=plan['digest'], steps=[
                 {k:s[k] for k in ('effect','source','destination')} for s in remaining])
-            if not confirmer.allow('file_plan', review, file_count=len(remaining), force=True):
+            if plan['payload'].get('scope_additions'):
+                review['scope_additions'] = plan['payload']['scope_additions']
+            if not confirmer.allow('file_plan', review, file_count=len(remaining), force=True,
+                                   **({'notes': runtime.text_limits()} if runtime.text_limits() else {})):
                 raise ValueError('用户拒绝执行此计划，未执行剩余操作')
+            _grant(task, plan, runtime.run_id)
+            runtime.store.checkpoint(task)
             _validate(runtime, plan, remaining)
             _check_remaining(runtime, plan)
             ok, detail = verify_plan(plan, runtime.sb, partial=True)
@@ -499,7 +582,8 @@ def execute(runtime, plan_id, oplog, confirmer):
             runtime.current.setdefault('file_plan_receipts', {})[plan_id] = copy.deepcopy(plan)
             _binding(runtime.current, plan)['pending'] = []
             runtime.store.checkpoint(runtime.current)
-            return f"OK: plan_id={plan_id}；本地完成并核验 {len(plan['progress'])} 项操作，无需逐文件重新调用工具"
+            rebased = f"（任务已修订，原计划 {plan['rebased_from']} 已按第 {task['revision']} 版重新生成）" if plan.get('rebased_from') else ''
+            return f"OK: plan_id={plan_id}{rebased}；本地完成并核验 {len(plan['progress'])} 项操作，无需逐文件重新调用工具"
         except (ValueError, OSError) as exc:
             plan['status'] = 'blocked'; plan['error'] = str(exc)
             runtime.store.save_file_plan(plan)
@@ -511,6 +595,40 @@ def execute(runtime, plan_id, oplog, confirmer):
             # The controller records the blocker with this plan as its object.
             runtime.store.checkpoint(runtime.current)
             raise ValueError(str(exc)) from exc
+
+
+def _rebasable(plan):
+    return plan['status'] in {'ready', 'blocked'} and not plan['progress'] and not plan.get('inflight')
+
+
+def _rebase(runtime, plan, task):
+    """An unstarted plan, re-derived against the revised task under a new ID.
+
+    Snapshots, destinations and steps are unchanged; goals, scope additions and
+    the digest are recomputed, then the ordinary preflight and a fresh
+    confirmation follow. Anything the new revision rejects is rejected.
+    """
+    old = plan['payload']
+    known = {g['id'] for g in task['goals']}
+    steps = [{k: v for k, v in s.items() if k != 'goal_ids'} for s in copy.deepcopy(old['steps'])]
+    pid = 'X'+uuid.uuid4().hex[:12]
+    for i, row in enumerate(steps): row['id'] = f'{pid}:{i}'
+    producers = ['file_plans'] + (['classification_plans'] if old.get('classification') else [])
+    goal_ids = _attribute_steps(runtime, task, steps, [g for g in old['goal_ids'] if g in known], producers)
+    payload = dict(old, revision=task['revision'], goal_ids=goal_ids, steps=steps)
+    payload.pop('scope_additions', None)
+    additions = _additions(runtime, task, steps)
+    if additions: payload['scope_additions'] = additions
+    new = dict(id=pid, payload=payload, digest=checksum(payload), status='ready', progress={}, error='',
+               rebased_from=plan['id'])
+    plan.update(status='superseded', error='任务已修订，计划已重新生成为 '+pid)
+    runtime.store.save_file_plan(plan)
+    runtime.store.save_file_plan(new)
+    bindings = task.setdefault('file_plan_bindings', {})
+    bindings.pop(plan['id'], None)
+    bindings[pid] = dict(goal_ids=goal_ids, revision=task['revision'], pending=[])
+    runtime.store.checkpoint(task)
+    return new
 
 
 def _binding(task, plan):
