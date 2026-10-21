@@ -91,7 +91,9 @@ def test_max_steps(sb):
 def test_read_tools(sb):
     d = lambda n, a: registry.dispatch(n, json.dumps(a, ensure_ascii=False), sb)
     listing = d("list_dir", {})
-    assert ".DS_Store" not in listing and "共 11 项" in listing
+    # Hidden files are not listed as entries; since 2026-10-21 a footer names them.
+    assert not any(line.startswith(".DS_Store") for line in listing.splitlines()) and "共 11 项" in listing
+    assert "个隐藏项未显示" in listing and ".DS_Store" in listing
     assert "牛奶" in d("read_file", {"path": "购物清单.txt"})          # GBK 编码
     assert "<file_content>" in d("read_file", {"path": "说明.txt"})
     assert "file_info" in d("read_file", {"path": "IMG_2041.jpg"})

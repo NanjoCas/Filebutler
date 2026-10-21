@@ -71,6 +71,15 @@ def describe_path(sb: Sandbox, value: str, *, planned: bool = False) -> dict:
     return item
 
 
+def _hidden_label(sb, folder, rel):
+    """Name and size of a hidden file, read directly (it is never previewable)."""
+    try:
+        size = (sb.root / folder / rel).stat().st_size
+        return f"{rel}（{_fmt_size(size)}）"
+    except OSError:
+        return rel
+
+
 def build_confirmation(request: dict, sb: Sandbox) -> dict:
     tool, args = request["tool"], request["args"]
     groups, notes = [], []
@@ -104,6 +113,14 @@ def build_confirmation(request: dict, sb: Sandbox) -> dict:
             changed.append(item)
         title,label,tone='确认执行文件计划','确认执行此计划','neutral'
         summary=f"计划 {args['plan_id']}：将执行 {len(changed)} 项操作。"
+        for row in args.get('hidden_contents') or []:
+            if row['metadata']:
+                notes.append(f"回收 {row['folder']} 时，将连同系统元数据一起移入回收区："
+                             + '、'.join(_hidden_label(sb, row['folder'], p) for p in row['metadata']) + '（系统自动生成，可撤销）。')
+            if row['hidden']:
+                notes.append(f"⚠ {row['folder']} 含非系统隐藏文件："
+                             + '、'.join(_hidden_label(sb, row['folder'], p) for p in row['hidden'])
+                             + '。它们可能是配置或密钥，确认后将一起移入回收区（可撤销）。')
         extra = args.get('scope_additions') or {}
         if extra.get('write_roots'):
             notes.append('本计划超出任务原先登记的写入范围，确认后新增：'+'、'.join(extra['write_roots']))

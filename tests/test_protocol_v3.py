@@ -706,37 +706,161 @@ PARTS = [dict(kind='organize', description='文献内所有文件平铺到根目
 MOVE_ALL = dict(path='文献', recursive=True, effect='move', destination='.')
 
 
-def test_folder_emptied_only_by_this_plan_gets_a_split_instruction(tmp_path):
+def test_flatten_and_recycle_folder_with_metadata_in_one_plan(tmp_path):
+    # Risk tier M: metadata goes with the folder only when the plan says so, and
+    # the card lists it. Moving out and recycling now fit one plan; the nested
+    # folders are merged into the folder recycled whole.
+    flatten_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = session.run('平铺并删除空文件夹', [
+        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=MOVE_ALL, actions=[
+            dict(effect='trash', source='文献/01'), dict(effect='trash', source='文献', include_metadata=True)]), alias=PLAN)),
+        execute(), finish()])
+    assert errors(client) == [], errors(client)
+    assert (tmp_path / 'x.pdf').read_text() == '文献/01/x.pdf' and (tmp_path / 'y.pdf').is_file()
+    assert not (tmp_path / '文献').exists()
+    assert any(p.name == '.DS_Store' for p in (tmp_path / '.trash').rglob('*'))
+    [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
+    trashed = [s['source'] for s in request['args']['steps'] if s['effect'] == 'trash']
+    assert trashed == ['文献'] and request['args']['steps'][-1]['source'] == '文献'  # merged, and last
+    assert request['args']['hidden_contents'] == [dict(folder='文献', metadata=['.DS_Store'], hidden=[])]
+    assert result.stop_reason == 'done' and client.requests == 3
+    from safety.oplog import undo
+    undo(session.sb, 'v3_1')
+    assert (tmp_path / '文献/01/x.pdf').is_file() and (tmp_path / '文献/.DS_Store').read_text() == 'finder metadata'
+
+
+def test_metadata_needs_the_explicit_flag(tmp_path):
     flatten_fixture(tmp_path)
     session = Session(tmp_path)
     _, client = session.run('平铺', [step(start(PARTS), call('prepare_file_plan', dict(
-        description='平铺并回收', selection=MOVE_ALL, actions=[dict(effect='trash', source='文献/01')])))])
+        description='平铺并回收', selection=MOVE_ALL, actions=[dict(effect='trash', source='文献')])))])
     text = client.calls('prepare_file_plan')[0]['text']
-    assert '文献/01 要等本计划中的移动完成后才会变空' in text and '单独准备回收计划' in text
+    assert '系统元数据文件 .DS_Store' in text and 'include_metadata=true' in text
+    assert (tmp_path / '文献/01/x.pdf').is_file() and not session.approvals
+
+
+def test_folder_with_files_the_plan_does_not_move_is_not_recycled(tmp_path):
+    flatten_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('回收', [step(start(PARTS), call('prepare_file_plan', dict(description='回收', actions=[
+        dict(effect='move', source='文献/01/x.pdf', destination='.'),
+        dict(effect='trash', source='文献', include_metadata=True)])))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert '还有 1 个可见文件不在本计划的移动中' in text and '02/y.pdf' in text
     assert (tmp_path / '文献/01/x.pdf').is_file()
 
 
-def test_folder_with_only_hidden_files_names_them_and_is_not_recycled(tmp_path):
+def secrets_fixture(root):
+    (root / '项目').mkdir()
+    (root / '项目/a.txt').write_text('a')
+    (root / '项目/.env').write_text('TOKEN=secret')
+
+
+ASK_HIDDEN = dict(question='项目 里还有隐藏文件 .env（可能含密钥），要怎么处理？', reason='scope_beyond_request', subject=['项目'],
+                  options=[dict(label='连同 .env 一起回收', consent='include_hidden'), dict(label='保留文件夹，只移动 a.txt'),
+                           dict(label='我自己处理')])
+TRASH_PROJECT = dict(description='移出并回收', actions=[dict(effect='move', source='项目/a.txt', destination='.'),
+                                                   dict(effect='trash', source='项目', include_hidden=['项目/.env'])])
+
+
+def test_other_hidden_files_require_asking_first(tmp_path):
+    # Risk tier H: without the user's recorded consent the plan is refused.
+    secrets_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('移出并删除项目文件夹', [step(start([dict(kind='organize', description='移出并回收')]),
+                                                   call('prepare_file_plan', TRASH_PROJECT))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert '非系统隐藏文件 .env' in text and 'ask_user' in text and 'consent=include_hidden' in text
+    assert (tmp_path / '项目/.env').is_file() and not session.approvals
+
+
+def test_hidden_files_recycled_after_the_user_agrees(tmp_path):
+    secrets_fixture(tmp_path)
+    session = Session(tmp_path)
+    first, _ = session.run('移出并删除项目文件夹', [step(start([dict(kind='organize', description='移出并回收')]),
+                                                  call('ask_user', ASK_HIDDEN))])
+    assert first.stop_reason == 'waiting_input'
+    result, client = session.run('A', [step(start([dict(kind='organize', description='移出并回收')]),
+                                            call('prepare_file_plan', TRASH_PROJECT, alias=PLAN)), execute(), finish()])
+    assert errors(client) == [], errors(client)
+    assert (tmp_path / 'a.txt').is_file() and not (tmp_path / '项目').exists()
+    [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
+    assert request['args']['hidden_contents'] == [dict(folder='项目', metadata=[], hidden=['.env'])]
+    assert result.stop_reason == 'done'
+
+
+def test_hidden_files_card_warns_before_execution(tmp_path):
+    secrets_fixture(tmp_path)
+    from web_confirm import build_confirmation
+    review = dict(plan_id='X1', digest='d', steps=[dict(effect='trash', source='项目', destination='.trash/x')],
+                  hidden_contents=[dict(folder='项目', metadata=[], hidden=['.env'])])
+    notes = build_confirmation(dict(tool='file_plan', args=review), H.Sandbox(tmp_path))['notes']
+    assert any(n.startswith('⚠ 项目 含非系统隐藏文件：.env（12B）') and '密钥' in n for n in notes)
+
+
+def test_declining_or_mismatched_consent_keeps_hidden_files(tmp_path):
+    secrets_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('移出并删除项目文件夹', [step(call('ask_user', ASK_HIDDEN))])
+    _, client = session.run('B', [step(start([dict(kind='organize', description='移出')]), call('prepare_file_plan', TRASH_PROJECT))])
+    assert 'ask_user' in client.calls('prepare_file_plan')[0]['text']  # B carried no consent
+    session.run('再问一次', [step(call('ask_user', ASK_HIDDEN))])
+    wrong = json.loads(json.dumps(TRASH_PROJECT)); wrong['actions'][1]['include_hidden'] = []
+    _, client = session.run('A', [step(start([dict(kind='organize', description='移出')]), call('prepare_file_plan', wrong))])
+    assert '逐个列出 项目 中的全部隐藏文件' in client.calls('prepare_file_plan')[0]['text']
+    assert (tmp_path / '项目/.env').is_file()
+
+
+def test_special_objects_are_never_recycled(tmp_path):
+    # Risk tier D: a hidden folder (here a Git repository) stops the recycle.
+    (tmp_path / '代码/.git').mkdir(parents=True)
+    (tmp_path / '代码/.git/config').write_text('[core]')
+    session = Session(tmp_path)
+    _, client = session.run('删除代码文件夹', [step(start([dict(kind='organize', description='回收')]), call(
+        'prepare_file_plan', dict(description='回收', actions=[dict(effect='trash', source='代码', include_metadata=True)])))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert '特殊对象 .git' in text and '不会回收' in text
+    assert (tmp_path / '代码/.git/config').is_file()
+
+
+def tree_runtime(tmp_path):
+    from agent.artifacts import ArtifactStore
+    from safety.sandbox import Sandbox
+    sb = Sandbox(tmp_path); sb.artifacts = ArtifactStore(sb)
+    r = TaskRuntime('平铺', dict(protocol='v3'), sb, 'one'); sb.runtime = r
+    r.dispatch('start_task', json.dumps(dict(summary='s', parts=PARTS)), sb, None, None)
+    return r, sb
+
+
+def test_finder_metadata_appearing_before_execution_is_tolerated(tmp_path):
+    from agent.file_plans import PrepareFilePlan, prepare, execute
+    flatten_fixture(tmp_path)
+    r, sb = tree_runtime(tmp_path)
+    plan = prepare(r, PrepareFilePlan(description='m', selection=MOVE_ALL,
+                                      actions=[dict(effect='trash', source='文献', include_metadata=True)]))
+    (tmp_path / '文献/01/.DS_Store').write_text('finder wrote this later')
+    execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
+    assert not (tmp_path / '文献').exists() and (tmp_path / 'x.pdf').is_file()
+
+
+def test_new_hidden_file_before_execution_stops_before_any_write(tmp_path):
+    from agent.file_plans import PrepareFilePlan, prepare, execute
+    flatten_fixture(tmp_path)
+    r, sb = tree_runtime(tmp_path)
+    plan = prepare(r, PrepareFilePlan(description='m', selection=MOVE_ALL,
+                                      actions=[dict(effect='trash', source='文献', include_metadata=True)]))
+    (tmp_path / '文献/.env').write_text('appeared after the plan was confirmed')
+    with pytest.raises(ValueError, match='文献'):
+        execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
+    assert (tmp_path / '文献/01/x.pdf').is_file() and (tmp_path / '文献/.env').is_file()
+
+
+def test_hidden_items_are_announced_by_list_dir(tmp_path):
     flatten_fixture(tmp_path)
     session = Session(tmp_path)
-    result, client = session.run('平铺', [
-        step(start(PARTS), call('prepare_file_plan', dict(description='平铺', selection=MOVE_ALL), alias=PLAN)),
-        execute(),
-        step(call('prepare_file_plan', dict(description='回收子文件夹', actions=[
-            dict(effect='trash', source='文献/01'), dict(effect='trash', source='文献/02')]), alias=PLAN2)),
-        execute(PLAN2),
-        step(call('prepare_file_plan', dict(description='回收文献', actions=[dict(effect='trash', source='文献')]))),
-        step(call('finish_task', dict(summary='', unfinished=[
-            dict(part_id='organize_2', reason='文献 只含隐藏文件 .DS_Store，工具不能回收，需用户手动删除')])))])
-    text = client.calls('prepare_file_plan')[-1]['text']
-    assert '只含隐藏文件 .DS_Store' in text and 'Finder' in text and '不要再换路径重试' in text
-    assert (tmp_path / '文献/.DS_Store').is_file() and (tmp_path / 'x.pdf').is_file()
-    # (3) The part the model could not finish is not reported as verified.
-    assert result.runtime['task_status'] == 'partial' and result.stop_reason == 'partial'
-    assert '尚未全部完成' in result.final and '.DS_Store' in result.final and '本地核验通过' not in result.final
-    task = session.sb.runtime.current
-    assert not next(c for c in verify_task(task, session.sb) if c['goal_id'] == 'organize_2')['passed']  # survives recheck
-    assert next(c for c in task['checks'] if c['goal_id'] == 'organize_1')['passed']
+    _, client = session.run('看看', [step(call('list_dir', {'path': '文献'}))], final='好')
+    assert '另有 1 个隐藏项未显示（.DS_Store）' in client.calls('list_dir')[0]['text']
 
 
 def test_unfinished_must_name_an_existing_part(tmp_path):
