@@ -695,10 +695,14 @@ def test_without_reply_the_main_answer_stays_compact(tmp_path):
 from agent.verifier import verify_task
 
 
+# A Finder .DS_Store begins with this header; names alone are not trusted.
+DS_STORE = bytes.fromhex('0000000142756431') + b'\x00' * 64
+
+
 def flatten_fixture(root):
     for rel in ('文献/01/x.pdf', '文献/02/y.pdf'):
         (root / rel).parent.mkdir(parents=True, exist_ok=True); (root / rel).write_text(rel)
-    (root / '文献/.DS_Store').write_text('finder metadata')
+    (root / '文献/.DS_Store').write_bytes(DS_STORE)
 
 
 PARTS = [dict(kind='organize', description='文献内所有文件平铺到根目录'),
@@ -723,11 +727,11 @@ def test_flatten_and_recycle_folder_with_metadata_in_one_plan(tmp_path):
     [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
     trashed = [s['source'] for s in request['args']['steps'] if s['effect'] == 'trash']
     assert trashed == ['文献'] and request['args']['steps'][-1]['source'] == '文献'  # merged, and last
-    assert request['args']['hidden_contents'] == [dict(folder='文献', metadata=['.DS_Store'], hidden=[], sensitive={})]
+    assert request['args']['hidden_contents'] == [dict(folder='文献', metadata=['.DS_Store'], hidden=[], sensitive={}, notes={})]
     assert result.stop_reason == 'done' and client.requests == 3
     from safety.oplog import undo
     undo(session.sb, 'v3_1')
-    assert (tmp_path / '文献/01/x.pdf').is_file() and (tmp_path / '文献/.DS_Store').read_text() == 'finder metadata'
+    assert (tmp_path / '文献/01/x.pdf').is_file() and (tmp_path / '文献/.DS_Store').read_bytes() == DS_STORE
 
 
 def test_metadata_needs_the_explicit_flag(tmp_path):
@@ -787,7 +791,7 @@ def test_hidden_files_recycled_after_the_user_agrees(tmp_path):
     assert (tmp_path / 'a.txt').is_file() and not (tmp_path / '项目').exists()
     [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
     assert request['args']['hidden_contents'] == [dict(folder='项目', metadata=[], hidden=['.env'],
-                                                       sensitive={'.env': dict(name_rule='环境变量文件', findings=[])})]
+                                                       sensitive={'.env': dict(name_rule='环境变量文件', findings=[])}, notes={})]
     assert result.stop_reason == 'done'
 
 
@@ -840,7 +844,7 @@ def test_finder_metadata_appearing_before_execution_is_tolerated(tmp_path):
     r, sb = tree_runtime(tmp_path)
     plan = prepare(r, PrepareFilePlan(description='m', selection=MOVE_ALL,
                                       actions=[dict(effect='trash', source='文献', include_metadata=True)]))
-    (tmp_path / '文献/01/.DS_Store').write_text('finder wrote this later')
+    (tmp_path / '文献/01/.DS_Store').write_bytes(DS_STORE + b'later')
     execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
     assert not (tmp_path / '文献').exists() and (tmp_path / 'x.pdf').is_file()
 

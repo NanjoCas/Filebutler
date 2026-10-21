@@ -1,0 +1,54 @@
+{
+  "about": "回收文件夹时识别系统生成文件的名单。用户 2026-10-22 审阅确认（docs/system-files-candidates-2026-10-22.md）。不在名单中的隐藏文件一律按 H 档先问用户。",
+  "sources": {
+    "G": {"name": "github/gitignore Global/macOS|Windows|Linux.gitignore", "commit": "0e5d690153ca", "date": "2026-10-02", "license": "CC0-1.0"},
+    "J": {"name": "sindresorhus/junk index.js", "commit": "1c82e3c5603c", "release": "v4.0.1", "license": "MIT"},
+    "N": {"name": "nextcloud/desktop sync-exclude.lst", "commit": "515e2fe8cbd2", "date": "2026-10-21", "license": "GPL-2.0 (reference only, not copied)"},
+    "B": {"name": "Dropbox help: Files not syncing", "date": "2026-10-22", "license": "reference only"}
+  },
+  "entries": [
+    {"id": "ds_store", "tier": "metadata", "kind": "file", "patterns": [".ds_store"], "system": "macOS Finder", "sources": "GJNB",
+     "check": {"magic": "0000000142756431"}, "max_bytes": 1048576, "note": ""},
+    {"id": "appledouble", "tier": "metadata", "kind": "file", "patterns": ["._*"], "system": "macOS AppleDouble", "sources": "GJN",
+     "check": {"magic": "00051607"}, "max_bytes": 1048576, "note": ""},
+    {"id": "localized", "tier": "metadata", "kind": "file", "patterns": [".localized"], "system": "macOS", "sources": "G",
+     "check": {}, "max_bytes": 4096, "note": ""},
+    {"id": "folder_icon", "tier": "metadata", "kind": "file", "patterns": ["icon\r"], "system": "macOS", "sources": "GJNB",
+     "check": {}, "max_bytes": 1048576, "note": "自定义文件夹图标，回收后文件夹恢复默认图标"},
+    {"id": "thumbs_db", "tier": "metadata", "kind": "file", "patterns": ["thumbs.db", "ehthumbs.db", "ehthumbs_vista.db"], "system": "Windows", "sources": "GJNB",
+     "check": {"magic": "d0cf11e0a1b11ae1"}, "max_bytes": 52428800, "note": ""},
+    {"id": "desktop_ini", "tier": "metadata", "kind": "file", "patterns": ["desktop.ini"], "system": "Windows", "sources": "GJB",
+     "check": {"text": ["[.shellclassinfo]", "[viewstate]", "[localizedfilenames]"]}, "max_bytes": 65536,
+     "note": "Windows 文件夹的自定义设置（图标、显示名等），回收后恢复默认"},
+    {"id": "kde_directory", "tier": "metadata", "kind": "file", "patterns": [".directory"], "system": "Linux KDE Dolphin", "sources": "GN",
+     "check": {"text": ["[dolphin]", "[desktop entry]"]}, "max_bytes": 65536, "note": ""},
+
+    {"id": "macosx_archive", "tier": "metadata_dir", "kind": "dir", "patterns": ["__macosx"], "system": "macOS 压缩包", "sources": "GJ",
+     "members": ["._*", ".ds_store"], "max_bytes": 104857600, "note": "解压 macOS 压缩包时产生的资源文件夹"},
+    {"id": "appledouble_dir", "tier": "metadata_dir", "kind": "dir", "patterns": [".appledouble"], "system": "macOS 网络共享", "sources": "GJ",
+     "members": [], "max_bytes": 104857600, "note": "网络共享上的资源分支目录"},
+    {"id": "synology_eadir", "tier": "metadata_dir", "kind": "dir", "patterns": ["@eadir"], "system": "Synology NAS", "sources": "J",
+     "members": [], "max_bytes": 104857600, "note": "群晖 NAS 生成的缩略图目录"},
+
+    {"id": "office_lock", "tier": "busy", "kind": "file", "patterns": ["~$*"], "system": "Microsoft Office", "sources": "NB",
+     "note": "Office 文档正被打开"},
+    {"id": "libreoffice_lock", "tier": "busy", "kind": "file", "patterns": [".~lock.*#"], "system": "LibreOffice", "sources": "N",
+     "note": "LibreOffice 文档正被打开"},
+    {"id": "app_locks", "tier": "busy", "kind": "file", "patterns": ["*.idlk", "*.prlock", "*.dwl", "*.dwl2", "*~lock~"], "system": "InDesign / Premiere / AutoCAD / Affinity", "sources": "N",
+     "note": "文档正被相应程序打开"},
+    {"id": "open_deleted", "tier": "busy", "kind": "file", "patterns": [".fuse_hidden*", ".nfs*"], "system": "Linux / NFS", "sources": "GN",
+     "note": "已删除但仍被程序打开的文件"},
+
+    {"id": "volume_dirs", "tier": "special", "kind": "any", "patterns": [".spotlight-v100", ".fseventsd", ".trashes", ".temporaryitems", ".documentrevisions-v100",
+      "$recycle.bin", "system volume information", ".trash-*", ".com.apple.timemachine.*", ".pkinstallsandboxmanager*", "backups.backupdb", ".mobilebackups"],
+     "system": "磁盘根目录的系统目录", "sources": "GJN",
+     "note": "磁盘根目录的系统目录（其中的回收站存有用户删除的文件），这里可能是磁盘根目录"},
+
+    {"id": "sync_config", "tier": "hidden", "kind": "file", "patterns": [".dropbox", ".dropbox.attr", ".sync.ffs_db", ".symform*", ".stignore"], "system": "同步软件", "sources": "NB",
+     "note": "同步软件的配置，删除可能影响同步"},
+    {"id": "editor_swap", "tier": "hidden", "kind": "file", "patterns": [".*.swp", ".*.sw?", "*.kate-swp"], "system": "编辑器", "sources": "JN",
+     "note": "编辑器交换文件，可能保存着尚未存盘的内容"},
+    {"id": "app_override", "tier": "hidden", "kind": "file", "patterns": [".lsoverride", ".apdisk"], "system": "macOS", "sources": "GJN",
+     "note": "用户选择的打开方式或网络共享信息"}
+  ]
+}

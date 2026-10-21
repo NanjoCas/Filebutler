@@ -71,13 +71,18 @@ def describe_path(sb: Sandbox, value: str, *, planned: bool = False) -> dict:
     return item
 
 
-def _hidden_label(sb, folder, rel):
-    """Name and size of a hidden file, read directly (it is never previewable)."""
+def _hidden_label(sb, folder, rel, note=''):
+    """Name and size of a hidden or system file (never previewable); a folder shows its file count."""
     try:
-        size = (sb.root / folder / rel).stat().st_size
-        return f"{rel}（{_fmt_size(size)}）"
+        path = sb.root / folder / rel.rstrip('/')
+        if path.is_dir():
+            files = [p for p in path.rglob('*') if p.is_file()]
+            text = f"{rel}（文件夹，{len(files)} 个文件，{_fmt_size(sum(p.stat().st_size for p in files))}）"
+        else:
+            text = f"{rel}（{_fmt_size(path.stat().st_size)}）"
     except OSError:
-        return rel
+        text = rel
+    return text + (f"——{note}" if note else '')
 
 
 def build_confirmation(request: dict, sb: Sandbox) -> dict:
@@ -115,11 +120,12 @@ def build_confirmation(request: dict, sb: Sandbox) -> dict:
         summary=f"计划 {args['plan_id']}：将执行 {len(changed)} 项操作。"
         for row in args.get('hidden_contents') or []:
             if row['metadata']:
-                notes.append(f"回收 {row['folder']} 时，将连同系统元数据一起移入回收区："
-                             + '、'.join(_hidden_label(sb, row['folder'], p) for p in row['metadata']) + '（系统自动生成，可撤销）。')
+                notes.append(f"回收 {row['folder']} 时，将连同系统生成的文件一起移入回收区："
+                             + '、'.join(_hidden_label(sb, row['folder'], p, row.get('notes', {}).get(p, '')) for p in row['metadata'])
+                             + '（可撤销）。')
             if row['hidden']:
                 notes.append(f"⚠ {row['folder']} 含非系统隐藏文件："
-                             + '、'.join(_hidden_label(sb, row['folder'], p) for p in row['hidden'])
+                             + '、'.join(_hidden_label(sb, row['folder'], p, row.get('notes', {}).get(p, '')) for p in row['hidden'])
                              + '。它们可能是配置或密钥，确认后将一起移入回收区（可撤销）。')
             if row.get('sensitive'):
                 from agent.secrets_scan import describe
