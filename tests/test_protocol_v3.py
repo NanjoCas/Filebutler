@@ -639,3 +639,35 @@ def test_pre_task_evidence_is_not_guessed_between_two_find_parts(tmp_path):
                          step(start([dict(id='a', kind='find', description='光合作用'),
                                      dict(id='b', kind='find', description='税务')])), finish()])
     assert not any(c['passed'] for c in session.sb.runtime.current['checks'])
+
+
+# ============================================================================ round 09 follow-up
+# Live (blind): policy_live_20261021_09_v3_blind/blind_flatten_with_name_clash.
+# The model left the clashing report.pdf files alone and named them in its
+# finish summary, but a completed write task's main answer showed only the
+# local counts, so the user's question ("告诉我是哪些") went unanswered.
+
+
+def test_reply_answers_the_users_question_in_the_main_answer(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    reply = '重名未动：Inbox/a.txt 与 Archive/a.txt。'
+    result, client = session.run('移动并告诉我哪些没动', [
+        step(start([dict(kind='organize', description='移动 b.txt')]),
+             call('prepare_file_plan', dict(description='m', actions=[
+                 dict(effect='move', source='Inbox/b.txt', destination='Archive')]), alias=PLAN)),
+        execute(), step(call('finish_task', dict(summary='过程说明', reply=reply)))])
+    assert errors(client) == [] and result.stop_reason == 'done'
+    assert result.final.startswith('已移动 1 个文件') and reply in result.final
+    assert '过程说明' not in result.final  # the summary stays in details
+
+
+def test_without_reply_the_main_answer_stays_compact(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, _ = session.run('移动', [
+        step(start([dict(kind='organize', description='移动 b.txt')]),
+             call('prepare_file_plan', dict(description='m', actions=[
+                 dict(effect='move', source='Inbox/b.txt', destination='Archive')]), alias=PLAN)),
+        execute(), step(call('finish_task', dict(summary='很长的过程复述')))])
+    assert '很长的过程复述' not in result.final and len(result.final) < 60

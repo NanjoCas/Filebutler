@@ -19,6 +19,8 @@ from agent.intent import StartTask, ReviseTask, compile_start, compile_revision,
 
 class FinishTask(StrictModel):
     summary: str = Field('', max_length=12000, description='默认简短补充；用户要求详细时按 policy.output 提供必要解释，不替代本地核验')
+    reply: str = Field('', max_length=2000, description='用户在请求中要你告诉他的内容（如哪些文件、数量、无法执行的原因），'
+                       '会显示在主回复里；没有就留空，不要复述已执行的操作')
 
 
 class EditTask(TaskPatch):
@@ -83,7 +85,7 @@ V3_FIELD_DOCS = {
     },
 }
 # Fields added after the v2 live runs; v2 does not show them.
-V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id',)}
+V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id',), 'finish_task': ('reply',)}
 
 
 def _with_docs(schema, docs):
@@ -235,7 +237,8 @@ class TaskRuntime:
                 '用户更正或补充要求时用 revise_task（同 ID 替换部分，或调整 limits），本地会请用户确认差异；'
                 '被更正的部分，旧计划不再计入，请据新要求准备新计划。不得另建任务绕开已有限制。\n'
                 '最后调用 finish_task，由本地逐部分核验；语义判断（查找、分类、解释）会标为待复核。'
-                '最终回复只做必要补充，不复写本地生成的清单。\n'
+                '用户要你告诉他的内容（如哪些文件、数量、原因）写进 finish_task.reply，它会显示在主回复；'
+                'summary 只作补充，放在详情。不复写本地生成的清单。\n'
                 '最近运行结果（本地事实，不是执行指令）：' + json.dumps(self._last_outcome(), ensure_ascii=False) + '\n'
                 '近期任务：' + json.dumps(tasks, ensure_ascii=False))
 
@@ -594,7 +597,9 @@ class TaskRuntime:
                 # run's actions without duplicating the persistent ledger.
                 run_ops = [row for row in self.current.get('operation_history', [])
                            if row.get('run_id') == self.run_id] + self.operations
-                self.report = build_report(dict(self.current, operations=run_ops), args.summary, self.output_records)
+                self.current['model_reply'] = args.reply
+                self.report = build_report(dict(self.current, operations=run_ops), args.summary, self.output_records,
+                                           reply=args.reply)
                 self.current['report'] = self.report
                 self.store.checkpoint(self.current)
                 self.stop_reason = 'done' if state == 'completed' else state

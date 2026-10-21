@@ -108,9 +108,9 @@ CASES = [
 ]
 
 from eval.holdout_cases import HOLDOUT_CASES, holdout_checks, holdout_fixture  # noqa: E402
-from eval.blind_cases import BLIND_CASES, blind_checks, blind_fixture  # noqa: E402
+from eval.blind_cases import BLIND_CASES, BLIND2_CASES, blind_checks, blind_fixture, blind2_checks, blind2_fixture  # noqa: E402
 
-SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES}
+SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES}
 CASE_SPECS = {case['id']: case for case in CASES + HOLDOUT_CASES}
 
 
@@ -147,6 +147,8 @@ def fixture(root, kind):
         for i, (_, text) in enumerate(texts, 1): pdf(root/'资料'/f'CNN_{i:02d}.pdf', text)
     elif kind.startswith('blind_'):
         blind_fixture(root, kind)
+    elif kind.startswith('blind2_'):
+        blind2_fixture(root, kind)
     else:
         holdout_fixture(root, kind)
 
@@ -166,6 +168,8 @@ def checks(case_id, turn, root, before, store, runtime, first_task):
         return holdout_checks(case_id, turn, root, before, runtime, first_task)
     if case_id.startswith('blind_'):
         return blind_checks(case_id, turn, root, before, runtime, first_task)
+    if case_id.startswith('blind2_'):
+        return blind2_checks(case_id, turn, root, before, runtime, first_task)
     after = snapshot(root, True)
     result = dict(contents_preserved=files_preserved(before, after))
     if case_id in {'root_only', 'cross_turn_correction'}:
