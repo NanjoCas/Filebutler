@@ -119,38 +119,62 @@ def fingerprint(path, label=None):
 
 
 # Risk tiers for what a recycled folder still holds (decided locally, never by the model):
-#   metadata  OS-generated files: recycled with an explicit include_metadata, shown on the card
+#   metadata  system-generated files from the reviewed list (agent/system_files.json) that
+#             pass their content check: recycled with include_metadata, shown on the card
 #   hidden    other dot-files (.env, ...): only after the user agreed via ask_user, listed exactly
-#   special   hidden folders, symlinks, app/document packages (.git, .app): never recycled
-METADATA_NAMES = {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
-METADATA_MAX = 1 << 20
+#   busy      lock files of open documents: refused until the program is closed
+#   special   hidden folders, symlinks, packages, volume system folders: never recycled
 PACKAGES = ('.app', '.bundle', '.framework', '.photoslibrary', '.pages', '.numbers', '.key', '.rtfd')
 
 
-def _is_metadata(path):
-    return ((path.name in METADATA_NAMES or path.name.startswith('._')) and path.is_file()
-            and not path.is_symlink() and path.stat().st_size <= METADATA_MAX)
+def _tree_digest(folder):
+    rows = sorted((p.relative_to(folder).as_posix(), digest(p)) for p in folder.rglob('*') if p.is_file())
+    return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
 def scan_tree(folder):
-    """Everything under a folder, by risk tier; paths relative to the folder."""
-    out = dict(visible=[], dirs=[], metadata={}, hidden={}, special=[])
+    """Everything under a folder, by risk tier; paths relative to the folder.
+
+    Order matters: structure and the reviewed list come before "is it hidden",
+    so visible-named system files (Thumbs.db, desktop.ini, __MACOSX) are known.
+    """
+    from agent.system_files import match, verified, metadata_dir_ok
+    out = dict(visible=[], dirs=[], metadata={}, hidden={}, special=[], busy=[], notes={})
     for base, dirnames, files in os.walk(folder, followlinks=False):
         base = Path(base)
         for name in sorted(dirnames):
             p = base / name
             rel = p.relative_to(folder).as_posix()
-            if p.is_symlink() or name.startswith('.') or name.lower().endswith(PACKAGES):
+            entry = None if p.is_symlink() else match(name, is_dir=True)
+            if entry and entry['tier'] == 'metadata_dir':
+                dirnames.remove(name)
+                if metadata_dir_ok(p, entry):
+                    out['metadata'][rel + '/'] = _tree_digest(p)
+                    if entry['note']: out['notes'][rel + '/'] = entry['note']
+                else:
+                    out['special'].append(rel)  # a generated folder mixed with other content
+            elif p.is_symlink() or entry or name.startswith('.') or name.lower().endswith(PACKAGES):
                 out['special'].append(rel); dirnames.remove(name)
             else:
                 out['dirs'].append(rel)
         for name in sorted(files):
             p = base / name
             rel = p.relative_to(folder).as_posix()
-            if p.is_symlink() or not p.is_file(): out['special'].append(rel)
-            elif not name.startswith('.'): out['visible'].append(rel)
-            elif _is_metadata(p): out['metadata'][rel] = digest(p)
-            else: out['hidden'][rel] = digest(p)
+            if p.is_symlink() or not p.is_file():
+                out['special'].append(rel); continue
+            entry = match(name, is_dir=False)
+            tier = entry['tier'] if entry else None
+            if tier == 'busy': out['busy'].append(rel)
+            elif tier == 'special': out['special'].append(rel)
+            elif tier == 'metadata' and verified(p, entry):
+                out['metadata'][rel] = digest(p)
+                if entry['note']: out['notes'][rel] = entry['note']
+            elif name.startswith('.'):
+                out['hidden'][rel] = digest(p)
+                if tier == 'metadata': out['notes'][rel] = '名称像系统文件，但内容或大小与系统生成的不符'
+                elif entry and entry['note']: out['notes'][rel] = entry['note']
+            else:
+                out['visible'].append(rel)
     return out
 
 
@@ -162,6 +186,11 @@ def _names(rows, limit=5):
 def tree_snapshot(folder, src, moved_out, action, consent):
     """A folder recycled with what this plan leaves in it, or a precise refusal."""
     t = scan_tree(folder)
+    if t['busy']:
+        from agent.system_files import match
+        why = '、'.join(dict.fromkeys(match(Path(b).name, is_dir=False)['note'] for b in t['busy']))
+        raise ValueError(f"{src} 中有文件正被程序打开（{_names(t['busy'])}：{why}）。请告诉用户先保存并关闭相关程序后再试；"
+                         '锁文件会在关闭后自动消失，不要换路径重试，也不要单独回收锁文件')
     if t['special']:
         raise ValueError(f"{src} 含特殊对象 {_names(t['special'])}（隐藏文件夹、符号链接或应用包），"
                          '可能是代码仓库或程序目录，工具不会回收此文件夹。请如实告诉用户由用户自行处理；其余操作可以照常进行')
@@ -193,7 +222,7 @@ def tree_snapshot(folder, src, moved_out, action, consent):
         raise ValueError(f'{src} 没有需要 include_hidden 的隐藏文件')
     return dict(kind='directory_tree', stat=signature(folder), sha256=None, moved_out=sorted(moving),
                 dirs=t['dirs'], files={**t['metadata'], **t['hidden']},
-                metadata=sorted(t['metadata']), hidden=sorted(t['hidden']),
+                metadata=sorted(t['metadata']), hidden=sorted(t['hidden']), notes=t['notes'],
                 sensitive={rel: dict(name_rule=r['name_rule'], findings=r['findings']) for rel, r in sensitive.items()})
 
 
@@ -211,7 +240,7 @@ def _tree_same(path, expected, pending):
     Finder may add metadata at any time; other new contents stop the plan."""
     if not path.is_dir() or path.is_symlink(): return False
     t = scan_tree(path)
-    if t['special'] or not set(t['dirs']) <= set(expected['dirs']): return False
+    if t['special'] or t['busy'] or not set(t['dirs']) <= set(expected['dirs']): return False
     if not set(t['visible']) <= (set(expected['moved_out']) if pending else set()): return False
     files = {**t['metadata'], **t['hidden']}
     for rel, sha in expected['files'].items():
@@ -300,6 +329,12 @@ def prepare(runtime, args):
                 raise ValueError('创建目标已被文件占用：'+dst)
         elif target and target.exists():
             raise ValueError('目标已存在，不会覆盖：'+dst)
+        if source and source.is_file():
+            from agent.system_files import match
+            entry = match(source.name, is_dir=False)
+            if entry and entry['tier'] == 'busy':
+                raise ValueError(f"{src} 是锁文件（{entry['note']}），表明对应文档正被程序打开。请告诉用户先保存并关闭相关程序；"
+                                 '计划中不要包含锁文件，关闭程序后它会自动消失')
         if effect == 'trash' and source.is_dir() and not source.is_symlink() and any(source.iterdir()):
             snap = tree_snapshot(source, src, moved_out, action, consent)
         else:
@@ -667,7 +702,8 @@ def execute(runtime, plan_id, oplog, confirmer):
                      and (s['snapshot']['metadata'] or s['snapshot']['hidden'])]
             if trees:
                 review['hidden_contents'] = [dict(folder=s['source'], metadata=s['snapshot']['metadata'],
-                                                  hidden=s['snapshot']['hidden'], sensitive=s['snapshot'].get('sensitive', {}))
+                                                  hidden=s['snapshot']['hidden'], sensitive=s['snapshot'].get('sensitive', {}),
+                                                  notes=s['snapshot'].get('notes', {}))
                                              for s in trees]
             if not confirmer.allow('file_plan', review, file_count=len(remaining), force=True,
                                    **({'notes': runtime.text_limits()} if runtime.text_limits() else {})):
