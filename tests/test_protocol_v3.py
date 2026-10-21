@@ -727,7 +727,7 @@ def test_flatten_and_recycle_folder_with_metadata_in_one_plan(tmp_path):
     [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
     trashed = [s['source'] for s in request['args']['steps'] if s['effect'] == 'trash']
     assert trashed == ['文献'] and request['args']['steps'][-1]['source'] == '文献'  # merged, and last
-    assert request['args']['hidden_contents'] == [dict(folder='文献', metadata=['.DS_Store'], hidden=[], sensitive={}, notes={})]
+    assert request['args']['hidden_contents'] == [dict(folder='文献', metadata=['.DS_Store'], hidden=[], sensitive={}, notes={}, consent_source=None)]
     assert result.stop_reason == 'done' and client.requests == 3
     from safety.oplog import undo
     undo(session.sb, 'v3_1')
@@ -791,7 +791,8 @@ def test_hidden_files_recycled_after_the_user_agrees(tmp_path):
     assert (tmp_path / 'a.txt').is_file() and not (tmp_path / '项目').exists()
     [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
     assert request['args']['hidden_contents'] == [dict(folder='项目', metadata=[], hidden=['.env'],
-                                                       sensitive={'.env': dict(name_rule='环境变量文件', findings=[])}, notes={})]
+                                                       sensitive={'.env': dict(name_rule='环境变量文件', findings=[])}, notes={},
+                                                       consent_source='option')]
     assert result.stop_reason == 'done'
 
 
@@ -1028,8 +1029,8 @@ def test_local_consent_option_is_added_and_works(tmp_path):
     asked, _ = session.run('移出并删除项目文件夹', [step(call('ask_user', ASK_NO_CONSENT))])
     choices = asked.report['choices']
     assert [c['key'] for c in choices] == ['A', 'B', 'C', 'D'] and choices[-1]['consent'] == 'include_hidden'
-    assert 'D. 连同隐藏文件 .env 一起回收（可撤销）' in asked.final and '由本地根据文件夹内容补充' in asked.final
-    assert '工具不能移动或单独回收 .env' in choices[0]['detail']  # moving .env is not possible
+    assert 'D. 连同隐藏文件 .env 一起回收（可撤销）　⚠ 会一起删除你看不到的 .env' in asked.final
+    assert not any(c['detail'] for c in choices[:3])  # options without actions are shown as written
     result, client = session.run('D', [step(start([dict(kind='organize', description='移出并回收')]),
                                             call('prepare_file_plan', TRASH_PROJECT, alias=PLAN)), execute(), finish()])
     assert errors(client) == [] and not (tmp_path / '项目').exists() and result.stop_reason == 'done'
@@ -1042,16 +1043,66 @@ def test_no_local_option_when_the_model_already_offers_consent(tmp_path):
     assert len(asked.report['choices']) == 3 and '由本地' not in asked.final
 
 
-def test_options_naming_special_objects_get_a_note(tmp_path):
+def ask_with(options, subject=('代码',)):
+    return call('ask_user', dict(question='怎么办？', reason='cannot_do_as_asked', subject=list(subject), options=options))
+
+
+def test_options_the_tools_cannot_carry_out_are_sent_back_before_the_user_sees_them(tmp_path):
     (tmp_path / '代码/.git').mkdir(parents=True)
     (tmp_path / '代码/.git/HEAD').write_text('ref')
+    (tmp_path / '代码/main.py').write_text('print(1)')
+    secrets_fixture(tmp_path)
+    (tmp_path / 'Reports').mkdir(); (tmp_path / 'Reports/~$q4.docx').write_text('lock')
     session = Session(tmp_path)
-    asked, _ = session.run('删除代码', [step(call('ask_user', dict(
-        question='代码 里有 .git，怎么办？', reason='cannot_do_as_asked', subject=['代码'],
-        options=[dict(label='把 .git 移到 Backup 再回收'), dict(label='保留')])))])
-    choices = asked.report['choices']
-    assert '工具不能移动或单独回收 .git' in choices[0]['detail'] and not choices[1]['detail']
-    assert len(choices) == 2  # .git is special, not a hidden file the user could consent to
+    _, client = session.run('处理', [step(ask_with([
+        dict(label='把 .git 移到 Backup', actions=[dict(effect='move', path='代码/.git', destination='Backup')]),
+        dict(label='读给你看', actions=[dict(effect='read', path='项目/.env')]),
+        dict(label='连同锁文件一起回收', actions=[dict(effect='trash', path='Reports')]),
+        dict(label='保留', actions=[])]))], final='')
+    text = client.calls('ask_user')[0]['text']
+    assert client.calls('ask_user')[0]['status'] == 'error' and '用户还没有看到' in text
+    assert '不能移动隐藏文件或隐藏文件夹：代码/.git' in text and '不能读取隐藏文件：项目/.env' in text
+    assert 'Reports 中有正被打开的文档' in text and '选项 D' not in text
+
+
+def test_option_recycling_hidden_files_is_consent_and_carries_the_only_warning(tmp_path):
+    secrets_fixture(tmp_path)
+    session = Session(tmp_path)
+    asked, _ = session.run('删除项目', [step(ask_with([
+        dict(label='移出 a.txt 后回收项目', actions=[dict(effect='move', path='项目/a.txt', destination='.'),
+                                                  dict(effect='trash', path='项目')]),
+        dict(label='只移出 a.txt', actions=[dict(effect='move', path='项目/a.txt', destination='.')])], subject=['项目']))])
+    a, b = asked.report['choices']
+    assert a['consent'] == 'include_hidden' and '⚠ 会一起删除你看不到的 .env' in asked.final
+    assert not b.get('warn') and len(asked.report['choices']) == 2  # no local option needed
+
+
+def test_the_next_plan_stays_inside_the_chosen_option(tmp_path):
+    secrets_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('删除项目', [step(ask_with([
+        dict(label='移出 a.txt 后回收项目', actions=[dict(effect='move', path='项目/a.txt', destination='.'),
+                                                  dict(effect='trash', path='项目')]),
+        dict(label='只移出 a.txt', actions=[dict(effect='move', path='项目/a.txt', destination='.')])], subject=['项目']))])
+    _, client = session.run('B', [step(start([dict(kind='organize', description='移出')]), call('prepare_file_plan', TRASH_PROJECT))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert '计划超出用户所选选项 B' in text and 'trash 项目' in text
+    assert (tmp_path / '项目/.env').is_file()
+
+
+def test_a_free_text_answer_lets_the_card_confirm_the_hidden_files(tmp_path):
+    # User choice C (2026-10-22): text counts; the confirmation card is the consent.
+    secrets_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('删除项目', [step(call('ask_user', ASK_NO_CONSENT))])
+    result, client = session.run('同意删除', [step(start([dict(kind='organize', description='移出并回收')]),
+                                                call('prepare_file_plan', TRASH_PROJECT, alias=PLAN)), execute(), finish()])
+    assert errors(client) == [] and result.stop_reason == 'done'
+    [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
+    assert request['args']['hidden_contents'][0]['consent_source'] == 'text'
+    from web_confirm import build_confirmation
+    notes = build_confirmation(request, H.Sandbox(tmp_path))['notes']  # the card as it was shown
+    assert any(n.startswith('⚠ 你在对话中以文字回复，请在此确认') and '.env' in n for n in notes)
 
 
 def test_list_dir_marks_lock_files(tmp_path):

@@ -297,6 +297,9 @@ def prepare(runtime, args):
                 dst = (Path(sel['destination']) / tail).as_posix()
             actions.append(dict(effect=sel['effect'], source=src, destination=dst))
     actions = _normalize(runtime, actions)
+    chosen = getattr(runtime, 'chosen_option', None)
+    if chosen is not None:
+        _within_choice(runtime, chosen, actions)  # before any other check, so the reason is this one
     if not actions and args.selection and not args.actions and runtime.current:
         return _empty_selection(runtime, args)
     if not actions or len(actions) > 500:
@@ -340,6 +343,11 @@ def prepare(runtime, args):
                                  '计划中不要包含锁文件，关闭程序后它会自动消失')
         if effect == 'trash' and source.is_dir() and not source.is_symlink() and any(source.iterdir()):
             snap = tree_snapshot(source, src, moved_out, action, consent)
+            if snap['hidden']:
+                # Where the consent came from decides what the confirmation card says.
+                consent_sources = getattr(runtime, 'consent_source', {})
+                snap['consent_source'] = next((v for f, v in consent_sources.items()
+                                               if Path(src) == Path(f) or Path(src).is_relative_to(f)), None)
         else:
             snap = fingerprint(source, src) if source else None
         if snap and snap['kind'] != 'file' and effect != 'trash':
@@ -358,6 +366,7 @@ def prepare(runtime, args):
             steps.append(dict(effect=effect, source=src, destination=dst, snapshot=snap))
     if sources & destinations:
         raise ValueError('计划包含互相依赖的来源与目标；请分为多个明确阶段，不能覆盖或循环移动')
+
     # A folder recycled whole carries its nested folders: a separate trash of one
     # of them is the same effect, merged. Recycled folders go last, after the
     # moves that empty them.
@@ -474,6 +483,23 @@ def _grant(task, plan, run_id):
     if not extra: return
     task['write_roots'] = _granted(task, plan)['write_roots']
     task.setdefault('scope_grants', []).append(dict(plan_id=plan['id'], run_id=run_id, **extra))
+
+
+def _within_choice(runtime, chosen, steps):
+    """The plan after the user picked an option stays inside that option's declared actions."""
+    declared = [dict(a, path=runtime._resolve(a['path'])) for a in chosen['actions']]
+    def allowed(s):
+        source = runtime._resolve(s['source']) if s['source'] else None
+        for a in declared:
+            if s['effect'] == 'trash' and a['effect'] == 'trash' and a['path'] == source: return True
+            if s['effect'] in {'move', 'rename'} and a['effect'] in {'move', 'rename'} and a['path'] == source:
+                dst = a.get('destination')
+                if not dst or s['destination'] == dst or Path(s['destination']).parent == Path(dst): return True
+        return False
+    extra = [f"{s['effect']} {s['source']}" for s in steps if s['effect'] != 'create' and not allowed(s)]
+    if extra:
+        raise ValueError(f"计划超出用户所选选项 {chosen['key']}（{chosen['label']}）的范围：{'、'.join(extra[:3])}。"
+                         '请只执行该选项声明的操作；需要更多操作时先向用户说明')
 
 
 def _selection_count(sb, sel):
@@ -739,7 +765,8 @@ def execute(runtime, plan_id, oplog, confirmer):
             if trees:
                 review['hidden_contents'] = [dict(folder=s['source'], metadata=s['snapshot']['metadata'],
                                                   hidden=s['snapshot']['hidden'], sensitive=s['snapshot'].get('sensitive', {}),
-                                                  notes=s['snapshot'].get('notes', {}))
+                                                  notes=s['snapshot'].get('notes', {}),
+                                                  consent_source=s['snapshot'].get('consent_source'))
                                              for s in trees]
             if not confirmer.allow('file_plan', review, file_count=len(remaining), force=True,
                                    **({'notes': runtime.text_limits()} if runtime.text_limits() else {})):

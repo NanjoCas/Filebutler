@@ -19,10 +19,18 @@ from agent.file_plans import PrepareFilePlan, ExecuteFilePlan
 from agent.intent import StartTask, ReviseTask, compile_start, compile_revision, project, parts_text
 
 
+class ChoiceAction(StrictModel):
+    effect: Literal['move', 'rename', 'trash', 'read'] = Field(description='此选项会做的操作')
+    path: str = Field(description='操作对象的相对路径')
+    destination: str | None = Field(None, description='move/rename 的目标；可写目录')
+
+
 class Choice(StrictModel):
     label: str = Field(min_length=1, max_length=80, description='一个可以直接执行的具体选项，如“只移动 Projects/alpha/report.txt”')
     detail: str = Field('', max_length=200, description='选这个会怎样；可留空')
     consent: Literal['include_hidden'] | None = Field(None, description='仅当此选项表示“同意连同隐藏文件一起回收”时填 include_hidden')
+    actions: list[ChoiceAction] | None = Field(None, max_length=20,
+        description='此选项会执行的操作，供本地在显示前检查能否做到（不展示给用户）；不做任何操作写空列表')
 
 
 class AskUser(StrictModel):
@@ -204,8 +212,16 @@ class TaskRuntime:
         self.pending_choice = None
         self.answered_choice = self._answered_choice(instruction)
         # Folders whose hidden files the user agreed, last turn, to recycle.
-        chosen = (self.answered_choice or {}).get('chosen') or {}
-        self.hidden_consent = set(self.answered_choice['subject']) if chosen.get('consent') == 'include_hidden' else set()
+        # Consent to recycle hidden files: a chosen consent option, or (user choice
+        # 2026-10-22, option C) a free-text reply, which the confirmation card must
+        # then confirm. A chosen option without consent grants nothing.
+        answered = self.answered_choice or {}
+        chosen = answered.get('chosen') or {}
+        source = 'option' if chosen.get('consent') == 'include_hidden' else 'text' if answered and not chosen else None
+        self.consent_source = {f: source for f in answered.get('subject', [])} if source else {}
+        self.hidden_consent = set(self.consent_source)
+        # The chosen option's declared actions bound the next plan (None: not declared).
+        self.chosen_option = chosen if chosen.get('actions') is not None else None
 
     def guidance(self):
         if self.protocol == 'v3':
@@ -305,7 +321,9 @@ class TaskRuntime:
                 '有多个候选对象；标准没有可执行的界限（如“旧的”“大的”）；遇到冲突而用户没交代怎么处理；'
                 '要动的对象超出用户明确说的范围；无法按原样做到（如没有复制能力）。'
                 '惯例默认（保留原名、自动建父目录、回收可撤销）和能用只读工具查清的事实不必问；问之前先查清事实，让选项具体。'
-                '选项必须是工具能做到的：隐藏文件和隐藏文件夹不能移动，锁文件不能移动或回收，隐藏文件只能随所在文件夹一起回收。\n'
+                '选项必须是工具能做到的：隐藏文件和隐藏文件夹不能移动或读取，锁文件不能移动或回收，隐藏文件只能随所在文件夹一起回收。'
+                '每个选项写 actions（move/rename/trash/read 及路径，不做操作写空列表），本地会在用户看到前检查，做不到的退回给你改写；'
+                '用户选中的选项会约束下一轮计划，不能超出它声明的操作。\n'
                 '回收文件夹时，本地按其中剩下的内容分级：可见文件须由同一计划先移走（可在同一计划内先移出再回收，'
                 '整个文件夹一次回收即可，不必逐个列子文件夹）；系统元数据（.DS_Store 等）在该 trash 动作设 include_metadata=true，'
                 '确认卡片会列给用户；其他隐藏文件（.env 等）须先 ask_user（subject 填文件夹，同意项 consent=include_hidden），'
@@ -327,26 +345,65 @@ class TaskRuntime:
                 yield path, folder, scan_tree(folder)
 
     def _ground_choices(self, choices, subject, sb):
-        """Tie options to what the tools can do, from local facts about the subject folders.
+        """Check each option's declared actions against what the tools can do.
 
-        - If a folder holds other hidden files and no option means consent, add one
-          that does, so choosing it lets the next plan recycle them.
-        - An option naming a hidden, locked or special object gets a note that the
-          tools cannot move or separately recycle it.
+        Runs before the user sees the question: an option the tools cannot carry
+        out is sent back to the model to rewrite. An option whose actions recycle
+        a folder with other hidden files means consent, and gets the one warning
+        line the user needs. Options without declared actions are shown as given.
         """
+        problems = []
+        for c in choices:
+            actions = c.get('actions') or []
+            moved = {self._resolve(a['path']) for a in actions if a['effect'] in {'move', 'rename'}}
+            hidden = []
+            for a in actions:
+                why, found = self._action_check(a, moved, sb)
+                if why: problems.append(f"选项 {c['key']}（{c['label'][:30]}）：{why}")
+                hidden += found
+            if hidden:
+                c['consent'] = 'include_hidden'
+                c['warn'] = '、'.join(Path(h).name for h in hidden[:3]) + ('等' if len(hidden) > 3 else '')
+        if problems:
+            raise ValueError('以下选项包含工具做不到的操作，用户还没有看到这个问题；请改写或删掉这些选项后重新提问：'
+                             + '；'.join(problems))
         trees = list(self._subject_trees(subject, sb))
         hidden = [f'{p}/{rel}' for p, _, t in trees for rel in t['hidden']]
-        objects = {Path(rel).name for _, _, t in trees for rel in [*t['hidden'], *t['busy'], *t['special']]}
-        for c in choices:
-            named = sorted(o for o in objects if o in c['label'] or o in c['detail'])
-            if named and not c.get('consent'):
-                note = f"注：工具不能移动或单独回收 {'、'.join(named)}；若此项需要这样做，请你手动操作"
-                c['detail'] = (c['detail'] + '；' if c['detail'] else '') + note
         if hidden and not any(c.get('consent') == 'include_hidden' for c in choices) and len(choices) < len(CHOICE_KEYS):
             names = '、'.join(Path(h).name for h in hidden[:3]) + ('等' if len(hidden) > 3 else '')
             choices.append(dict(key=CHOICE_KEYS[len(choices)], label=f'连同隐藏文件 {names} 一起回收（可撤销）',
-                                detail='选此项表示同意回收这些隐藏文件', consent='include_hidden', local=True))
+                                detail='', consent='include_hidden', local=True, warn=names,
+                                actions=None))  # consent only: it does not bound the other operations
         return choices
+
+    def _action_check(self, action, moved, sb):
+        """(why the tools cannot do it or None, hidden files it would recycle)."""
+        from agent.file_plans import scan_tree
+        from agent.system_files import match
+        path = self._resolve(action['path'])
+        try: p = sb.path(path, exact=True)
+        except Exception: return f'{path} 不在资料库中', []
+        if not p.exists(): return f'{path} 不存在', []
+        hidden = any(part.startswith('.') for part in Path(path).parts)
+        entry = match(p.name, is_dir=False) if p.is_file() else None
+        locked = bool(entry and entry['tier'] == 'busy')
+        effect = action['effect']
+        if effect == 'read':
+            return ('工具不能读取隐藏文件：' + path, []) if hidden else (None, [])
+        if effect in {'move', 'rename'}:
+            if hidden: return '工具不能移动隐藏文件或隐藏文件夹：' + path, []
+            if locked: return f'{path} 是锁文件，不能移动', []
+            if p.is_dir(): return f'计划只移动文件，{path} 需展开为其中的文件', []
+            return None, []
+        if hidden: return '隐藏对象只能随所在文件夹一起回收：' + path, []
+        if locked: return f'{path} 是锁文件，不能回收', []
+        if not p.is_dir(): return None, []
+        t = scan_tree(p)
+        if t['busy']: return f"{path} 中有正被打开的文档（{'、'.join(t['busy'][:3])}），回收会失败", []
+        if t['special']: return f"{path} 含 {'、'.join(t['special'][:3])}（隐藏文件夹、链接或应用包），不能回收", []
+        left = [v for v in t['visible'] if f'{path}/{v}' not in moved]
+        if left: return f"{path} 还有 {len(left)} 个文件没有被此选项移走（如 {'、'.join(left[:3])}），计划不会回收它", []
+        return None, [f'{path}/{h}' for h in t['hidden']]
 
     def _sensitive_lines(self, subject, sb):
         """Local facts appended to a question about recycling folders: suspected
@@ -671,10 +728,14 @@ class TaskRuntime:
                 outcome = registry.ToolResult(status='ok', text='OK: 当前步骤 '+step['id']+'，目标 '+','.join(step['goal_ids']))
             elif name == 'ask_user':
                 args = AskUser.model_validate_json(raw)
-                choices = [dict(key=CHOICE_KEYS[i], label=o.label, detail=o.detail, consent=o.consent)
+                choices = [dict(key=CHOICE_KEYS[i], label=o.label, detail=o.detail, consent=o.consent,
+                                actions=None if o.actions is None else [a.model_dump() for a in o.actions])
                            for i, o in enumerate(args.options)]
                 choices = self._ground_choices(choices, args.subject, sb)
-                lines = [args.question, ''] + [f"{c['key']}. {c['label']}" + (f"——{c['detail']}" if c['detail'] else '') for c in choices]
+                lines = [args.question, '']
+                for c in choices:
+                    lines.append(f"{c['key']}. {c['label']}" + (f"——{c['detail']}" if c['detail'] else '')
+                                 + (f"　⚠ 会一起删除你看不到的 {c['warn']}" if c.get('warn') else ''))
                 lines += self._sensitive_lines(args.subject, sb)
                 if any(c.get('local') for c in choices):
                     lines += ['（最后一项由本地根据文件夹内容补充。）']
