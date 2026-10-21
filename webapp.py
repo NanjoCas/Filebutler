@@ -295,6 +295,15 @@ app = FastAPI(title="FileButler Local", version="0.1.0", docs_url="/api/docs")
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    response = await call_next(request)
+    # Without this, browsers may reuse an old app.js heuristically after an update.
+    if request.url.path.startswith("/static/") or request.url.path in {"/", "/index.html"}:
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.on_event("startup")
 def startup():
     _init_db()
