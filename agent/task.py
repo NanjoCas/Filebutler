@@ -168,7 +168,9 @@ def task_state(task):
                 for c in task['constraints'])):
         # A write task that never executed an operation has no result to
         # review; the next step (a conflict, a choice) is the user's.
-        if task.get('allowed_effects') and not (task.get('operation_history') or task.get('operations')):
+        declared = task.get('declared_unfinished') or {}
+        nothing_needed = declared.get('revision') == task['revision'] and declared.get('not_needed')
+        if task.get('allowed_effects') and not (task.get('operation_history') or task.get('operations')) and not nothing_needed:
             return 'waiting_input'
         return 'needs_review'
     latest = {}

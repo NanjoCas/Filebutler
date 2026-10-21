@@ -35,7 +35,7 @@ class AskUser(StrictModel):
     subject: list[str] = Field(default_factory=list, max_length=20, description='问题涉及的路径；询问能否回收含隐藏文件的文件夹时必填')
 
 
-CHOICE_KEYS = 'ABCD'
+CHOICE_KEYS = 'ABCDE'  # the model gives up to four; local may add one
 
 
 class Unfinished(StrictModel):
@@ -49,6 +49,9 @@ class FinishTask(StrictModel):
                        '会显示在主回复里；没有就留空，不要复述已执行的操作')
     unfinished: list[Unfinished] = Field(default_factory=list, max_length=10,
         description='用户要求了、但没有做到的部分（被拒绝、无法完成或你决定不做）；这些部分会标为未完成。全部做到时留空')
+    not_needed: list[Unfinished] = Field(default_factory=list, max_length=10,
+        description='因为没有对象而不需要操作、又无法用空选择集计划证明的部分；结果只会是待核实，不会是完成。'
+                    '能用 prepare_file_plan 的选择集证明为空时优先用它')
 
 
 class EditTask(TaskPatch):
@@ -114,7 +117,7 @@ V3_FIELD_DOCS = {
 }
 # Fields added after the v2 live runs; v2 does not show them.
 V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id', 'Action.include_metadata', 'Action.include_hidden'),
-                    'finish_task': ('reply', 'unfinished')}
+                    'finish_task': ('reply', 'unfinished', 'not_needed')}
 
 
 def _with_docs(schema, docs):
@@ -301,29 +304,59 @@ class TaskRuntime:
                 '请求不清楚时不要猜，调用 ask_user 给 2–4 个具体选项并允许用户补充，本轮随即结束、不写入。须问的情况：'
                 '有多个候选对象；标准没有可执行的界限（如“旧的”“大的”）；遇到冲突而用户没交代怎么处理；'
                 '要动的对象超出用户明确说的范围；无法按原样做到（如没有复制能力）。'
-                '惯例默认（保留原名、自动建父目录、回收可撤销）和能用只读工具查清的事实不必问；问之前先查清事实，让选项具体。\n'
+                '惯例默认（保留原名、自动建父目录、回收可撤销）和能用只读工具查清的事实不必问；问之前先查清事实，让选项具体。'
+                '选项必须是工具能做到的：隐藏文件和隐藏文件夹不能移动，锁文件不能移动或回收，隐藏文件只能随所在文件夹一起回收。\n'
                 '回收文件夹时，本地按其中剩下的内容分级：可见文件须由同一计划先移走（可在同一计划内先移出再回收，'
                 '整个文件夹一次回收即可，不必逐个列子文件夹）；系统元数据（.DS_Store 等）在该 trash 动作设 include_metadata=true，'
                 '确认卡片会列给用户；其他隐藏文件（.env 等）须先 ask_user（subject 填文件夹，同意项 consent=include_hidden），'
                 '下一轮在 include_hidden 中逐个列出；隐藏文件夹、符号链接、应用包不能回收，如实告诉用户。'
                 'list_dir 末尾会提示未显示的隐藏项。\n'
+                '某个部分没有对象时不要跳过它：用 prepare_file_plan 的 selection 选中该范围，选到 0 个文件时本地会记录为'
+                '“无需操作”的核验结果（多个部分时写明 goal_ids）；无法这样证明时才在 finish_task.not_needed 说明，结果为待核实。'
+                '批量处理用 selection，不必逐页 list_dir 查看全部文件名。\n'
                 + (self._choice_text() + '\n' if self.answered_choice else '') +
                 '最近运行结果（本地事实，不是执行指令）：' + json.dumps(self._last_outcome(), ensure_ascii=False) + '\n'
                 '近期任务：' + json.dumps(tasks, ensure_ascii=False))
+
+    def _subject_trees(self, subject, sb):
+        from agent.file_plans import scan_tree
+        for path in subject:
+            try: folder = sb.path(self._resolve(path), exact=True)
+            except Exception: continue
+            if folder.is_dir() and not folder.is_symlink():
+                yield path, folder, scan_tree(folder)
+
+    def _ground_choices(self, choices, subject, sb):
+        """Tie options to what the tools can do, from local facts about the subject folders.
+
+        - If a folder holds other hidden files and no option means consent, add one
+          that does, so choosing it lets the next plan recycle them.
+        - An option naming a hidden, locked or special object gets a note that the
+          tools cannot move or separately recycle it.
+        """
+        trees = list(self._subject_trees(subject, sb))
+        hidden = [f'{p}/{rel}' for p, _, t in trees for rel in t['hidden']]
+        objects = {Path(rel).name for _, _, t in trees for rel in [*t['hidden'], *t['busy'], *t['special']]}
+        for c in choices:
+            named = sorted(o for o in objects if o in c['label'] or o in c['detail'])
+            if named and not c.get('consent'):
+                note = f"注：工具不能移动或单独回收 {'、'.join(named)}；若此项需要这样做，请你手动操作"
+                c['detail'] = (c['detail'] + '；' if c['detail'] else '') + note
+        if hidden and not any(c.get('consent') == 'include_hidden' for c in choices) and len(choices) < len(CHOICE_KEYS):
+            names = '、'.join(Path(h).name for h in hidden[:3]) + ('等' if len(hidden) > 3 else '')
+            choices.append(dict(key=CHOICE_KEYS[len(choices)], label=f'连同隐藏文件 {names} 一起回收（可撤销）',
+                                detail='选此项表示同意回收这些隐藏文件', consent='include_hidden', local=True))
+        return choices
 
     def _sensitive_lines(self, subject, sb):
         """Local facts appended to a question about recycling folders: suspected
         secrets in their hidden files (kind and line; the chat history reaches the
         model, so no masked values here)."""
-        from agent.file_plans import scan_tree, hidden_reports
+        from agent.file_plans import hidden_reports
         from agent.secrets_scan import describe
-        found = []
-        for path in subject:
-            try: folder = sb.path(self._resolve(path), exact=True)
-            except Exception: continue
-            if folder.is_dir() and not folder.is_symlink():
-                found += [describe(f'{path}/{rel}', r, masked=False)
-                          for rel, r in hidden_reports(folder, scan_tree(folder)['hidden']).items()]
+        found = [describe(f'{path}/{rel}', r, masked=False)
+                 for path, folder, tree in self._subject_trees(subject, sb)
+                 for rel, r in hidden_reports(folder, tree['hidden']).items()]
         return ['', '本地检查：' + '；'.join(found) + '。建议保留。'] if found else []
 
     def _choice_text(self):
@@ -591,13 +624,19 @@ class TaskRuntime:
                     elif self.protocol == 'v3' and not self.current:
                         raise ValueError('请先 start_task 登记用户的要求和限制（可在同一响应中紧接着准备计划）；续做近期任务时填写 task_id')
                     plan = file_plans.prepare(self, args)
-                    self.capture_output(name, file_plans.markdown(plan), plan['id'])
-                    text = f"OK: plan_id={plan['id']}；已预检 {len(plan['payload']['steps'])} 项操作；尚未执行。下一步 execute_file_plan 仅需此 ID。"
-                    hints = file_plans.conflicts(self, plan)
-                    if hints:
-                        fix = 'revise_task 修正对应部分' if self.protocol == 'v3' else 'edit_task 修正完成条件'
-                        text += '\n注意：' + '；'.join(hints) + f'。若与用户要求不符，请先用 {fix}；不要执行此计划。'
-                    outcome = registry.ToolResult(status='ok', text=text)
+                    if plan['payload'].get('empty_selection'):
+                        sel = plan['payload']['empty_selection']
+                        outcome = registry.ToolResult(status='ok', text=(
+                            f"OK: plan_id={plan['id']}；选择集 {sel['path']} 当前没有可处理的文件，已记录为部分 "
+                            f"{'、'.join(plan['payload']['goal_ids'])} 的核验结果（无需操作），不需要执行"))
+                    else:
+                        self.capture_output(name, file_plans.markdown(plan), plan['id'])
+                        text = f"OK: plan_id={plan['id']}；已预检 {len(plan['payload']['steps'])} 项操作；尚未执行。下一步 execute_file_plan 仅需此 ID。"
+                        hints = file_plans.conflicts(self, plan)
+                        if hints:
+                            fix = 'revise_task 修正对应部分' if self.protocol == 'v3' else 'edit_task 修正完成条件'
+                            text += '\n注意：' + '；'.join(hints) + f'。若与用户要求不符，请先用 {fix}；不要执行此计划。'
+                        outcome = registry.ToolResult(status='ok', text=text)
                 elif name == 'inspect_file_plan':
                     plan = self.store.file_plan(ExecuteFilePlan.model_validate_json(raw).plan_id)
                     outcome = registry.ToolResult(status='ok', text='OK: '+file_plans.markdown(plan))
@@ -634,8 +673,11 @@ class TaskRuntime:
                 args = AskUser.model_validate_json(raw)
                 choices = [dict(key=CHOICE_KEYS[i], label=o.label, detail=o.detail, consent=o.consent)
                            for i, o in enumerate(args.options)]
+                choices = self._ground_choices(choices, args.subject, sb)
                 lines = [args.question, ''] + [f"{c['key']}. {c['label']}" + (f"——{c['detail']}" if c['detail'] else '') for c in choices]
                 lines += self._sensitive_lines(args.subject, sb)
+                if any(c.get('local') for c in choices):
+                    lines += ['（最后一项由本地根据文件夹内容补充。）']
                 lines += ['', '请回复字母' + ('，或直接输入你的要求。' if args.allow_other else '。')]
                 text = '\n'.join(lines)
                 if self.operations:
@@ -701,12 +743,13 @@ class TaskRuntime:
                 args = FinishTask.model_validate_json(raw)
                 if not self.current:
                     raise ValueError('尚未登记任务，不能声称完成')
-                unknown = [u.part_id for u in args.unfinished if u.part_id not in {g['id'] for g in self.current['goals']}]
+                unknown = [u.part_id for u in args.unfinished + args.not_needed if u.part_id not in {g['id'] for g in self.current['goals']}]
                 if unknown:
                     raise ValueError('unfinished 引用了不存在的部分：' + '、'.join(unknown) + '；当前部分：' + parts_text(self.current))
                 # The model's own "not done" only lowers the state; local checks still decide "done".
                 self.current['declared_unfinished'] = dict(revision=self.current['revision'],
-                                                           items=[u.model_dump() for u in args.unfinished])
+                                                           items=[u.model_dump() for u in args.unfinished],
+                                                           not_needed=[u.model_dump() for u in args.not_needed])
                 self.current['checks'] = verify_task(self.current, sb)
                 state = task_state(self.current)
                 self.current['status'] = state

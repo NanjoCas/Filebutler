@@ -200,6 +200,15 @@ def verify_task(task, sb):
             rows.append(dict(kind=kind, passed=bool(ok), needs_review=review, detail=detail))
         declared = task.get('declared_unfinished') or {}
         if declared.get('revision') == task['revision']:
+            for u in declared.get('not_needed', []):
+                if u['part_id'] != goal['id']: continue
+                # "Nothing to do" cannot be proved here: allowed only for a part that
+                # prepared no plan and wrote nothing, and then only as review.
+                touched = any(goal['id'] in b['goal_ids'] for b in task.get('file_plan_bindings', {}).values()) or any(
+                    goal['id'] in (op.get('goal_ids') or []) for op in task.get('operation_history', []) + task.get('operations', []))
+                rows = ([dict(kind='declared_not_needed', passed=False, needs_review=False,
+                              detail='模型声明无需操作，但本部分已有计划或操作，需按其结果核验：' + u['reason'])] + rows) if touched else \
+                       [dict(kind='declared_not_needed', passed=True, needs_review=True, detail='模型说明无需操作（本地未能证明）：' + u['reason'])]
             rows += [dict(kind='declared_unfinished', passed=False, needs_review=False, detail='模型声明未完成：'+u['reason'])
                      for u in declared.get('items', []) if u['part_id'] == goal['id']]
         checks.append(dict(goal_id=goal['id'], description=goal['description'],
