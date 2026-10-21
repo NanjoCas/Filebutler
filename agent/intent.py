@@ -71,7 +71,8 @@ class ReviseTask(StrictModel):
     task_id: str
     expected_revision: int = Field(ge=1)
     reason: str = Field(min_length=1, max_length=800, description='用户的更正或补充')
-    parts: list[Part] = Field(default_factory=list, max_length=10, description='新增部分；同 ID 替换原部分')
+    parts: list[Part] = Field(default_factory=list, max_length=10,
+        description='每项必须写 id：写已有部分的 ID 表示替换它（用户更正时通常如此），写新 ID 表示新增')
     remove_part_ids: list[str] = Field(default_factory=list, max_length=10)
     limits: Limits | None = Field(None, description='完整的新限制；放宽原限制会在确认卡片中显示')
     questions: list[str] | None = None
@@ -150,6 +151,9 @@ def compile_revision(args: ReviseTask, task) -> TaskPatch:
     known = {g['id'] for g in task['goals']}
     if set(args.remove_part_ids) - known:
         raise ValueError('要移除的部分不存在：' + '、'.join(sorted(set(args.remove_part_ids) - known)))
+    if any(not p.id for p in args.parts):
+        # Replace or add is the model's statement, never a local guess.
+        raise ValueError('revise_task 的每个部分都要写 id：替换已有部分用原 ID，新增部分用新 ID。当前部分：' + parts_text(task))
     goals = [compile_goal(p, len(task['goals']) + i) for i, p in enumerate(args.parts, 1)]
     patch = dict(expected_revision=args.expected_revision, reason=args.reason,
                  upsert_goals=goals, remove_goal_ids=args.remove_part_ids)
@@ -170,6 +174,10 @@ def compile_revision(args: ReviseTask, task) -> TaskPatch:
     if args.questions is not None: patch['unresolved_questions'] = args.questions
     if args.cancel is not None: patch['cancel'] = args.cancel
     return TaskPatch.model_validate(patch)
+
+
+def parts_text(task):
+    return '、'.join(f"{p['id']}（{p['kind']}）" for p in project(task)['parts'])
 
 
 def project(task):

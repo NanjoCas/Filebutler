@@ -590,3 +590,52 @@ def test_plan_recycling_an_empty_folder_is_not_flagged(tmp_path):
 def test_notes_description_states_its_cost():
     notes = StartTask.model_json_schema()['$defs']['Limits']['properties']['notes']['description']
     assert '通常留空' in notes and '人工复核' in notes and '不要复述' in notes
+
+
+# ============================================================================ round 07 follow-ups
+# Live: policy_live_20261021_07_v3_all. (a) cross_turn_correction turn 2: the
+# revision's part had no id, so it was added beside the old part, whose plan
+# (b.txt into Archive) then failed after b.txt moved back. (b)
+# holdout_search_dedup_move: notes were read before start_task, and that
+# evidence was not kept, so the find part ended partial.
+
+
+def test_revision_part_without_id_is_rejected_and_names_the_parts(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('移动', [step(start([dict(kind='organize', description='a、b 移到 Archive')])), finish()])
+    assert 'organize_1（organize）' in client.calls('start_task')[0]['text']
+    _, client = session.run('更正', [step(call('revise_task', dict(task_id=TASK, expected_revision=1, reason='更正',
+                                                                  parts=[dict(kind='organize', description='b 移回')]))), finish()])
+    text = client.calls('revise_task')[0]['text']
+    assert '每个部分都要写 id' in text and 'organize_1（organize）' in text
+    assert session.sb.runtime.store.get(session.ids[TASK])['revision'] == 1 and not session.approvals
+
+
+def read_calls(names):
+    return [dict(tool='read_file', arguments=json.dumps({'path': f'Notes/{n}'}), status='ok', result_head='',
+                 result_ids=[f'Faaaaaaaaa{i:02d}', f'Eaaaaaaaaa{i:02d}']) for i, n in enumerate(names)]
+
+
+def finding(i):
+    return dict(file_id=f'Faaaaaaaaa{i:02d}', evidence_ids=[f'Eaaaaaaaaa{i:02d}'], relation='topic', reason='光合作用')
+
+
+def test_evidence_read_before_start_task_binds_to_the_find_part(tmp_path):
+    holdout_fixture(tmp_path, 'notes_combo')
+    session = Session(tmp_path)
+    session.run('找笔记', [step(*read_calls(['note_01.txt', 'note_02.txt'])),
+                         step(start([dict(id='find', kind='find', description='光合作用笔记'),
+                                     dict(id='organize', kind='organize', description='移动')])),
+                         step(call('report_findings', dict(findings=[finding(0), finding(1)]))), finish()])
+    checks = {c['goal_id']: c for c in session.sb.runtime.current['checks']}
+    assert checks['find']['passed'] and checks['find']['needs_review']
+
+
+def test_pre_task_evidence_is_not_guessed_between_two_find_parts(tmp_path):
+    holdout_fixture(tmp_path, 'notes_combo')
+    session = Session(tmp_path)
+    session.run('找笔记', [step(*read_calls(['note_01.txt'])),
+                         step(start([dict(id='a', kind='find', description='光合作用'),
+                                     dict(id='b', kind='find', description='税务')])), finish()])
+    assert not any(c['passed'] for c in session.sb.runtime.current['checks'])

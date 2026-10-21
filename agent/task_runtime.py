@@ -14,7 +14,7 @@ from agent.policy import ExecutionStep, active_goals, applies, retain_step
 from safety.sandbox import SandboxError
 from tools import registry
 from agent.file_plans import PrepareFilePlan, ExecuteFilePlan
-from agent.intent import StartTask, ReviseTask, compile_start, compile_revision, project
+from agent.intent import StartTask, ReviseTask, compile_start, compile_revision, project, parts_text
 
 
 class FinishTask(StrictModel):
@@ -539,6 +539,7 @@ class TaskRuntime:
                 if self.current and any(m.get('run_id') == self.run_id for m in self.current.get('source_messages', [])):
                     raise ValueError(f"本轮已登记任务 {self.current['id']}；更正或补充请用 revise_task，不能另建任务")
                 outcome = self._register(compile_start(StartTask.model_validate_json(raw)), sb)
+                outcome.text += '部分：' + parts_text(self.current) + '。修订时用这些 ID。'
             elif name == 'revise_task':
                 args = ReviseTask.model_validate_json(raw)
                 patch = compile_revision(args, self.store.get(args.task_id))
@@ -554,7 +555,8 @@ class TaskRuntime:
                 self.operations = []
                 self.outputs, self._output_indices = [], {}
                 self.output_records = []
-                outcome = registry.ToolResult(status='ok', text=f"OK: task_id={self.current['id']} revision={self.current['revision']}；修改已确认并生效")
+                outcome = registry.ToolResult(status='ok', text=f"OK: task_id={self.current['id']} revision={self.current['revision']}；"
+                                              f"修改已确认并生效。部分：{parts_text(self.current)}")
             elif name == 'set_task':
                 outcome = self._register(TaskSubmission.model_validate_json(raw), sb)
             elif name == 'edit_task':
@@ -674,13 +676,6 @@ class TaskRuntime:
             self.final_answer = None
         if name in self.control_names:
             return
-        if not self.current:
-            outcome = self._outcome or registry.ToolResult(status='error', text=result, error_code='CONTROL_REJECTED')
-            if outcome.status == 'ok' and name in registry.TOOLS and not registry.TOOLS[name].writes:
-                self._pretask.append(dict(tool=name, arguments=self._args, status='ok', error_code=None,
-                                          summary=result.splitlines()[0][:300] if result else '',
-                                          references=[], goal_ids=[], step_id=None, run_id=self.run_id))
-            return
         refs = []
         for collection, before in self._before_refs.items():
             ids = set(sb.artifacts.data[collection]) - before
@@ -688,8 +683,18 @@ class TaskRuntime:
             for field, target in tool.reference_inputs if tool else ():
                 if target == collection and self._args.get(field) in sb.artifacts.data[collection]:
                     ids.add(self._args[field])
-            refs.extend(dict(collection=collection, id=value, goal_ids=self._consumers(collection),
+            # Before registration no goal exists: the refs stay untagged and bind
+            # later only where a single goal verifies that collection.
+            refs.extend(dict(collection=collection, id=value,
+                             goal_ids=self._consumers(collection) if self.current else [],
                              step_id=(self.active_step or {}).get('id')) for value in sorted(ids))
+        if not self.current:
+            outcome = self._outcome or registry.ToolResult(status='error', text=result, error_code='CONTROL_REJECTED')
+            if outcome.status == 'ok' and name in registry.TOOLS and not registry.TOOLS[name].writes:
+                self._pretask.append(dict(tool=name, arguments=self._args, status='ok', error_code=None,
+                                          summary=result.splitlines()[0][:300] if result else '',
+                                          references=refs, goal_ids=[], step_id=None, run_id=self.run_id))
+            return
         outcome = self._outcome or registry.ToolResult(status='error', text=result, error_code='CONTROL_REJECTED')
         tool = registry.TOOLS.get(name)
         if tool and tool.display_result and outcome.status == 'ok':
