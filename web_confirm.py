@@ -6,6 +6,43 @@ from safety.sandbox import Sandbox, SandboxError
 from tools.fs_read import _fmt_size
 
 
+def describe_task_value(field, value):
+    effects={'create':'创建目录','move':'移动','rename':'改名','trash':'移入回收区'}
+    predicates={'within':'限定路径','outside':'排除路径','extensions':'限定扩展名','name_glob':'限定名称',
+                'empty_directory':'仅空目录','same_extension':'扩展名不变','max_count':'本轮数量上限',
+                'content_unchanged':'内容保持不变'}
+    conditions={'path_exists':'路径存在','path_absent':'路径不存在','directory_empty':'目录为空',
+                'sha256':'内容哈希一致','tool_success':'已执行指定工具（仍需复核）','manual_review':'人工复核',
+                'evidence_valid':'证据引用有效','plan_ready':'计划已保存','plan_applied':'计划执行已核验',
+                'receipt_verified':'执行回执有效','file_plan_verified':'文件计划的位置和内容已核验'}
+    conditions.update(files_placed='执行前清单中的文件均已按原名归集且内容一致',
+                      empty_directories_removed='范围内已无可见空子目录')
+    if field=='cancelled': return '已取消' if value else '可继续'
+    if field=='goals':
+        return '\n'.join(g['description']+'；完成条件：'+ '、'.join(
+            conditions.get(c['kind'],c['kind']) + (' '+c['path'] if c.get('path') else '')
+            + (' → '+c['destination'] if c.get('destination') else '')
+            + ('；后缀：'+ '、'.join(c['extensions']) if c.get('extensions') else '')
+            + ('；排除：'+ '、'.join(c['exclude_paths']) if c.get('exclude_paths') else '')
+            + ('；仅当前层' if c.get('recursive') is False else '')
+            + (' '+c['tool'] if c.get('tool') else '') + (' '+c['reference'] if c.get('reference') else '')
+            for c in g['conditions']) for g in value) or '无'
+    if field=='constraints':
+        lines=[]
+        for c in value:
+            line=c['description']
+            if c['forbidden_effects']: line+='；禁止：'+'、'.join(effects.get(x,x) for x in c['forbidden_effects'])
+            for r in c.get('rules',[]):
+                line+='；'+predicates.get(r['predicate'],r['predicate'])
+                line+='（'+('源对象' if r['selector']=='source' else '目标对象')+'；'+'、'.join(effects.get(x,x) for x in r['effects'])+'）'
+                if r['values']: line+='：'+'、'.join(r['values'])
+                if r['limit'] is not None: line+='：'+str(r['limit'])
+            lines.append(line)
+        return '\n'.join(lines) or '无'
+    if field=='allowed_effects': return '、'.join(effects.get(x,x) for x in value) or '无'
+    return '\n'.join(value) or '无'
+
+
 def describe_path(sb: Sandbox, value: str, *, planned: bool = False) -> dict:
     item = {"path": value, "name": Path(value).name or "沙盒根目录", "kind": "directory" if planned else "unknown", "planned": planned,
             "previewable": False, "size_text": "", "message": ""}
@@ -44,7 +81,32 @@ def build_confirmation(request: dict, sb: Sandbox) -> dict:
         groups.append(result)
         return items
 
-    if tool == "trash_many":
+    if tool == 'task_edit':
+        changed=[]
+        title,label,tone='确认修改任务','应用此版本','warning'
+        summary=f"任务 {args['task_id']} · 当前版本 {args['revision']}，将修改 {len(args['changes'])} 项设置。"
+        names={'goals':'目标与完成条件','constraints':'约束','read_roots':'读取范围',
+               'write_roots':'写入范围','allowed_effects':'允许操作','unresolved_questions':'待确认问题'}
+        for change in args['changes']:
+            notes.append(names.get(change['field'],change['field'])+'：\n修改前：'+
+                         describe_task_value(change['field'],change['before'])+'\n修改后：'+
+                         describe_task_value(change['field'],change['after']))
+        notes += ['原因：'+args['reason'], '本次仅修改任务；不会直接操作文件，旧版本的复核结果将失效。']
+    elif tool == 'file_plan':
+        changed=[]
+        names={'create':'创建目录','move':'移动','rename':'改名','trash':'移入回收区'}
+        for index, step in enumerate(args['steps']):
+            path=step['source'] or step['destination']
+            item=describe_path(sb,path,planned=step['effect']=='create')
+            if step['effect']=='trash': item['disposition']='trash'
+            else: item['destination']=step['destination']
+            groups.append(dict(key=f'action_{index}',title=names[step['effect']],tone='neutral',items=[item]))
+            changed.append(item)
+        title,label,tone='确认执行文件计划','确认执行此计划','neutral'
+        summary=f"计划 {args['plan_id']}：将执行 {len(changed)} 项操作。"
+        notes += ['本次确认绑定此操作清单；来源或目标变化会停止执行。',
+                  '计划摘要：'+args['digest'], '已完成操作有日志，可按运行撤销；执行中断时请先查看具体原因。']
+    elif tool == "trash_many":
         affected, retained = args.get("移入回收区", []), args.get("保留", [])
         changed = [describe_path(sb, p) for p in affected]
         review_groups = request.get("groups") or []
@@ -85,7 +147,7 @@ def build_confirmation(request: dict, sb: Sandbox) -> dict:
         for move in args['moves']:
             item=describe_path(sb,move['src'])
             item['destination']=move['dst']
-            if move.get('uncertain'):item['message']='核心方法分类待核实，请在移动前查看片段或原文件'
+            if move.get('uncertain'):item['message']='分类结果待核实，请在移动前查看片段或原文件'
             destinations.setdefault(move['dst_dir'],[]).append(item)
             changed.append(item)
         for index,(destination,items) in enumerate(destinations.items(),1):

@@ -122,3 +122,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .message.event { color: #64748b; font-size: .85rem; border-left: 3px solid #cbd5e1; padding-left: 12px; }
 .message.event .message-body { white-space: pre-wrap; }
 .run-metrics { overflow-wrap: anywhere; }
+.result-details { margin-top:12px; font-size:13px; color:#52616c; }
+.result-details > summary { cursor:pointer; color:#466f91; }
+.result-detail-section { border-top:1px solid #e6ebee; padding-top:10px; margin-top:12px; }
+.result-detail-section h4 { margin:6px 0; }

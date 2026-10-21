@@ -18,6 +18,47 @@ def has_undo(history, run_id):
     return any(m.get("role") == "system" and m.get("content", "").startswith(marker) for m in history)
 
 
+def project_task_history(full, limit, before):
+    """Evict whole previous exchanges when recent turns alone exceed the budget."""
+    boundary=max((i for i,m in enumerate(full) if m.get('role')=='user'),default=0)
+    projected=copy.deepcopy(full); removed=0
+    # Work backwards so replacement does not invalidate the earlier indices.
+    groups=[]
+    for i,m in enumerate(full[:boundary]):
+        if m.get('tool_calls'):
+            end=i+1
+            ids={tc['id'] for tc in m['tool_calls']}
+            while end<boundary and full[end].get('role')=='tool':end+=1
+            results=full[i+1:end]
+            if {r.get('tool_call_id') for r in results}==ids:groups.append((i,end))
+    selected=[]
+    size=len(json.dumps(projected,ensure_ascii=False))
+    for start,end in groups:
+        if size<=limit:break
+        m=full[start];result_by_id={r['tool_call_id']:r for r in full[start+1:end]}
+        notes=[]
+        from tools.registry import TOOLS
+        for tc in m['tool_calls']:
+            tool=TOOLS.get(tc['function']['name'])
+            if tool and tool.writes:
+                raw=result_by_id[tc['id']].get('content','')
+                try:
+                    outcome=json.loads(raw);text=outcome['text'];ok=outcome.get('status')=='ok'
+                except (ValueError,KeyError,TypeError):text=raw;ok=raw.startswith('OK')
+                status='成功（历史结果；当前位置需核实）' if ok else (text.splitlines() or ['调用未完成'])[0][:250]
+                notes.append('[历史工具执行记录] '+tool.name+' '+tc['function']['arguments']+'\n'+status)
+        replacement=([{'role':'assistant','content':m['content']}] if m.get('content') else [])
+        replacement += [dict(role='assistant',content=n) for n in notes]
+        delta=len(json.dumps(full[start:end],ensure_ascii=False))-len(json.dumps(replacement,ensure_ascii=False))
+        if delta<=0:continue
+        selected.append((start,end,replacement));size-=delta;removed+=end-start
+    for start,end,replacement in reversed(selected):projected[start:end]=replacement
+    if removed:projected.insert(1,dict(role='system',content=ARCHIVE_NOTE))
+    after=len(json.dumps(projected,ensure_ascii=False))
+    return projected,dict(before_chars=before,after_chars=after,archived_messages=removed,
+                          projection='task_budget',over_budget=after>limit)
+
+
 def prepare_history(history, cfg, artifacts=None):
     """Archive only completed old tool exchanges; never split call/result pairs.
 
@@ -26,7 +67,10 @@ def prepare_history(history, cfg, artifacts=None):
     """
     full = copy.deepcopy(history)
     before = len(json.dumps(full, ensure_ascii=False))
-    if artifacts and cfg.get('local_runtime') and full and full[-1].get('role')=='user':
+    if cfg.get('task_runtime'):
+        full = [m for m in full if not (m.get('role') == 'system' and
+                m.get('content', '').startswith('【任务控制 V2，优先于旧版流程说明】'))]
+    if artifacts and cfg.get('local_runtime') and not cfg.get('task_runtime') and full and full[-1].get('role')=='user':
         from agent.runtime import classification_followup
         from tools.classification import latest_plan
         pid=latest_plan(artifacts)
@@ -39,6 +83,8 @@ def prepare_history(history, cfg, artifacts=None):
             return projected,dict(before_chars=before,after_chars=len(json.dumps(projected,ensure_ascii=False)),
                                   archived_messages=len(full)-len(projected)+1,projection='classification_plan')
     limit = cfg.get("conversation_history_max_chars", 40000)
+    if cfg.get('task_runtime') and limit and len(json.dumps(full,ensure_ascii=False))>limit:
+        return project_task_history(full,limit,before)
     users = [i for i, m in enumerate(full) if m.get("role") == "user"]
     keep = max(0, int(cfg.get("conversation_keep_full_turns", 2)))
     if not limit or before <= limit or len(users) <= keep + 1:

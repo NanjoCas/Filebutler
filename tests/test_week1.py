@@ -116,7 +116,7 @@ def test_write_tools(sb):
 
 def test_schemas():
     names = {s["function"]["name"] for s in registry.schemas()}
-    assert names == {"list_dir", "search_files", "file_info", "read_file", "make_dir", "move", "rename", "trash", "search_content", "find_duplicates", "apply_dedup", "deduplicate", "report_findings", "paper_profiles", "submit_classification", "apply_classification"}
+    assert names == {"list_dir", "search_files", "file_info", "read_file", "make_dir", "move", "rename", "trash", "search_content", "find_duplicates", "apply_dedup", "deduplicate", "report_findings", "paper_profiles", "submit_classification", "apply_classification", "inventory_files"}
 
 
 def test_trace_records_instruction_and_final(sb, tmp_path):

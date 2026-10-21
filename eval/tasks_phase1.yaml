@@ -1,0 +1,59 @@
+# Structural assertion revision: 2026-10-20. Prior run manifests remain unchanged.
+# Dev and heldout results are reported separately; goal count is not a semantic oracle.
+cases:
+  - id: D01
+    split: dev
+    instruction: "只统计 Inbox 里的文件数量，不要修改任何文件。"
+    expect: {readonly: true, scope: Inbox, min_goals: 1}
+  - id: D02
+    split: dev
+    instruction: "把 Inbox 里的 txt 移到现有 Archive 文件夹，PDF 留在原处，不要创建目录，不要删除。"
+    expect: {effects: [move], forbidden: [create, trash], rule: extensions, rule_contracts: [{predicate: extensions, selector: source, effects: [move], values: [txt]}], min_goals: 1}
+  - id: D03
+    split: dev
+    instruction: "在 Inbox 中只回收空文件夹，非空文件夹和所有文件保持原样。"
+    expect: {effects: [trash], rule: empty_directory, min_goals: 1}
+  - id: D04
+    split: dev
+    instruction: "把照片目录里的照片改成统一编号，扩展名和内容保持不变。"
+    expect: {effects: [rename], rules: [same_extension, content_unchanged], min_goals: 1}
+  - id: D05
+    split: dev
+    instruction: "整理一下资料。"
+    expect: {clarify: true, min_goals: 1}
+  - id: D06
+    split: dev
+    instruction: "按核心方法给文献提出分类方案，同时统计每类篇数，先不要移动或清理文件。"
+    expect: {readonly: true, semantic: true, min_goals: 1}
+  - id: H01
+    split: heldout
+    instruction: "Please inventory the audio folder. Do not rename, relocate, or remove anything."
+    expect: {readonly: true, scope: audio, min_goals: 1}
+  - id: H02
+    split: heldout
+    instruction: "把 receipts 的 PDF 移进现有 Archive；receipts/保留 里面的所有东西都不要碰，也不要改动文件内容。"
+    expect: {effects: [move], rules: [outside, content_unchanged], min_goals: 1}
+  - id: H03
+    split: heldout
+    instruction: "不要只给重复清单，请清理 Inbox 中字节完全相同的副本，每组只留一份，不合并近似版本。"
+    expect: {effects: [trash], min_goals: 1}
+  - id: H04
+    split: heldout
+    instruction: "Archive 只用来查看。请给每份记录建议一个新名字，不实际改名，再告诉我有多少份。"
+    expect: {readonly: true, scope: Archive, min_goals: 1}
+  - id: H05
+    split: heldout
+    instruction: "实验记录按测量仪器分类，给出建议即可。文件名里的日期不能变，不要创建分类目录。"
+    expect: {readonly: true, semantic: true, min_goals: 1}
+  - id: H06
+    split: heldout
+    instruction: "最多回收 Inbox 里的两个空目录，其他项目保持原样。"
+    expect: {effects: [trash], rules: [empty_directory, max_count], max_count: 2, min_goals: 1}
+  - id: H07
+    split: heldout
+    instruction: "解释一下‘删除重复照片’这句话是什么意思。我没有让你操作照片。"
+    expect: {readonly: true, min_goals: 1}
+  - id: H08
+    split: heldout
+    instruction: "Count the .txt files in Inbox, then move only those files into the existing Archive folder. Leave PDFs and filenames unchanged."
+    expect: {effects: [move], rule: extensions, min_goals: 2}

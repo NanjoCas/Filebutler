@@ -104,6 +104,128 @@ def test_broken_status_observer_does_not_interrupt_agent(files):
     assert result.final == "完成" and result.stop_reason == "done"
 
 
+def test_task_api_persists_revisions_and_isolates_conversations(ui, files):
+    from agent.task import TaskStore, TaskSubmission
+    a = ui.post('/api/conversations').json()['id']
+    b = ui.post('/api/conversations').json()['id']
+    store = TaskStore(files.root / '.oplog' / 'tasks.sqlite3', files.root, a)
+    spec = TaskSubmission(goals=[dict(id='g', description='核对笔记',
+                                      conditions=[dict(kind='path_exists', path='notes.md')])])
+    task = store.submit(spec, '核对笔记', 'run-a')
+    assert ui.get(f'/api/conversations/{a}/tasks').json()['items'][0]['id'] == task['id']
+    assert ui.get(f'/api/conversations/{a}/tasks/{task["id"]}').json()['revision'] == 1
+    assert ui.get(f'/api/conversations/{b}/tasks').json()['items'] == []
+    assert ui.get(f'/api/conversations/{b}/tasks/{task["id"]}').status_code == 404
+    assert ui.get('/api/conversations/missing/tasks').status_code == 404
+
+
+def test_web_v2_runs_through_controller_and_persists_verified_answer(ui, files, monkeypatch):
+    cfg = {**webapp._config(), 'local_runtime': True, 'task_runtime': True}
+    monkeypatch.setattr(webapp, '_config', lambda: dict(cfg))
+    task = dict(goals=[dict(id='count', description='统计文件',
+                            conditions=[dict(kind='tool_success', tool='inventory_files')])])
+    fake = FakeClient([[('set_task', task), ('inventory_files', {})], [('finish_task', {})]])
+    monkeypatch.setattr(webapp, 'LLM', lambda cfg: LLM({'model': 'fake'}, client=fake))
+    finished = threading.Event()
+    original_event = webapp._event
+    def notify(turn_id, event):
+        original_event(turn_id, event)
+        if event['type'] in {'completed', 'failed'}:
+            finished.set()
+    monkeypatch.setattr(webapp, '_event', notify)
+    cid = ui.post('/api/conversations').json()['id']
+    turn = ui.post(f'/api/conversations/{cid}/messages', json={'content': '统计文件'}).json()
+    assert finished.wait(5)
+    response = ui.get(f'/api/turns/{turn["turn_id"]}').json()
+    assert response['status'] == 'completed' and response['result']['stop_reason'] == 'needs_review'
+    assert len(fake.seen) == 2
+    assert any(e['type'] == 'task_updated' for e in response['events'])
+    tasks = ui.get(f'/api/conversations/{cid}/tasks').json()['items']
+    assert tasks[0]['status'] == 'needs_review'
+    conversation = ui.get(f'/api/conversations/{cid}').json()
+    assert '待核实' in conversation['messages'][-1]['content']
+    assert '最多两次查询' not in fake.seen[0][0]['content']
+
+
+def test_task_editor_api_previews_applies_and_reviews_without_model(ui, files):
+    from agent.task import TaskSubmission
+    cid=ui.post('/api/conversations').json()['id']; store=webapp._tasks(cid)
+    task=store.submit(TaskSubmission(goals=[dict(id='g',description='核对记录',conditions=[dict(kind='manual_review')])]),'原始请求','r1')
+    base=f'/api/conversations/{cid}/tasks/{task["id"]}'
+    preview=ui.post(base+'/edits',json=dict(expected_revision=1,write_roots=['文献'],reason='调整范围'))
+    assert preview.status_code==200 and preview.json()['changes']
+    assert ui.get(base).json()['revision']==1
+    assert ui.post(base+'/edits',json=dict(expected_revision=1,write_roots=['../outside'],reason='越界')).status_code==409
+    edit_id=preview.json()['id']
+    applied=ui.post(base+'/edits/apply',json=dict(edit_id=edit_id))
+    assert applied.status_code==200 and applied.json()['revision']==2
+    assert ui.post(base+'/edits/apply',json=dict(edit_id=edit_id)).status_code==409
+    accepted=ui.post(base+'/review',json=dict(expected_revision=2,goal_ids=['g'],decision='accept',note='已核对'))
+    assert accepted.status_code==200 and accepted.json()['status']=='completed'
+    assert ui.post(base+'/review',json=dict(expected_revision=1,goal_ids=['g'],decision='accept')).status_code==409
+    other=ui.post('/api/conversations').json()['id']
+    assert ui.post(f'/api/conversations/{other}/tasks/{task["id"]}/edits/apply',json=dict(edit_id=edit_id)).status_code==409
+    webapp.ACTIVE_CONVERSATIONS.add(cid)
+    try:
+        assert ui.post(base+'/edits',json=dict(expected_revision=2,cancel=True,reason='运行中修改')).status_code==409
+    finally:webapp.ACTIVE_CONVERSATIONS.discard(cid)
+
+
+def test_operation_report_survives_reload_with_safe_previewable_details(ui, files, monkeypatch):
+    cfg={**webapp._config(),'local_runtime':True,'task_runtime':True,'confirm':'never'}
+    monkeypatch.setattr(webapp,'_config',lambda:dict(cfg))
+    (files.root/'文献/nested').mkdir();(files.root/'文献/nested/a.pdf').write_bytes(b'A')
+    task=dict(goals=[dict(id='g',description='归集 PDF',conditions=[
+        dict(kind='files_placed',path='文献',destination='文献',extensions=['pdf'])])],
+        write_roots=['文献'],allowed_effects=['move'])
+    fake=FakeClient([[('set_task',task),('inventory_files',{'path':'文献'}),
+        ('move',{'src':'文献/nested/a.pdf','dst_dir':'文献'}),('inventory_files',{'path':'文献'}),
+        ('finish_task',{'summary':'[查看文件](sandbox:/文献/a.pdf)\n\n<script>alert(1)</script>'})]])
+    monkeypatch.setattr(webapp,'LLM',lambda cfg:LLM({'model':'fake'},client=fake))
+    finished=threading.Event();original=webapp._event
+    def notify(tid,event):
+        original(tid,event)
+        if event['type'] in {'completed','failed'}:finished.set()
+    monkeypatch.setattr(webapp,'_event',notify)
+    cid=ui.post('/api/conversations').json()['id']
+    tid=ui.post(f'/api/conversations/{cid}/messages',json={'content':'归集 PDF'}).json()['turn_id']
+    assert finished.wait(5)
+    turn=ui.get(f'/api/turns/{tid}').json()
+    assert turn['result']['stop_reason']=='done'
+    webapp.TURN_STATES.clear()  # Reload solely from persisted state.
+    saved=ui.get(f'/api/conversations/{cid}').json()
+    reply=saved['messages'][-1]
+    assert reply['content']==turn['final'] and '已移动 1 个文件' in reply['content']
+    assert '<table>' not in reply['html'] and len(reply['content'])<120
+    sections=reply['report']['sections']
+    assert sum(s['title'].startswith('最终统计') for s in sections)==1
+    assert any('<table>' in s['html'] for s in sections)
+    assert any('data-file-path="文献/a.pdf"' in s['html'] for s in sections)
+    assert all('<script>' not in s['html'] for s in sections)
+    with webapp._db() as db:
+        history=json.loads(db.execute('SELECT history_json FROM conversations WHERE id=?',(cid,)).fetchone()[0])
+    assert all('report' not in message for message in history)
+
+
+def test_historical_verbose_report_is_only_compacted_for_display(ui):
+    cid=ui.post('/api/conversations').json()['id']
+    original='部分结果待核实\n\n| 类型 | 数量 |\n| --- | --- |\n| pdf | 126 |\n\n模型说明（不替代上述核验）：\n已移动文件并清理空目录。'
+    history=[{'role':'user','content':'归集资料'},{'role':'assistant','content':original}]
+    result={'runtime':{'task':'structured','task_status':'needs_review'}}
+    with webapp._db() as db:
+        db.execute('UPDATE conversations SET history_json=? WHERE id=?',(json.dumps(history),cid))
+        db.execute('INSERT INTO turns(id,conversation_id,run_id,status,created_at,updated_at,final,result_json) VALUES(?,?,?,?,?,?,?,?)',
+                   ('legacy',cid,'old-run','completed',webapp._now(),webapp._now(),original,json.dumps(result)))
+    reply=ui.get(f'/api/conversations/{cid}').json()['messages'][-1]
+    assert '|' not in reply['content'] and '待核实状态保留' in reply['content']
+    assert reply['report']['state']=='needs_review'
+    assert '<table>' in reply['report']['sections'][0]['html']
+    with webapp._db() as db:
+        row=db.execute('SELECT final,result_json FROM turns WHERE id=?',('legacy',)).fetchone()
+        assert row['final']==original and json.loads(row['result_json'])==result
+        assert json.loads(db.execute('SELECT history_json FROM conversations WHERE id=?',(cid,)).fetchone()[0])==history
+
+
 @pytest.fixture
 def ui(tmp_path, monkeypatch, files):
     state = tmp_path / "ui"; state.mkdir()

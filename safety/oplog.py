@@ -15,12 +15,15 @@ class OpLog:
         self.path = self.dir / f"{run_id}.jsonl"
         self.seq = 0
 
-    def record(self, op: str, src: str, dst: str):
+    def record(self, op: str, src: str, dst: str, *, action_id: str | None = None):
         self.dir.mkdir(exist_ok=True)
         self.seq += 1
         row = {"seq": self.seq, "op": op, "src": src, "dst": dst, "time": datetime.now().isoformat()}
+        if action_id: row["action_id"] = action_id
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
 
 def latest_run(sandbox: Sandbox) -> str | None:

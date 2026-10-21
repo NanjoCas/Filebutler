@@ -11,7 +11,7 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark">F</span><div><strong>FileButler</strong><small id="health">正在连接本地服务…</small></div></div>
-    <button id="toggle-files" class="icon-button" title="收起或展开文件区">文件区</button>
+    <div><button id="open-tasks" class="icon-button" type="button">任务与复核</button><button id="toggle-files" class="icon-button" title="收起或展开文件区">文件区</button></div>
   </header>
   <main class="layout">
     <aside class="sidebar">
@@ -39,6 +39,11 @@
     <div class="review-layout"><aside id="review-plan" class="review-plan" aria-label="操作清单"></aside><section id="review-preview" class="review-preview" aria-label="待确认文件预览"></section></div>
     <footer id="review-footer" class="review-footer"></footer>
   </dialog>
+  <dialog id="task-editor" class="task-dialog" aria-labelledby="task-editor-title">
+    <header class="review-header"><h2 id="task-editor-title">任务与复核</h2><button id="task-editor-close" class="icon-button" type="button" aria-label="关闭任务窗口">✕</button></header>
+    <div id="task-editor-body" class="task-editor-body"></div>
+  </dialog>
   <script src="/static/app.js" defer></script>
+  <script src="/static/tasks.js" defer></script>
 </body>
 </html>

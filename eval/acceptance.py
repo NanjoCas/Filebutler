@@ -111,7 +111,7 @@ def main():
     args = parser.parse_args()
     out = args.out.resolve(); out.mkdir(parents=True, exist_ok=False)
     cfg = load_config(ROOT / 'config.yaml')
-    if args.baseline: cfg.update(local_runtime=False,prompt='v5_latency')
+    if args.baseline: cfg.update(local_runtime=False,task_runtime=False,prompt='v5_latency')
     if not args.offline and not os.getenv(cfg['api_key_env']):
         parser.error('configured API key environment variable is unset')
     source, user_sb = ROOT / 'data/real/papers', Path(cfg['sandbox'])

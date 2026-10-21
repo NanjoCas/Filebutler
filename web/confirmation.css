@@ -41,7 +41,7 @@
 .confirmation-viewed { color: #71987e; margin-left: auto; }
 .confirmation-destination { font-size: 11px; color: #53775f; background: #f4f8f4; padding: 6px 8px; margin: 7px 0 0 24px; border-radius: 5px; overflow-wrap: anywhere; }
 .confirmation-more { color: #4d7cb4; background: transparent; border: 0; font-size: 11px; padding: 5px 0; }
-.confirmation-note { color: #967c53; line-height: 1.65; font-size: 11px; border-left: 2px solid #e7d8bc; padding-left: 9px; margin: 13px 0; }
+.confirmation-note { color: #967c53; line-height: 1.65; font-size: 11px; border-left: 2px solid #e7d8bc; padding-left: 9px; margin: 13px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .confirmation-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-top: 1px solid #edf1ee; flex-shrink: 0; }
 .confirmation-action-buttons { display: flex; align-items: center; gap: 7px; }
 .confirmation-action-buttons button { padding: 8px 12px; font-size: 11px; border-radius: 7px; white-space: nowrap; }

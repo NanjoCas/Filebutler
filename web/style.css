@@ -3,3 +3,14 @@
 @media(max-width:1050px){.layout{grid-template-columns:210px minmax(400px,1fr)}.file-panel{position:fixed;right:0;top:64px;bottom:0;width:340px;box-shadow:-8px 0 30px #00000012;z-index:5}.file-panel.closed{display:none}}
 @media(max-width:680px){.layout{grid-template-columns:1fr}.sidebar{display:none}.chat-heading{padding:13px 16px}.messages{padding:20px 16px}.composer{width:calc(100% - 28px)}.privacy-note{font-size:9px}.file-panel{width:min(340px,92vw)}}
 .trace-details{width:min(640px,95%);font-size:11px}.trace-details summary{cursor:pointer;color:#52635a}.trace-list{margin-top:9px;display:grid;gap:8px}.trace-entry{border-top:1px solid #edf0ec;padding-top:7px}.trace-entry strong{font-size:10px;font-weight:600}.trace-entry pre{margin:5px 0;background:#f7f8f6;padding:7px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px}.trace-entry p{margin:4px 0;white-space:pre-wrap;color:#78817b;font-size:10px}
+/* Task editing uses explicit before/after review and its own scroll container. */
+.task-dialog { width:min(780px,94vw); max-height:90vh; padding:0; border:1px solid #ddd; border-radius:16px; color:#263238; }
+.task-dialog::backdrop { background:rgba(20,30,40,.35); }
+.task-editor-body { max-height:73vh; overflow:auto; padding:20px; }
+.task-card,.task-change { border:1px solid #e1e5e8; border-radius:10px; margin:12px 0; padding:14px; }
+.task-field { display:block; margin:12px 0; font-size:14px; }
+.task-field textarea { display:block; box-sizing:border-box; width:100%; padding:9px; margin-top:6px; border:1px solid #cbd2d8; border-radius:7px; font:inherit; resize:vertical; }
+.task-effect,.task-remove { display:block; margin:9px 0; }
+.task-hint { color:#596977; font-size:13px; line-height:1.6; }
+.task-before,.task-after { white-space:pre-wrap; overflow-wrap:anywhere; padding:10px; border-radius:7px; }
+.task-before { background:#fff0f0; }.task-after { background:#eef7f1; }

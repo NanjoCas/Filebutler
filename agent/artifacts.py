@@ -140,9 +140,14 @@ class ArtifactStore:
     def receipt(self, *, groups, moved, keeps, verified, error='', scan=None):
         rid = 'R' + uuid.uuid4().hex[:10]
         with self.lock:
+            versions = {}
+            if verified:
+                for rel in [dst for _, dst in moved] + list(keeps):
+                    versions[rel] = digest(self._path(rel, trash=rel.startswith('.trash/')))
             self.data['receipts'][rid] = dict(run_id=self.run_id, groups=copy.deepcopy(groups),
                                               moved=copy.deepcopy(moved), keeps=list(keeps),
-                                              verified=verified, error=error, scan=copy.deepcopy(scan or {}))
+                                              verified=verified, versions=versions,
+                                              error=error, scan=copy.deepcopy(scan or {}))
             self._save()
         return rid
 
