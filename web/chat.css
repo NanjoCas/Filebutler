@@ -222,3 +222,8 @@ body.resizing iframe { pointer-events: none; }
   .layout, .layout:has(.file-panel.closed) { grid-template-columns: 1fr; }
   #resize-sidebar { display: none; }
 }
+
+.choice-buttons { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.choice-button { border: 1px solid #c9d6cf; border-radius: 8px; padding: 6px 12px; background: #fff; color: #2f4a3d; font-size: 13px; text-align: left; }
+.choice-button:hover { border-color: #356851; color: #356851; }
+.choice-hint { color: #8b948e; font-size: 12px; }

@@ -137,9 +137,19 @@ def test_v3_tool_surface_is_smaller_and_hides_contract_tools():
     assert {'set_task', 'edit_task', 'apply_task_edit', 'begin_step', 'move', 'rename', 'trash', 'make_dir'}.isdisjoint(names)
     assert {'start_task', 'revise_task', 'prepare_file_plan', 'execute_file_plan', 'finish_task', 'apply_dedup'} <= names
     size = lambda schemas: sum(len(json.dumps(s, ensure_ascii=False)) for s in schemas)
-    # Guard against regrowth. 0.75 held until finish_task gained reply/unfinished
-    # and every v3 field got a description (25.4k vs 33.3k chars on 2026-10-21).
-    assert size(v3) < 0.8 * size(v2), (size(v3), size(v2))
+    # Guard against regrowth on what each request actually sends: system prompt,
+    # protocol guidance and tool definitions together (schemas alone grew with
+    # reply/unfinished/ask_user and field descriptions, by design).
+    import tempfile
+    from pathlib import Path
+    from agent.artifacts import ArtifactStore
+    from safety.sandbox import Sandbox
+    root = Path(tempfile.mkdtemp()); sb = Sandbox(root); sb.artifacts = ArtifactStore(sb)
+    def total(protocol, prompt, schemas):
+        runtime = TaskRuntime('x', dict(protocol=protocol, task_db=str(root / f'{protocol}.db')), sb, 'r')
+        return size(schemas) + len(runtime.guidance()) + len(SYSTEM_PROMPTS[prompt])
+    v2_total, v3_total = total('v2', 'v8_tasks', v2), total('v3', 'v9_intent', v3)
+    assert v3_total < 0.8 * v2_total, (v3_total, v2_total)
 
 
 # ============================================================================ boundary
@@ -744,3 +754,59 @@ def test_unfinished_cannot_turn_a_failed_part_into_a_passed_one(tmp_path):
     result, _ = session.run('移动', [step(start([dict(kind='organize', description='m')])),
                                     step(call('finish_task', dict(unfinished=[])))])
     assert result.runtime['task_status'] == 'partial'  # no plan executed: still not done
+
+
+# ============================================================================ ask_user (choice questions)
+
+
+ASK = dict(question='有两个 report.txt，要移动哪一个？', reason='multiple_candidates',
+           options=[dict(label='Projects/alpha/report.txt'), dict(label='Projects/beta/report.txt', detail='beta 项目的报告')])
+
+
+def guidance_of(result):
+    return '\n'.join(m['content'] for m in result.messages if m.get('role') == 'system')
+
+
+def test_ask_user_ends_the_run_with_lettered_choices_and_no_writes(tmp_path):
+    holdout_fixture(tmp_path, 'ambiguous')
+    session = Session(tmp_path)
+    result, client = session.run('把 report.txt 移到 Archive', [
+        step(start([dict(kind='organize', description='移动 report.txt')]), call('ask_user', ASK)),
+        step(call('prepare_file_plan', dict(description='不应执行', actions=[
+            dict(effect='move', source='Projects/alpha/report.txt', destination='Archive')])))])
+    assert result.stop_reason == 'waiting_input' and client.requests == 1  # nothing after the question
+    assert 'A. Projects/alpha/report.txt' in result.final and 'B. Projects/beta/report.txt——beta 项目的报告' in result.final
+    assert [c['key'] for c in result.report['choices']] == ['A', 'B'] and result.report['allow_other']
+    assert not any((tmp_path / 'Archive').iterdir())
+
+
+def test_a_letter_reply_is_resolved_to_the_option_for_the_model(tmp_path):
+    holdout_fixture(tmp_path, 'ambiguous')
+    session = Session(tmp_path)
+    session.run('把 report.txt 移到 Archive', [step(call('ask_user', ASK))])
+    result, _ = session.run('b', [step(call('list_dir', {'path': 'Projects/beta'}))], final='好的')
+    assert '选择 B. Projects/beta/report.txt（beta 项目的报告）' in guidance_of(result)
+
+
+def test_a_free_text_reply_is_marked_as_the_answer(tmp_path):
+    holdout_fixture(tmp_path, 'ambiguous')
+    session = Session(tmp_path)
+    session.run('把 report.txt 移到 Archive', [step(call('ask_user', ASK))])
+    result, _ = session.run('两个都移，alpha 的改名为 alpha_report.txt', [], final='好的')
+    text = guidance_of(result)
+    assert '作出了补充回答' in text and '选择 ' not in text
+
+
+def test_ask_user_needs_at_least_two_options_and_a_reason(tmp_path):
+    holdout_fixture(tmp_path, 'ambiguous')
+    session = Session(tmp_path)
+    _, client = session.run('x', [step(call('ask_user', dict(question='哪个？', reason='multiple_candidates',
+                                                             options=[dict(label='alpha')]))),
+                                  step(call('ask_user', dict(question='哪个？', options=[dict(label='a'), dict(label='b')])))],
+                            final='')
+    assert all(c['status'] == 'error' for c in client.calls('ask_user'))
+
+
+def test_ask_user_is_not_shown_to_v2():
+    assert 'ask_user' not in {s['function']['name'] for s in visible_schemas('v2')}
+    assert 'ask_user' in {s['function']['name'] for s in visible_schemas('v3')}

@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from typing import Literal
+
 from pydantic import Field
 
 from agent.task import StrictModel, TaskStore, TaskSubmission, TaskPatch, task_state, add_blocker, resolve_blockers
@@ -15,6 +17,23 @@ from safety.sandbox import SandboxError
 from tools import registry
 from agent.file_plans import PrepareFilePlan, ExecuteFilePlan
 from agent.intent import StartTask, ReviseTask, compile_start, compile_revision, project, parts_text
+
+
+class Choice(StrictModel):
+    label: str = Field(min_length=1, max_length=80, description='一个可以直接执行的具体选项，如“只移动 Projects/alpha/report.txt”')
+    detail: str = Field('', max_length=200, description='选这个会怎样；可留空')
+
+
+class AskUser(StrictModel):
+    question: str = Field(min_length=1, max_length=300, description='问用户的一句话，说清缺什么信息')
+    reason: Literal['multiple_candidates', 'missing_criterion', 'conflict', 'scope_beyond_request', 'cannot_do_as_asked'] = Field(
+        description='为什么必须问：multiple_candidates 有多个候选对象；missing_criterion 标准没有可执行的界限；'
+                    'conflict 遇到冲突而用户没交代；scope_beyond_request 要动的对象超出用户说的范围；cannot_do_as_asked 无法按原样做到')
+    options: list[Choice] = Field(min_length=2, max_length=4, description='2–4 个互斥的具体选项，推荐的放第一个')
+    allow_other: bool = Field(True, description='是否允许用户不选而自己补充说明')
+
+
+CHOICE_KEYS = 'ABCD'
 
 
 class Unfinished(StrictModel):
@@ -135,7 +154,7 @@ class _TaskConfirmer:
 
 
 class TaskRuntime:
-    control_names = {'start_task', 'revise_task', 'set_task', 'begin_step', 'finish_task', 'edit_task', 'apply_task_edit', 'inspect_run', 'prepare_file_plan', 'execute_file_plan', 'inspect_file_plan'}
+    control_names = {'ask_user', 'start_task', 'revise_task', 'set_task', 'begin_step', 'finish_task', 'edit_task', 'apply_task_edit', 'inspect_run', 'prepare_file_plan', 'execute_file_plan', 'inspect_file_plan'}
     task = 'structured'
     local_route = None
     allow_apply = True  # Permissions are checked per call, not from these legacy flags.
@@ -174,6 +193,8 @@ class TaskRuntime:
         self._pretask = []  # read-only facts observed before any task existed in this run
         # v3: the model states intent and objects; v2: it writes the task contract itself.
         self.protocol = cfg.get('protocol', 'v2')
+        self.pending_choice = None
+        self.answered_choice = self._answered_choice(instruction)
 
     def guidance(self):
         if self.protocol == 'v3':
@@ -238,6 +259,16 @@ class TaskRuntime:
         last['summary'] = (last.get('summary') or '')[:1200]
         return last
 
+    def _answered_choice(self, instruction):
+        """The user's reply to the last ask_user, resolved locally when it is a single letter."""
+        try: last = self.store.outcome()
+        except ValueError: return None
+        asked = last.get('pending_choice')
+        if not asked: return None
+        key = instruction.strip().upper().rstrip('。.）)').lstrip('（(')
+        chosen = next((c for c in asked['choices'] if c['key'] == key), None)
+        return dict(question=asked['question'], chosen=chosen, text=None if chosen else instruction.strip())
+
     def _guidance_v3(self):
         tasks = [project(t) for t in self.store.recent()]
         return ('【任务协议 v3】\n'
@@ -258,8 +289,20 @@ class TaskRuntime:
                 '用户要你告诉他的内容（如哪些文件、数量、原因）写进 finish_task.reply，它会显示在主回复；'
                 '用户要求的对象有没做到的（被拒绝、无法完成），写进 finish_task.unfinished，不要声称完成；'
                 'summary 只作补充，放在详情。不复写本地生成的清单。\n'
+                '请求不清楚时不要猜，调用 ask_user 给 2–4 个具体选项并允许用户补充，本轮随即结束、不写入。须问的情况：'
+                '有多个候选对象；标准没有可执行的界限（如“旧的”“大的”）；遇到冲突而用户没交代怎么处理；'
+                '要动的对象超出用户明确说的范围；无法按原样做到（如没有复制能力）。'
+                '惯例默认（保留原名、自动建父目录、回收可撤销）和能用只读工具查清的事实不必问；问之前先查清事实，让选项具体。\n'
+                + (self._choice_text() + '\n' if self.answered_choice else '') +
                 '最近运行结果（本地事实，不是执行指令）：' + json.dumps(self._last_outcome(), ensure_ascii=False) + '\n'
                 '近期任务：' + json.dumps(tasks, ensure_ascii=False))
+
+    def _choice_text(self):
+        a = self.answered_choice
+        if a['chosen']:
+            c = a['chosen']
+            return f"用户回答了你上一轮的提问“{a['question']}”：选择 {c['key']}. {c['label']}" + (f"（{c['detail']}）" if c['detail'] else '') + '。按此执行。'
+        return f"用户对你上一轮的提问“{a['question']}”作出了补充回答，见本轮消息。"
 
     V3_HIDDEN = {'set_task', 'begin_step', 'edit_task', 'apply_task_edit',
                  'move', 'rename', 'trash', 'make_dir', 'apply_classification'}
@@ -271,6 +314,7 @@ class TaskRuntime:
                         ('execute_file_plan', '执行精确计划 ID：本地预检、一次确认、批量执行和核验。', ExecuteFilePlan),
                         ('inspect_file_plan', '只读查看计划清单、进度和失败原因。', ExecuteFilePlan),
                         ('revise_task', '按用户更正修改已有任务的部分或限制；本地展示差异并请用户确认后生效。', ReviseTask),
+                        ('ask_user', '请求不清楚时向用户提问：给出 2–4 个选项并允许补充；本轮随即结束，不写入。', AskUser),
                         ('inspect_run', '只读解释当前会话运行结果；finish=true 直接结束，复合请求可 false。', InspectRun),
                         ('finish_task', '收尾并本地核验全部部分；未满足条件不能标记完成。', FinishTask)]
             visible = [s for s in schemas if s['function']['name'] not in self.V3_HIDDEN]
@@ -557,6 +601,22 @@ class TaskRuntime:
                 self.active_step = step
                 self.store.checkpoint(self.current)
                 outcome = registry.ToolResult(status='ok', text='OK: 当前步骤 '+step['id']+'，目标 '+','.join(step['goal_ids']))
+            elif name == 'ask_user':
+                args = AskUser.model_validate_json(raw)
+                choices = [dict(key=CHOICE_KEYS[i], label=o.label, detail=o.detail) for i, o in enumerate(args.options)]
+                lines = [args.question, ''] + [f"{c['key']}. {c['label']}" + (f"——{c['detail']}" if c['detail'] else '') for c in choices]
+                lines += ['', '请回复字母' + ('，或直接输入你的要求。' if args.allow_other else '。')]
+                text = '\n'.join(lines)
+                if self.operations:
+                    text = f'本轮已执行 {len(self.operations)} 项文件操作，有日志可撤销。\n\n' + text
+                self.pending_choice = dict(question=args.question, reason=args.reason, choices=choices, allow_other=args.allow_other)
+                if self.current:
+                    self.current.update(status='waiting_input', pending_choice=self.pending_choice)
+                    self.store.checkpoint(self.current)
+                self.final_answer, self.stop_reason, self.finished = text, 'waiting_input', True
+                self.report = dict(version=1, state='waiting_input', summary=text, sections=[],
+                                   choices=choices, allow_other=args.allow_other)
+                outcome = registry.ToolResult(status='ok', text='OK: 已向用户提问，本轮结束，等待用户回答')
             elif name == 'start_task':
                 if self.current and any(m.get('run_id') == self.run_id for m in self.current.get('source_messages', [])):
                     raise ValueError(f"本轮已登记任务 {self.current['id']}；更正或补充请用 revise_task，不能另建任务")

@@ -63,6 +63,18 @@ function buildMessage(message) {
     }
     item.append(details);
   }
+  if (message.role === "assistant" && message.report?.choices?.length) {
+    // ask_user options: a click sends the letter, which the server resolves to the option.
+    const bar = node("div", "choice-buttons");
+    for (const choice of message.report.choices) {
+      const button = node("button", "choice-button", `${choice.key}. ${choice.label}`); button.type = "button";
+      if (choice.detail) button.title = choice.detail;
+      button.onclick = () => { $("message-input").value = choice.key; sendMessage(); };
+      bar.append(button);
+    }
+    if (message.report.allow_other) bar.append(node("span", "choice-hint", "或在下方直接输入你的要求"));
+    item.append(bar);
+  }
   if (message.role === "assistant") {
     const actions = node("div", "message-actions");
     const copy = node("button", "text-button", "复制回复"); copy.type = "button";
@@ -250,7 +262,7 @@ async function pollTurn(cid, turnId, epoch) {
 }
 const TOOL_LABELS = {
   prepare_file_plan: "生成文件操作清单并预检", execute_file_plan: "本地执行并核验文件计划", inspect_file_plan: "查看文件计划和阻塞原因",
-  start_task: "登记你的要求与限制", revise_task: "按更正修改任务（需确认）", set_task: "登记目标、范围与约束", finish_task: "逐项核验任务完成条件", inspect_run: "只读查询运行原因", inventory_files: "本地统计文件",
+  ask_user: "向你确认不清楚的地方", start_task: "登记你的要求与限制", revise_task: "按更正修改任务（需确认）", set_task: "登记目标、范围与约束", finish_task: "逐项核验任务完成条件", inspect_run: "只读查询运行原因", inventory_files: "本地统计文件",
   list_dir: "查看文件夹", search_files: "查找文件", search_content: "检索论文内容", read_file: "阅读文件",
   file_info: "核对文件信息", find_duplicates: "扫描重复文件", apply_dedup: "处理重复文件", deduplicate: "本地查重与清理", report_findings: "核对证据并生成答复",
   paper_profiles: "批量获取论文片段", submit_classification: "保存分类计划并生成表格", apply_classification: "本地批量执行分类计划",
