@@ -23,7 +23,7 @@ def incomplete_reason(task):
     return '；'.join(reasons[:3]) or '尚缺少可核验的完成依据'
 
 
-def build_report(task, model_summary, records):
+def build_report(task, model_summary, records, reply=''):
     state = task['status']
     operations = task.get('operations', [])
     counts = Counter((o['op'], o.get('kind', '项')) for o in operations)
@@ -76,6 +76,9 @@ def build_report(task, model_summary, records):
         if state=='needs_review': summary += '\n\n结果待核实，可在“任务与复核”中查看依据。'
         if state=='waiting_input' and task.get('allowed_effects') and not task.get('operation_history'):
             summary += '\n\n本轮未执行任何文件操作，等待你的决定。'
+    # What the user asked to be told, stated by the model; local facts lead.
+    if reply.strip() and reply.strip() not in summary:
+        summary += '\n\n' + reply.strip()
     if state in {'partial', 'waiting_input'} and model_summary and model_summary[:1200] not in summary:
         summary += '\n\n补充原因（模型说明）：'+model_summary[:1200]
     # Unresolved blockers (control rejections, plan failures and failed writes)
