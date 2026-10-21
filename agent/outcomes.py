@@ -74,6 +74,7 @@ def save_outcome(runtime, reason, final, cfg, llm, *, error=None):
     if not runtime or runtime.task!='structured':return None
     data=dict(run_id=runtime.run_id,stop_reason=reason,summary=final,cost=llm.cost,tokens=llm.total_tokens,
               task_id=runtime.current['id'] if runtime.current else None,error_type=type(error).__name__ if error else None,
-              purpose='inspection' if runtime.inspected_run and not runtime.current and not runtime.operations else 'action')
+              purpose='inspection' if runtime.inspected_run and not runtime.current and not runtime.operations else 'action',
+              pending_choice=getattr(runtime,'pending_choice',None))
     runtime.store.save_outcome(data)
     return data
