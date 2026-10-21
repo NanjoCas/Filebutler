@@ -723,7 +723,7 @@ def test_flatten_and_recycle_folder_with_metadata_in_one_plan(tmp_path):
     [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
     trashed = [s['source'] for s in request['args']['steps'] if s['effect'] == 'trash']
     assert trashed == ['文献'] and request['args']['steps'][-1]['source'] == '文献'  # merged, and last
-    assert request['args']['hidden_contents'] == [dict(folder='文献', metadata=['.DS_Store'], hidden=[])]
+    assert request['args']['hidden_contents'] == [dict(folder='文献', metadata=['.DS_Store'], hidden=[], sensitive={})]
     assert result.stop_reason == 'done' and client.requests == 3
     from safety.oplog import undo
     undo(session.sb, 'v3_1')
@@ -786,7 +786,8 @@ def test_hidden_files_recycled_after_the_user_agrees(tmp_path):
     assert errors(client) == [], errors(client)
     assert (tmp_path / 'a.txt').is_file() and not (tmp_path / '项目').exists()
     [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
-    assert request['args']['hidden_contents'] == [dict(folder='项目', metadata=[], hidden=['.env'])]
+    assert request['args']['hidden_contents'] == [dict(folder='项目', metadata=[], hidden=['.env'],
+                                                       sensitive={'.env': dict(name_rule='环境变量文件', findings=[])})]
     assert result.stop_reason == 'done'
 
 

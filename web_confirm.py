@@ -121,6 +121,10 @@ def build_confirmation(request: dict, sb: Sandbox) -> dict:
                 notes.append(f"⚠ {row['folder']} 含非系统隐藏文件："
                              + '、'.join(_hidden_label(sb, row['folder'], p) for p in row['hidden'])
                              + '。它们可能是配置或密钥，确认后将一起移入回收区（可撤销）。')
+            if row.get('sensitive'):
+                from agent.secrets_scan import describe
+                notes.append('⚠⚠ 本地检查发现疑似密钥，建议保留：'
+                             + '；'.join(describe(f"{row['folder']}/{rel}", r, masked=True) for rel, r in row['sensitive'].items()) + '。')
         extra = args.get('scope_additions') or {}
         if extra.get('write_roots'):
             notes.append('本计划超出任务原先登记的写入范围，确认后新增：'+'、'.join(extra['write_roots']))

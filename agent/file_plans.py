@@ -174,13 +174,18 @@ def tree_snapshot(folder, src, moved_out, action, consent):
     if t['metadata'] and not action.get('include_metadata'):
         raise ValueError(f"{src} 含系统元数据文件 {_names(t['metadata'])}（macOS/Windows 自动生成，列表工具不显示）。"
                          '若要连同回收，在这条 trash 动作中设置 include_metadata=true，确认卡片会把它们列给用户')
+    sensitive = hidden_reports(folder, t['hidden'])
     if t['hidden']:
         listed = {Path(p).relative_to(src).as_posix() if Path(p).is_relative_to(src) else p
                   for p in action.get('include_hidden') or []}
         agreed = any(Path(src) == Path(c) or Path(src).is_relative_to(c) for c in consent)
         if not agreed:
-            raise ValueError(f"{src} 含非系统隐藏文件 {_names(t['hidden'])}，可能是配置或密钥。回收前必须先调用 ask_user 询问用户"
-                             f"（subject 填 {src}，表示同意的选项设 consent=include_hidden）；不要猜测用户意愿")
+            from agent.secrets_scan import describe
+            # Kind and line only: secret values and even masked prefixes stay local.
+            found = '；'.join(describe(f'{src}/{rel}', r, masked=False) for rel, r in sensitive.items())
+            raise ValueError(f"{src} 含非系统隐藏文件 {_names(t['hidden'])}，可能是配置或密钥。"
+                             + (f"本地检查：{found}。建议默认保留。" if found else '')
+                             + f"回收前必须先调用 ask_user 询问用户（subject 填 {src}，表示同意的选项设 consent=include_hidden）；不要猜测用户意愿")
         if listed != set(t['hidden']):
             raise ValueError(f"include_hidden 必须逐个列出 {src} 中的全部隐藏文件，不多不少："
                              + _names([f'{src}/{p}' for p in t['hidden']], 20))
@@ -188,7 +193,16 @@ def tree_snapshot(folder, src, moved_out, action, consent):
         raise ValueError(f'{src} 没有需要 include_hidden 的隐藏文件')
     return dict(kind='directory_tree', stat=signature(folder), sha256=None, moved_out=sorted(moving),
                 dirs=t['dirs'], files={**t['metadata'], **t['hidden']},
-                metadata=sorted(t['metadata']), hidden=sorted(t['hidden']))
+                metadata=sorted(t['metadata']), hidden=sorted(t['hidden']),
+                sensitive={rel: dict(name_rule=r['name_rule'], findings=r['findings']) for rel, r in sensitive.items()})
+
+
+def hidden_reports(folder, hidden):
+    """Secret-scan reports for a folder's hidden files; only files with a finding.
+    Raises the warning, never the permission: these files still need consent."""
+    from agent.secrets_scan import scan_file, is_sensitive
+    reports = {rel: scan_file(Path(folder) / rel) for rel in hidden}
+    return {rel: r for rel, r in reports.items() if is_sensitive(r)}
 
 
 def _tree_same(path, expected, pending):
@@ -653,7 +667,8 @@ def execute(runtime, plan_id, oplog, confirmer):
                      and (s['snapshot']['metadata'] or s['snapshot']['hidden'])]
             if trees:
                 review['hidden_contents'] = [dict(folder=s['source'], metadata=s['snapshot']['metadata'],
-                                                  hidden=s['snapshot']['hidden']) for s in trees]
+                                                  hidden=s['snapshot']['hidden'], sensitive=s['snapshot'].get('sensitive', {}))
+                                             for s in trees]
             if not confirmer.allow('file_plan', review, file_count=len(remaining), force=True,
                                    **({'notes': runtime.text_limits()} if runtime.text_limits() else {})):
                 raise ValueError('用户拒绝执行此计划，未执行剩余操作')
