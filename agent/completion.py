@@ -212,7 +212,8 @@ def enforce_cleanup_condition(task, sb, bound):
         for gid in goal_ids:
             for c in goals[gid]['conditions']:
                 if c['kind'] != 'empty_directories_removed' or not _in_cleanup(sb, c, src): continue
-                if _kind(sb, src) == 'empty_directory': continue
+                # A missing source is the tool's own error, not a cleanup violation.
+                if _kind(sb, src) in {None, 'empty_directory'}: continue
                 # Another condition (e.g. a dedup receipt) explains this action.
                 if _claimed(task, sb, goal_ids, op, producers, skip={'empty_directories_removed'}): continue
                 raise ValueError('空目录清理目标只允许回收空文件夹：'+src)

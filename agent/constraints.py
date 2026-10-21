@@ -99,16 +99,10 @@ def validate_operations(runtime, operations):
         bound.append((op, attribute(task, sb, op, candidates, producers), producers))
     require_receipt_producers(task, sb, bound)
     enforce_cleanup_condition(task, sb, bound)
-    decisions = {}
-    for r in task.get('reviews', []):
-        if r['revision'] == task['revision']:
-            for cid in r.get('constraint_ids', []): decisions[cid] = r['decision']
-    accepted = {cid for cid, decision in decisions.items() if decision == 'accept'}
     for op, op_goals, _ in bound:
         constraints = [c for c in task['constraints'] if applies(c, op_goals)]
-        if any(not c['forbidden_effects'] and not c.get('rules') and c['id'] not in accepted
-               for c in constraints):
-            raise ValueError('存在尚未映射为本地检查、也未经用户复核的文本约束')
+        # Text-only limits cannot be checked here. They are shown on the write's
+        # confirmation (TaskRuntime.text_limits) and keep the task in review.
         forbidden = {e for c in constraints for e in c['forbidden_effects']}
         if op['effect'] in forbidden or op['effect'] not in task['allowed_effects']:
             raise ValueError('操作副作用违反任务约束')
@@ -144,9 +138,16 @@ def validate_operations(runtime, operations):
                              if row.get('run_id') == runtime.run_id] + prior_run
                 # Legacy rows with unknown attribution count conservatively.
                 prior = [row for row in prior if not row.get('goal_ids') or applies(constraint, row['goal_ids'])]
-                count = sum(('create' if row['op'] == 'make_dir' else row['op']) in rule['effects'] for row in prior)
-                if count + len(selected) > rule['limit']:
-                    raise ValueError(f"约束 {constraint['id']}：超过{rule.get('count_scope', 'run')}操作数量上限 {rule['limit']}")
+                counted = [row for row in prior if ('create' if row['op'] == 'make_dir' else row['op']) in rule['effects']]
+                if len(counted) + len(selected) > rule['limit']:
+                    # State the count itself, so the model does not have to guess why.
+                    sample = lambda rows: '、'.join(rows[:3]) + ('等' if len(rows) > 3 else '')
+                    raise ValueError(
+                        f"约束 {constraint['id']}：超过{rule.get('count_scope', 'run')}操作数量上限 {rule['limit']}"
+                        f"（计入 {'/'.join(EFFECT_NAMES[e] for e in rule['effects'])}，不含其他操作）；"
+                        f"此前已计 {len(counted)} 项" + (f"（{sample([r.get('src') or r.get('dst') for r in counted])}）" if counted else '')
+                        + f"，本次新增 {len(selected)} 项（{sample([o.get('source') or o.get('destination') for o in selected])}）。"
+                        "若此上限来自用户要求，请向用户说明，不要自行放宽")
                 continue
             for op in selected:
                 members = _members(sb, op) if kind in {'within', 'outside', 'extensions', 'name_glob', 'content_unchanged'} else [op]
@@ -177,8 +178,26 @@ def validate_operations(runtime, operations):
                                 raise ValueError('确认期间源文件内容改变，操作未执行')
                             runtime._content_fingerprints.setdefault(source, actual)
                     if not ok:
-                        raise ValueError(f"约束 {constraint['id']} 未满足：{kind}，对象 {path or source or dest}")
+                        raise ValueError(f"约束 {constraint['id']} 未满足：{kind}，对象 {path or source or dest}；"
+                                         f"规则含义：{rule_meaning(rule)}")
     return bound
+
+
+EFFECT_NAMES = {'create': '建目录', 'move': '移动', 'rename': '改名', 'trash': '回收'}
+
+
+def rule_meaning(rule):
+    """One rule in words, quoted in rejections so the cause is not guessed."""
+    who = ('来源' if rule.get('selector', 'source') == 'source' else '目标') + '（' + \
+        '/'.join(EFFECT_NAMES[e] for e in rule['effects']) + '）'
+    values = '、'.join(rule.get('values', []))
+    return {'within': f'{who}必须位于 {values} 之内',
+            'outside': f'{who}不得位于 {values} 之内',
+            'extensions': f'{who}的后缀必须是 {values}',
+            'name_glob': f'{who}的文件名必须匹配 {values}（只比较文件名，不含目录）',
+            'empty_directory': '只能回收空文件夹',
+            'same_extension': '移动或改名后后缀不变',
+            'content_unchanged': '文件内容不得改变'}.get(rule['predicate'], rule['predicate'])
 
 
 def op_key(effect, source=None, destination=None):

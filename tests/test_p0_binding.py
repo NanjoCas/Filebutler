@@ -125,20 +125,20 @@ def test_blocker_lifecycle_resolves_supersedes_and_keeps_open_reasons(tmp_path):
     (tmp_path/'a.txt').write_text('A')
     r = runtime(tmp_path)
     call(r, 'set_task', spec(('移动', [dict(kind='path_exists', path='out/a.txt')]),
-                             write_roots=['out'], allowed_effects=['create', 'move']))
+                             write_roots=['.'], allowed_effects=['move']))
     first = call(r, 'prepare_file_plan', dict(description='移动', actions=[dict(effect='move', source='a.txt', destination='out/a.txt')]))
-    assert '写入范围外' in first
+    assert '副作用' in first  # creating out/ was not allowed
     assert [b['status'] for b in r.current['blockers']] == ['open']
     r.current['checks'] = verify_task(r.current, r.sb); r.current['status'] = 'partial'
     report = build_report(dict(r.current, operations=[]), '', [])
-    assert '写入范围外' in report['summary']  # unresolved: main answer
+    assert '副作用' in report['summary']  # unresolved: main answer
     edit = json.loads(call(r, 'edit_task', dict(task_id=r.current['id'], expected_revision=1,
-                                                write_roots=['.'], reason='源文件也需要写入')).split('：', 1)[1])
+                                                allowed_effects=['create', 'move'], reason='需要新建 out')).split('：', 1)[1])
     assert call(r, 'apply_task_edit', {'edit_id': edit['id']}).startswith('OK')
     assert r.current['blockers'][0]['status'] == 'superseded'
     pid = plan_id(call(r, 'prepare_file_plan', dict(description='移动', actions=[dict(effect='move', source='a.txt', destination='out/a.txt')])))
     assert call(r, 'execute_file_plan', {'plan_id': pid}).startswith('OK')
     r.current['checks'] = verify_task(r.current, r.sb); r.current['status'] = 'needs_review'
     report = build_report(dict(r.current, operations=[]), '', [])
-    assert '写入范围外' not in report['summary'] and '阻塞原因' not in report['summary']
-    assert any('已恢复的阻塞' in s['title'] and '写入范围外' in s['markdown'] for s in report['sections'])
+    assert '副作用' not in report['summary'] and '阻塞原因' not in report['summary']
+    assert any('已恢复的阻塞' in s['title'] and '副作用' in s['markdown'] for s in report['sections'])

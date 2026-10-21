@@ -14,7 +14,8 @@ llm_timeout: 60                # 单次请求超时；SDK 隐式重试已关闭
 llm_retries: 1                 # 项目层最多重试一次（总计最多两次请求）
 conversation_history_max_chars: 40000  # Web 长对话才归档旧工具明细；完整 UI 历史仍保留
 conversation_keep_full_turns: 2        # 保留最近两个完整任务的工具证据
-prompt: v8_tasks             # 任务状态、可组合能力、本地完成条件核验
+prompt: v9_intent            # 协议 v3：模型只说意图和对象，契约本地编译；对照用 v8_tasks + protocol: v2
+protocol: v3                 # v3 意图提案（P1-4）/ v2 模型手写任务契约（2026-10-21 之前）
 sandbox: ./sandbox
 max_steps: 25                  # 真实数据（51 篇论文）光读就要 9 轮左右，15 太紧
 repeat_detection: true         # 相同工具和参数连续第 2 次提醒，第 3 次拦截并中止；false 用于 E5 对照

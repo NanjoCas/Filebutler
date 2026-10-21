@@ -104,6 +104,9 @@ def build_confirmation(request: dict, sb: Sandbox) -> dict:
             changed.append(item)
         title,label,tone='确认执行文件计划','确认执行此计划','neutral'
         summary=f"计划 {args['plan_id']}：将执行 {len(changed)} 项操作。"
+        extra = args.get('scope_additions') or {}
+        if extra.get('write_roots'):
+            notes.append('本计划超出任务原先登记的写入范围，确认后新增：'+'、'.join(extra['write_roots']))
         notes += ['本次确认绑定此操作清单；来源或目标变化会停止执行。',
                   '计划摘要：'+args['digest'], '已完成操作有日志，可按运行撤销；执行中断时请先查看具体原因。']
     elif tool == "trash_many":
@@ -182,6 +185,7 @@ def build_confirmation(request: dict, sb: Sandbox) -> dict:
         summary = "请检查操作详情后再确认。"
         notes.append(f"操作类型：{tool}")
 
+    notes += request.get("notes") or []
     return {"operation": tool, "title": title, "summary": summary, "confirm_label": label, "tone": tone,
             "counts": {"affected": len(changed), "retained": len(args.get("保留", []))},
             "groups": groups, "notes": notes}

@@ -137,3 +137,23 @@ SYSTEM_PROMPTS['v8_tasks'] += """
 - 使用批量本地能力处理枚举、文本抽取、版本、哈希、计数、格式化和写入日志；模型只接收有界摘要与证据。检索的页数、top_k、后续补读由需求和证据缺口决定，预算不足须报告，不自行宣称穷尽。
 - 片段引文证明出处，不证明模型解释准确。语义结论标待复核；确定性结论只来自本地校验。不要通过更改描述、完成条件或新建任务掩盖未完成目标。
 """
+
+# Protocol v3 (P1-4): the model states intent and objects; contracts are compiled
+# locally. Same base prompt as v8 so the two protocols differ only in this block
+# and in the controller's guidance and tool set.
+SYSTEM_PROMPTS['v9_intent'] = SYSTEM_V1.replace(
+    '1. 先看再动：先用 list_dir / search_files 弄清楚有哪些文件，再做写操作。',
+    '1. 用适合任务的能力获取必要事实；已有有效证据无需重复调查。').replace(
+    '2. 一步一步执行：移动前确保目标文件夹存在（先 make_dir）。',
+    '2. 文件改动通过 prepare_file_plan 列出全部对象，再 execute_file_plan 一次执行；父目录由本地创建。').replace(
+    '没有删除工具；需要“删除”时用 trash 移入回收区。',
+    '没有删除工具；需要“删除”时在计划里用 trash 移入回收区。') + """
+## 任务协议
+- 区分询问与执行：解释、方案讨论直接回答；历史运行查询用 inspect_run。只有用户要求执行时才 start_task。
+- start_task 只描述用户的要求：parts 分部分写清要做什么；limits 只放用户明确说出的限制，不要替用户添加规则或数量上限。
+- 完成条件、写入范围、目标归属由本地生成和核验，你不需要也无法填写。语义判断（查找相关性、分类）会标为待复核。
+- 指代不明、存在多个候选或冲突时，先说明情况并提问（questions），不要猜。
+- 用户更正时用 revise_task；不要另建任务绕开已有限制。
+- 使用已有 file:F / evidence:E / P / X 标识，不重复抄写长表；最终回复只做必要补充。
+- 失败或部分完成时直接说明具体原因和已执行范围，以本地结果为准。
+"""

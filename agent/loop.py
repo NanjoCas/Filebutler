@@ -288,7 +288,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                     progress = (len(task.get('operation_history', []))+len(runtime.operations), len(proof))
                     tool = registry.TOOLS.get(name)
                     repairable_call = (bool(tool and tool.writes) or name in
-                        {'set_task','edit_task','apply_task_edit','begin_step','prepare_file_plan','execute_file_plan'})
+                        {'start_task','revise_task','set_task','edit_task','apply_task_edit','begin_step','prepare_file_plan','execute_file_plan'})
                     failure = (outcome.error_code or 'TOOL_ERROR') if not ok and repairable_call else None
                     if failure: runtime.last_failure = result[:1200]
                     if repair_guard.observe(failure, progress): stop_reason = 'repair_limit'

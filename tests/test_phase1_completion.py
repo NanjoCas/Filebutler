@@ -186,15 +186,18 @@ def test_cancel_and_restore_require_versioned_edit(tmp_path):
     assert r.store.apply_edit(restore['id'],'恢复','r4',actor='user')['status']=='running'
 
 
-def test_unknown_text_constraint_blocks_writes_until_explicit_user_review(tmp_path):
+def test_unknown_text_constraint_is_shown_on_confirmation_until_user_review(tmp_path):
+    # Since P1-4 (user-confirmed): a text-only limit does not block the write; it
+    # is listed on every confirmation, and the task stays in review.
     r,sb=task_runtime(tmp_path,constraints=[dict(id='meaning',description='遵循特殊整理规则')])
-    assert r.prepare('make_dir',json.dumps(dict(path='out')),sb)[1]
+    assert not r.prepare('make_dir',json.dumps(dict(path='out')),sb)[1]
+    assert any('遵循特殊整理规则' in n for n in r.text_limits())
     r.store.review(r.current['id'],1,[],['meaning'],'accept','我已核对这些条件',sb)
     r.current=r.store.get(r.current['id'])
-    assert not r.prepare('make_dir',json.dumps(dict(path='out')),sb)[1]
+    assert r.text_limits()==[]
     r.store.review(r.current['id'],1,[],['meaning'],'reject','重新检查',sb)
     r.current=r.store.get(r.current['id'])
-    assert r.prepare('make_dir',json.dumps(dict(path='out')),sb)[1]
+    assert any('遵循特殊整理规则' in n for n in r.text_limits())
 
 
 def test_live_runner_marks_connection_failure_as_blocked_not_quality_failure(tmp_path,monkeypatch):

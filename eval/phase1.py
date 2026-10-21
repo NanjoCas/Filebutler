@@ -71,7 +71,8 @@ def main():
     ap.add_argument('--total-cap', type=float, default=1.5)
     args=ap.parse_args(); args.out.mkdir(parents=True, exist_ok=False)
     cfg=load_config(ROOT/'config.yaml')
-    cfg.update(llm_retries=0, llm_timeout=60, max_steps=7, cost_budget=.15)
+    # Intent parsing of the v2 set_task contract; pinned so config.yaml's protocol cannot change it.
+    cfg.update(llm_retries=0, llm_timeout=60, max_steps=7, cost_budget=.15, protocol='v2', prompt='v8_tasks')
     manifest=yaml.safe_load((ROOT/'eval/tasks_phase1.yaml').read_text())
     report=dict(model=cfg['model'], split=args.split, cases=[], cost=0, limitations=[
         'Single sample per case; goal_count checks quantity only. Structural checks cannot establish semantic understanding.',

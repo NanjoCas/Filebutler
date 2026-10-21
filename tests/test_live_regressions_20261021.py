@@ -57,7 +57,7 @@ def production_cfg():
     """
     cfg = yaml.safe_load((REPO / 'config.yaml').read_text(encoding='utf-8'))
     cfg = {k: v for k, v in cfg.items() if 'key' not in k.lower()}
-    cfg.update(local_runtime=True, task_runtime=True, prompt='v8_tasks', max_steps=25,
+    cfg.update(local_runtime=True, task_runtime=True, prompt='v8_tasks', protocol='v2', max_steps=25,
                task_repair_limit=6, repeat_detection=True, llm_retries=0, reflect=False,
                context_compress=False, task_session='live-policy-acceptance')
     return cfg
@@ -153,6 +153,7 @@ class Session:
         self.ids = {}
         self.turn = 0
         self.approvals = []
+        self.answer = 'y'
 
     def run(self, instruction, steps, final=''):
         self.turn += 1
@@ -162,7 +163,7 @@ class Session:
             history = [dict(role='system', content=SYSTEM_PROMPTS[CFG['prompt']]),
                        dict(role='user', content=instruction)]
         client = Replay(steps, self.ids, final)
-        approve = lambda request: self.approvals.append(request) or 'y'
+        approve = lambda request: self.approvals.append(request) or self.answer
         result = run_agent(instruction, LLM({'model': 'fake'}, client=client), self.sb, CFG,
                            Console(file=io.StringIO()), artifacts=self.store, history=history,
                            oplog=OpLog(self.sb, f'replay_{self.turn}'),
@@ -177,6 +178,25 @@ def replay(session, name, *, until=None, extra=(), final=''):
     data = recorded(name)
     steps = [s for s in data['steps'] if until is None or s['trace_step'] < until]
     return session.run(data['instruction'], steps + list(extra), final)
+
+
+def as_plan(steps, trace_step, alias=PLAN_ALIAS):
+    """Steps with the recorded (failed) prepare at ``trace_step`` now expected to succeed.
+
+    Since P1-4 a plan may list objects outside the model's write_roots on its
+    confirmation, so a call the live run saw rejected returns a plan ID here.
+    """
+    steps = json.loads(json.dumps(steps))
+    for s in steps:
+        if s['trace_step'] == trace_step:
+            for c in s['calls']:
+                if c['tool'] == 'prepare_file_plan':
+                    c.update(status='ok', result_ids=[alias])
+    return steps
+
+
+def plan_confirmations(session):
+    return [r['args'] for r in session.approvals if r.get('tool') == 'file_plan']
 
 
 def details(result):
@@ -276,21 +296,46 @@ def test_root_only_replay_unbound_count_goal_is_not_false_partial(tmp_path):
     assert '2' in result.final  # The requested count is still reported in the main answer.
 
 
-def test_root_only_guard_out_of_scope_move_is_still_rejected_without_auto_expansion(tmp_path):
-    """Guard: the step-5 plan (write_roots=[Archive], sources in Inbox) must stay rejected."""
+def root_only_plan_turn(session):
+    data = recorded('root_only_turn1')
+    steps = as_plan([s for s in data['steps'] if s['trace_step'] < 6], 5)
+    return session.run(data['instruction'], steps + [
+        step(call('execute_file_plan', {'plan_id': PLAN_ALIAS})), finish('收尾')])
+
+
+def test_root_only_out_of_scope_sources_are_listed_on_confirmation_and_refusal_writes_nothing(tmp_path):
+    """Boundary (user-confirmed 2026-10-21): the step-5 plan (write_roots=[Archive],
+    sources in Inbox) is prepared, but its Inbox sources appear on the confirmation
+    as new scope. Refusing it moves nothing and grants nothing."""
     files_fixture(tmp_path)
     session = Session(tmp_path)
-    result, client = replay(session, 'root_only_turn1', until=6, extra=[finish('未能移动')])
+    session.answer = 'n'
+    result, client = root_only_plan_turn(session)
     if client.one('set_task', 3)['status'] == 'error':
         pytest.skip('set_task pre-check rejected the recorded task; covered by the test above')
-    rejected = client.one('prepare_file_plan', 5)
-    assert rejected['status'] == 'error' and 'Inbox/a.txt' in rejected['text']
+    assert client.one('prepare_file_plan', 5)['status'] == 'ok'
+    [review] = plan_confirmations(session)
+    assert {'Inbox/a.txt', 'Inbox/b.txt'} <= set(review['scope_additions']['write_roots'])
+    assert client.calls('execute_file_plan')[0]['status'] == 'error'
     assert (tmp_path / 'Inbox/a.txt').read_text() == 'alpha' and not (tmp_path / 'Archive/a.txt').exists()
-    assert session.sb.runtime.current['write_roots'] == ['Archive']  # no silent permission growth
-    # Genuinely unfinished: must be partial, and the unresolved blocker stays in the main answer.
-    assert result.stop_reason == 'partial'
-    assert '尚未全部完成' in result.final
-    assert '写入范围' in result.final and 'Inbox/a.txt' in result.final
+    task = session.sb.runtime.current
+    assert task['write_roots'] == ['Archive'] and not task.get('scope_grants')
+    assert result.stop_reason == 'partial' and '尚未全部完成' in result.final
+
+
+def test_root_only_confirmed_plan_grants_exactly_its_objects(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = root_only_plan_turn(session)
+    if client.one('set_task', 3)['status'] == 'error':
+        pytest.skip('set_task pre-check rejected the recorded task')
+    assert client.calls('execute_file_plan')[0]['status'] == 'ok'
+    assert_root_only_files(tmp_path)
+    task = session.sb.runtime.current
+    [grant] = task['scope_grants']
+    assert set(task['write_roots']) == {'Archive', *grant['write_roots']}
+    assert all(p.startswith('Inbox/') for p in grant['write_roots'])  # objects, not the whole folder
+    assert '写入范围外的对象' not in result.final
 
 
 def test_root_only_guard_unexecuted_move_remains_partial(tmp_path):
@@ -593,30 +638,23 @@ def test_dedup_guard_global_forbidden_effect_still_applies(tmp_path, shape):
 # fixed by the next begin_step) - see each recorded_final in the fixtures.
 
 
-def test_application_dimension_resolved_scope_blocker_moves_to_details(tmp_path):
+def test_application_dimension_plan_outside_roots_executes_without_task_edit(tmp_path):
+    """Live: the model's write_roots omitted the 资料 sources, costing an edit_task,
+    an apply_task_edit and a second prepare. The step-7 plan now runs directly."""
     applications_fixture(tmp_path)
     session = Session(tmp_path)
-    result, client = replay(session, 'application_dimension_turn1')
-    assert client.one('prepare_file_plan', 7)['status'] == 'error'
-    assert client.one('execute_file_plan', 11)['status'] == 'ok'
+    data = recorded('application_dimension_turn1')
+    steps = as_plan([s for s in data['steps'] if s['trace_step'] < 8], 7)
+    result, client = session.run(data['instruction'], steps + [
+        step(call('execute_file_plan', {'plan_id': PLAN_ALIAS})), finish('收尾')])
+    assert client.one('prepare_file_plan', 7)['status'] == 'ok'
+    assert client.calls('execute_file_plan')[0]['status'] == 'ok'
     for i, category in enumerate(('农业', '医疗', '能源'), 1):
         assert (tmp_path / '资料/按领域' / category / f'CNN_{i:02d}.pdf').is_file()
+    [review] = plan_confirmations(session)
+    assert '资料/CNN_01.pdf' in review['scope_additions']['write_roots']
     assert result.stop_reason == 'needs_review'  # semantic review is still required
-    assert '写入范围外的对象' not in result.final, result.final
-    assert '阻塞原因' not in result.final
-    assert '写入范围外的对象' in details(result)  # kept as process detail, not dropped
-
-
-def test_root_only_resolved_scope_blocker_not_in_main_answer(tmp_path):
-    files_fixture(tmp_path)
-    session = Session(tmp_path)
-    result, client = replay(session, 'root_only_turn1')
-    if client.one('set_task', 3)['status'] == 'error':
-        pytest.skip('set_task pre-check rejected the recorded task')
-    assert client.one('prepare_file_plan', 5)['status'] == 'error'
-    assert client.one('execute_file_plan', 9)['status'] == 'ok'
-    assert '写入范围外的对象' not in result.final, result.final
-    assert '写入范围外的对象' in details(result)
+    assert '写入范围外的对象' not in result.final and '阻塞原因' not in result.final
 
 
 def test_real_classification_resolved_step_blocker_not_carried_into_answers(tmp_path):
@@ -636,11 +674,11 @@ def test_blocker_guard_unresolved_failure_stays_in_main_answer(tmp_path):
     applications_fixture(tmp_path)
     session = Session(tmp_path)
     result, client = replay(session, 'application_dimension_turn1', until=8, extra=[finish('已整理')])
-    assert client.one('prepare_file_plan', 7)['status'] == 'error'
+    # The plan is prepared but never executed: nothing moved, not complete.
+    assert client.one('prepare_file_plan', 7)['status'] == 'ok'
     assert all((tmp_path / '资料' / f'CNN_{i:02d}.pdf').exists() for i in (1, 2, 3))
     assert result.stop_reason == 'partial'
     assert '尚未全部完成' in result.final
-    assert '写入范围外的对象' in result.final and '资料/CNN_01.pdf' in result.final
 
 
 def test_blocker_guard_failed_execution_after_fix_attempt_stays_visible(tmp_path):

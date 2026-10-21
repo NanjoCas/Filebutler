@@ -46,7 +46,12 @@ def test_search_dedup_move_correct_files_are_not_partial(tmp_path):
     holdout_fixture(tmp_path, 'notes_combo')
     session = Session(tmp_path)
     result, client = replay(session, 'holdout_search_dedup_move_turn1')
-    assert [c for c in client.log if c['status'] != c['recorded']] == []
+    # Since P1-4 two recorded rejections succeed earlier: apply_dedup without
+    # begin_step (step 9, attributed by its receipt) and the step-12 plan. The
+    # only call that then fails is the model's retry of the dedup it already did.
+    changed = [c for c in client.log if c['status'] != c['recorded']]
+    assert all(c['recorded'] == 'error' for c in changed if c['status'] == 'ok')
+    assert [(c['tool'], c['trace_step']) for c in changed if c['status'] == 'error'] == [('apply_dedup', 11)]
     assert result.runtime['task_status'] in {'completed', 'needs_review'}
     assert result.stop_reason in {'done', 'needs_review'}
     assert '尚未全部完成' not in result.final
