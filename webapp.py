@@ -331,6 +331,38 @@ def create_conversation():
     return {"id": cid, "title": "新对话", "created_at": now, "updated_at": now}
 
 
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str):
+    """Forget one chat in the UI state DB only.
+
+    Shared workspace records stay untouched: .oplog/ (run logs, tasks.sqlite3,
+    undo history, document cache), .trash/, trace logs and user files. A running
+    turn or pending confirmation is refused instead of cancelled: the agent loop
+    has no safe interruption point, and an answered confirmation keeps running.
+    """
+    with ACTIVE_LOCK:
+        busy = conversation_id in ACTIVE_CONVERSATIONS or any(
+            state.conversation_id == conversation_id and (state.status in ("queued", "running", "waiting_confirmation") or state.pending_confirmation)
+            for state in list(TURN_STATES.values()))
+        if busy:
+            raise HTTPException(409, "该对话仍在运行或等待确认，请先处理确认并等待本轮结束后再删除")
+        # Also serialise with task edits/reviews, which hold this lock.
+        with _conversation_lock(conversation_id):
+            _get_conversation(conversation_id)
+            with _db() as db:
+                runs = [r["run_id"] for r in db.execute("SELECT run_id FROM turns WHERE conversation_id=? ORDER BY created_at,rowid", (conversation_id,))]
+                db.execute("DELETE FROM turns WHERE conversation_id=?", (conversation_id,))
+                db.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+            for turn_id in [tid for tid, state in list(TURN_STATES.items()) if state.conversation_id == conversation_id]:
+                TURN_STATES.pop(turn_id, None)
+    with CONVERSATION_LOCKS_GUARD:
+        CONVERSATION_LOCKS.pop(conversation_id, None)
+    oplog = Path(_config()["sandbox"]) / ".oplog"
+    # Report runs whose undo log remains so they can still be undone from the CLI.
+    undoable = [run for run in runs if (oplog / f"{run}.jsonl").is_file()]
+    return {"id": conversation_id, "deleted_turns": len(runs), "undoable_run_ids": undoable}
+
+
 def _tasks(conversation_id):
     from agent.task import TaskStore
     _get_conversation(conversation_id)
@@ -422,12 +454,45 @@ def review_task(conversation_id: str, task_id: str, body: TaskReview):
             raise HTTPException(409, str(exc)) from exc
 
 
+# Rendered Markdown depends only on the text, the visible file set and, for file:/evidence:
+# references, this conversation's artifacts. Reopening a long chat re-renders nothing that
+# is unchanged; any file move/creation/removal changes the key and re-renders everything.
+RENDER_CACHE: dict[tuple, str] = {}
+RENDER_CACHE_LIMIT = 2048
+RENDER_CACHE_LOCK = threading.Lock()
+
+
+def _render_key(files: FileCatalog) -> str:
+    import hashlib
+    digest = hashlib.sha256()
+    for path in sorted(files.all_paths):
+        digest.update(("d:" if path in files.directories else "f:").encode() + path.encode("utf-8", "surrogatepass") + b"\0")
+    return digest.hexdigest()
+
+
+def _cached_markdown(content: str, files: FileCatalog, catalog_key: str, artifacts_key: str) -> str:
+    scoped = "file:" in content or "evidence:" in content
+    key = (catalog_key, content, (artifacts_key, files.conversation_id) if scoped else None)
+    with RENDER_CACHE_LOCK:
+        cached = RENDER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    rendered = render_markdown(content, files)
+    with RENDER_CACHE_LOCK:
+        if len(RENDER_CACHE) >= RENDER_CACHE_LIMIT:
+            RENDER_CACHE.clear()
+        RENDER_CACHE[key] = rendered
+    return rendered
+
+
 @app.get("/api/conversations/{conversation_id}")
 def get_conversation(conversation_id: str):
     row = _get_conversation(conversation_id)
     history = json.loads(row["history_json"])
     display = []
     files = FileCatalog(Sandbox(_config()["sandbox"]), _artifacts(conversation_id), conversation_id)
+    catalog_key, artifacts_key = _render_key(files), row["artifacts_json"]
+    render = lambda text: _cached_markdown(text, files, catalog_key, artifacts_key)
     # Reports are presentation data, not extra fields in the model transcript.
     from collections import defaultdict, deque
     from agent.reporting import legacy_report
@@ -451,9 +516,9 @@ def get_conversation(conversation_id: str):
             report=reports[content].popleft() if reports.get(content) else None
             if report:
                 content=report['summary']
-                report={**report,'sections':[{**s,'html':render_markdown(s['markdown'],files)} for s in report['sections']]}
+                report={**report,'sections':[{**s,'html':render(s['markdown'])} for s in report['sections']]}
             display.append({"role": "assistant", "content": content,
-                            "html": render_markdown(content, files), 'report':report})
+                            "html": render(content), 'report':report})
     with _db() as db:
         latest = db.execute("SELECT id,status,run_id,final,error,result_json,events_json FROM turns WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
                             (conversation_id,)).fetchone()

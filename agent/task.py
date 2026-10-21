@@ -163,10 +163,13 @@ def task_state(task):
                 and r['decision'] == 'accept' for g in r.get('goal_ids', [])}
     accepted_constraints = {c for r in task.get('reviews', []) if r['revision'] == task['revision']
                             and r['decision'] == 'accept' for c in r.get('constraint_ids', [])}
-    if any(c['needs_review'] and c['goal_id'] not in accepted for c in task['checks']):
-        return 'needs_review'
-    if any(not c['forbidden_effects'] and not c.get('rules') and c['id'] not in accepted_constraints
-           for c in task['constraints']):
+    if (any(c['needs_review'] and c['goal_id'] not in accepted for c in task['checks']) or
+            any(not c['forbidden_effects'] and not c.get('rules') and c['id'] not in accepted_constraints
+                for c in task['constraints'])):
+        # A write task that never executed an operation has no result to
+        # review; the next step (a conflict, a choice) is the user's.
+        if task.get('allowed_effects') and not (task.get('operation_history') or task.get('operations')):
+            return 'waiting_input'
         return 'needs_review'
     latest = {}
     for r in task.get('reviews', []):

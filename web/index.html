@@ -11,14 +11,15 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark">F</span><div><strong>FileButler</strong><small id="health">正在连接本地服务…</small></div></div>
-    <div><button id="open-tasks" class="icon-button" type="button">任务与复核</button><button id="toggle-files" class="icon-button" title="收起或展开文件区">文件区</button></div>
+    <div class="topbar-actions"><button id="toggle-sidebar" class="icon-button sidebar-toggle" type="button" aria-controls="sidebar">对话</button><button id="open-tasks" class="icon-button" type="button">任务与复核</button><button id="toggle-files" class="icon-button" type="button" title="收起或展开文件区">文件区</button></div>
   </header>
   <main class="layout">
-    <aside class="sidebar">
-      <button id="new-chat" class="new-chat">＋ <span>新建对话</span></button>
+    <aside id="sidebar" class="sidebar">
+      <button id="new-chat" class="new-chat" type="button">＋ <span>新建对话</span></button>
       <div class="section-label">最近对话</div>
-      <nav id="conversation-list" class="conversation-list"></nav>
+      <nav id="conversation-list" class="conversation-list" aria-label="最近对话"><div class="conversation-empty">正在读取…</div></nav>
     </aside>
+    <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
     <section class="chat-panel">
       <div class="chat-heading"><div><h1 id="conversation-title">新对话</h1><p id="chat-subtitle">FileButler 在本机沙盒中帮你查找和整理文件</p></div><span id="run-status" class="status" role="status" aria-live="polite"></span></div>
       <div id="messages" class="messages" role="region" aria-label="对话记录" tabindex="0"><div class="welcome"><div class="welcome-icon">✦</div><h2>你想整理什么？</h2><p>可以用自然语言查找、阅读、分类或整理沙盒里的文件。</p><div class="suggestions"><button>帮我找出有关强化学习的论文</button><button>列出文献目录里的 PDF</button><button>查看当前文件夹里有哪些文件</button></div></div></div>
@@ -43,6 +44,14 @@
     <header class="review-header"><h2 id="task-editor-title">任务与复核</h2><button id="task-editor-close" class="icon-button" type="button" aria-label="关闭任务窗口">✕</button></header>
     <div id="task-editor-body" class="task-editor-body"></div>
   </dialog>
+  <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-dialog-title">
+    <h2 id="delete-dialog-title">删除这段对话？</h2>
+    <p class="delete-target">「<strong id="delete-conversation-title"></strong>」</p>
+    <p class="delete-note">只删除网页里的消息和运行记录，无法恢复。不会改动沙盒文件、回收区和操作日志；此对话中的“撤销”按钮会随之消失，已记录的文件操作仍可在终端撤销。</p>
+    <p id="delete-feedback" class="delete-feedback" role="status"></p>
+    <div class="delete-actions"><button id="delete-cancel" class="secondary-button" type="button">取消</button><button id="delete-confirm" class="danger-button" type="button">删除对话</button></div>
+  </dialog>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"><span class="toast-text"></span><button id="toast-close" type="button" aria-label="关闭提示">✕</button></div>
   <script src="/static/app.js" defer></script>
   <script src="/static/tasks.js" defer></script>
 </body>

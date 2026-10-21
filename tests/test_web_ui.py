@@ -304,3 +304,112 @@ def test_ui_confirmation_remains_interactive_with_live_steps(ui, monkeypatch, fi
     assert finished.wait(5)
     assert not (files.root / "blocked").exists()
     assert ui.get(f"/api/turns/{tid}").json()["status"] == "completed"
+
+
+def _seed_turn(cid, run_id, status='completed'):
+    with webapp._db() as db:
+        db.execute('INSERT INTO turns(id,conversation_id,run_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?)',
+                   ('t-' + run_id, cid, run_id, status, webapp._now(), webapp._now()))
+        db.execute('UPDATE conversations SET history_json=?, artifacts_json=? WHERE id=?',
+                   (json.dumps([{'role': 'user', 'content': run_id}]), json.dumps({'files': {}}), cid))
+
+
+def test_delete_conversation_removes_only_its_ui_state(ui, files):
+    from agent.task import TaskStore, TaskSubmission
+    a = ui.post('/api/conversations').json()['id']
+    b = ui.post('/api/conversations').json()['id']
+    # A real move in each conversation, so both have an undo log in the shared .oplog.
+    (files.root / 'a.txt').write_text('A', encoding='utf-8'); (files.root / 'b.txt').write_text('B', encoding='utf-8')
+    (files.root / '归档').mkdir()
+    from safety.oplog import OpLog
+    for cid, run, name in ((a, 'run-a', 'a.txt'), (b, 'run-b', 'b.txt')):
+        log = OpLog(files, run); log.record('move', name, f'归档/{name}')
+        (files.root / name).rename(files.root / '归档' / name)
+        _seed_turn(cid, run)
+    tasks = files.root / '.oplog' / 'tasks.sqlite3'
+    TaskStore(tasks, files.root, a).submit(TaskSubmission(goals=[dict(id='g', description='核对',
+        conditions=[dict(kind='manual_review')])]), '核对', 'run-a')
+    (files.root / '.trash').mkdir(exist_ok=True); (files.root / '.trash' / 'kept.txt').write_text('x')
+    cache = files.root / '.oplog' / 'document-cache.sqlite3'; cache.write_bytes(b'cache')
+    oplog_before = {p.name: p.read_bytes() for p in (files.root / '.oplog').iterdir()}
+    tasks_before = tasks.read_bytes()
+    response = ui.delete(f'/api/conversations/{a}')
+    assert response.status_code == 200
+    assert response.json() == {'id': a, 'deleted_turns': 1, 'undoable_run_ids': ['run-a']}
+    assert ui.get(f'/api/conversations/{a}').status_code == 404
+    assert [c['id'] for c in ui.get('/api/conversations').json()['items']] == [b]
+    with webapp._db() as db:
+        assert db.execute('SELECT COUNT(*) FROM turns WHERE conversation_id=?', (a,)).fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM turns WHERE conversation_id=?', (b,)).fetchone()[0] == 1
+    # Shared workspace records and user files are untouched.
+    assert {p.name: p.read_bytes() for p in (files.root / '.oplog').iterdir()} == oplog_before
+    assert tasks.read_bytes() == tasks_before and cache.read_bytes() == b'cache'
+    assert (files.root / '.trash' / 'kept.txt').exists() and (files.root / '归档' / 'a.txt').exists()
+    assert ui.post('/api/turns/t-run-a/undo').status_code == 404
+    # The other conversation keeps its history and can still undo its own run.
+    assert ui.get(f'/api/conversations/{b}').json()['messages'][0]['content'] == 'run-b'
+    undone = ui.post('/api/turns/t-run-b/undo')
+    assert undone.status_code == 200 and (files.root / 'b.txt').exists()
+    assert (files.root / '.oplog' / 'run-a.jsonl').exists()  # still undoable from the CLI
+    assert ui.delete(f'/api/conversations/{a}').status_code == 404
+
+
+def test_delete_unknown_conversation_is_404(ui):
+    assert ui.delete('/api/conversations/missing').status_code == 404
+
+
+def test_delete_refuses_running_or_pending_confirmation(ui, monkeypatch, files):
+    waiting, finished = threading.Event(), threading.Event()
+    fake = FakeClient([[("make_dir", {"path": "blocked"})], "操作已拒绝。"])
+    monkeypatch.setattr(webapp, "LLM", lambda cfg: LLM({"model": "fake"}, client=fake))
+    original_event = webapp._event
+    def notify(turn_id, event):
+        original_event(turn_id, event)
+        if event["type"] == "confirmation_required": waiting.set()
+        if event["type"] in ("completed", "failed"): finished.set()
+    monkeypatch.setattr(webapp, "_event", notify)
+    cid = ui.post("/api/conversations").json()["id"]
+    other = ui.post("/api/conversations").json()["id"]
+    tid = ui.post(f"/api/conversations/{cid}/messages", json={"content": "创建目录"}).json()["turn_id"]
+    assert waiting.wait(4)
+    refused = ui.delete(f"/api/conversations/{cid}")
+    assert refused.status_code == 409 and "等待确认" in refused.json()["detail"]
+    # The pending request is still answerable: nothing was cancelled or left dangling.
+    pending = ui.get(f"/api/turns/{tid}").json()["pending_confirmation"]
+    assert pending and ui.get(f"/api/conversations/{cid}").status_code == 200
+    # Another, idle conversation can be deleted while this one waits.
+    assert ui.delete(f"/api/conversations/{other}").status_code == 200
+    assert ui.post(f"/api/turns/{tid}/confirm", json={"answer": "n", "confirmation_id": pending["id"]}).status_code == 200
+    assert finished.wait(5)
+    for _ in range(50):
+        if cid not in webapp.ACTIVE_CONVERSATIONS: break
+        threading.Event().wait(0.05)
+    assert ui.delete(f"/api/conversations/{cid}").status_code == 200
+    assert tid not in webapp.TURN_STATES
+    assert ui.get(f"/api/turns/{tid}").status_code == 404
+    assert not (files.root / "blocked").exists()
+
+
+def test_delete_refuses_queued_turn_and_blocks_new_messages_after(ui):
+    cid = ui.post('/api/conversations').json()['id']
+    webapp.ACTIVE_CONVERSATIONS.add(cid)
+    try:
+        assert ui.delete(f'/api/conversations/{cid}').status_code == 409
+    finally:
+        webapp.ACTIVE_CONVERSATIONS.discard(cid)
+    assert ui.delete(f'/api/conversations/{cid}').status_code == 200
+    assert ui.post(f'/api/conversations/{cid}/messages', json={'content': '还在吗'}).status_code == 404
+    assert ui.get(f'/api/conversations/{cid}/tasks').status_code == 404
+
+
+def test_conversation_render_cache_tracks_file_changes(ui, files):
+    cid = ui.post('/api/conversations').json()['id']
+    with webapp._db() as db:
+        db.execute('UPDATE conversations SET history_json=? WHERE id=?',
+                   (json.dumps([{'role': 'assistant', 'content': '见 [笔记](sandbox:/notes.md)'}]), cid))
+    first = ui.get(f'/api/conversations/{cid}').json()['messages'][0]['html']
+    assert 'data-file-path="notes.md"' in first
+    assert ui.get(f'/api/conversations/{cid}').json()['messages'][0]['html'] == first
+    (files.root / 'notes.md').rename(files.root / 'moved.md')
+    after = ui.get(f'/api/conversations/{cid}').json()['messages'][0]['html']
+    assert 'file-reference' not in after and 'unavailable-reference' in after
