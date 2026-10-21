@@ -316,6 +316,13 @@ def conflicts(runtime, plan):
     removed = {s['source'] for s in steps if s['effect'] in {'move', 'rename', 'trash'}}
     created = {s['destination'] for s in steps if s.get('destination')}
     hints = []
+    # A plan never writes a dedup receipt; recycling copies here leaves that part undone.
+    trashed = [s['source'] for s in steps if s['effect'] == 'trash' and s['snapshot']['kind'] == 'file']
+    for goal in task['goals']:
+        if trashed and any(c['kind'] == 'receipt_verified' for c in goal['conditions']):
+            hints.append(f"部分 {goal['id']} 是去重，只能由 deduplicate 或 apply_dedup 的本地回执完成；"
+                         f"本计划回收的文件（{'、'.join(trashed[:3])}）不会产生回执，该部分仍会是未完成。"
+                         "重复副本请改用去重工具，计划中只保留其他操作")
     for goal in task['goals']:
         for index, c in enumerate(goal['conditions']):
             if c['kind'] == 'path_exists' and c['path'] in removed:

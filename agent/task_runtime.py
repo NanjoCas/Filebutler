@@ -223,13 +223,14 @@ class TaskRuntime:
         return ('【任务协议 v3】\n'
                 '先区分询问与执行：解释、方案讨论直接回答；查询历史运行原因用 inspect_run。\n'
                 '要求执行时用 start_task 说明用户要做的事：parts 按部分列出（find/dedup/organize/classify/answer），'
-                'limits 只填用户明确说出的限制，不要自行添加数量上限或规则。无法确定的事放 questions，等待用户回答。'
+                'limits 只填用户明确说出的限制，不要自行添加数量上限或规则；notes 通常留空，每条都会让结果进入人工复核。无法确定的事放 questions，等待用户回答。'
                 '完成条件、写入范围和目标归属由本地生成，你不需要填写。\n'
                 '文件移动、改名、建目录、回收一律用 prepare_file_plan 列出对象（actions 或 selection），'
                 'destination 可写目标目录，表示按原名放入；父目录由本地创建。'
                 '取得 plan_id 后 execute_file_plan 一次完成确认、执行和核验。计划超出原范围时，本地会在确认卡片中列出。'
                 '同一响应中可依次调用 start_task 和 prepare_file_plan。续做近期任务时在 prepare_file_plan 填写 task_id，沿用原限制。\n'
-                '去重用 find_duplicates/deduplicate；分类用 paper_profiles、submit_classification，'
+                'dedup 部分只能由 deduplicate 或 apply_dedup 完成（本地比对字节并生成回执），不要在文件计划里回收副本；'
+                '分类用 paper_profiles、submit_classification，'
                 '执行分类方案用 prepare_file_plan(classification_plan_id=精确 P 标识)；查找结论用 report_findings 给证据。\n'
                 '用户更正或补充要求时用 revise_task（同 ID 替换部分，或调整 limits），本地会请用户确认差异；'
                 '被更正的部分，旧计划不再计入，请据新要求准备新计划。不得另建任务绕开已有限制。\n'
@@ -341,7 +342,8 @@ class TaskRuntime:
 
     def _check_write(self, tool, args):
         if not self.current:
-            raise ValueError('写操作前必须 set_task 登记范围与约束')
+            raise ValueError('写操作前必须 start_task 登记用户的要求和限制' if self.protocol == 'v3'
+                             else '写操作前必须 set_task 登记范围与约束')
         if self.current.get('cancelled'):
             raise ValueError('任务已取消，不能执行写操作')
         if self.current['unresolved_questions']:
@@ -353,6 +355,9 @@ class TaskRuntime:
         effects = set(tool.effects)
         goal_ids = active_goals(self)
         if not goal_ids:
+            if self.protocol == 'v3':
+                raise ValueError('有多个部分都可能由这次写入完成，本地无法确定归属；'
+                                 '请用 revise_task 把同类部分合并为一个，或改用 prepare_file_plan')
             raise ValueError('复合任务写入前必须 begin_step 指明对应目标')
         # Goal-scoped prohibitions are checked per attributed action below.
         forbidden = {e for c in self.current['constraints'] if not c.get('goal_ids') for e in c['forbidden_effects']}
@@ -495,7 +500,8 @@ class TaskRuntime:
                     text = f"OK: plan_id={plan['id']}；已预检 {len(plan['payload']['steps'])} 项操作；尚未执行。下一步 execute_file_plan 仅需此 ID。"
                     hints = file_plans.conflicts(self, plan)
                     if hints:
-                        text += '\n注意：' + '；'.join(hints) + '。若与用户要求不符，请先用 edit_task 修正完成条件。'
+                        fix = 'revise_task 修正对应部分' if self.protocol == 'v3' else 'edit_task 修正完成条件'
+                        text += '\n注意：' + '；'.join(hints) + f'。若与用户要求不符，请先用 {fix}；不要执行此计划。'
                     outcome = registry.ToolResult(status='ok', text=text)
                 elif name == 'inspect_file_plan':
                     plan = self.store.file_plan(ExecuteFilePlan.model_validate_json(raw).plan_id)
