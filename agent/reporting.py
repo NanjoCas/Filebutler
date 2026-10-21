@@ -74,7 +74,9 @@ def build_report(task, model_summary, records):
         elif state=='partial': summary = '尚未全部完成。原因：'+incomplete_reason(task)+'。'
         else: summary = model_summary or STATE_TEXT.get(state,state)+'。'
         if state=='needs_review': summary += '\n\n结果待核实，可在“任务与复核”中查看依据。'
-    if state in {'partial', 'waiting_input'} and model_summary:
+        if state=='waiting_input' and task.get('allowed_effects') and not task.get('operation_history'):
+            summary += '\n\n本轮未执行任何文件操作，等待你的决定。'
+    if state in {'partial', 'waiting_input'} and model_summary and model_summary[:1200] not in summary:
         summary += '\n\n补充原因（模型说明）：'+model_summary[:1200]
     # Unresolved blockers (control rejections, plan failures and failed writes)
     # are current reasons. A failed write stays visible even when the task is

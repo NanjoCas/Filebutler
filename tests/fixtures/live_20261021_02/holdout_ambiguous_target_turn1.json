@@ -1,0 +1,70 @@
+{
+ "source_trace": "eval/results/policy_live_20261021_02_holdout/holdout_ambiguous_target/turn_1.trace.jsonl",
+ "source_history": "eval/results/policy_live_20261021_02_holdout/holdout_ambiguous_target/turn_1.history.json",
+ "instruction": "把 report.txt 移到 Archive，保留原名。",
+ "recorded_stop_reason": "unverified_answer",
+ "recorded_final": "本轮存在被拦截的操作，未形成可核验的任务记录，不能确认完成。",
+ "steps": [
+  {
+   "calls": [
+    {
+     "tool": "set_task",
+     "arguments": "{\"goals\": [{\"id\": \"move_report\", \"description\": \"把 report.txt 移动到 Archive 文件夹，保留原文件名\", \"conditions\": [{\"kind\": \"files_placed\", \"path\": \".\", \"destination\": \"Archive\", \"extensions\": [\"txt\"], \"placement\": \"flatten\"}]}], \"read_roots\": [\".\"], \"write_roots\": [\".\", \"Archive\"], \"allowed_effects\": [\"create\", \"move\"]}",
+     "status": "error",
+     "result_head": "ERROR: 执行前验收清单无效，尚未开放写入：move_report:0: 执行前清单包含同名目标，请先解决冲突",
+     "result_ids": []
+    },
+    {
+     "tool": "list_dir",
+     "arguments": "{\"path\": \".\"}",
+     "status": "ok",
+     "result_head": "OK:",
+     "result_ids": []
+    }
+   ],
+   "trace_step": 1
+  },
+  {
+   "calls": [
+    {
+     "tool": "search_files",
+     "arguments": "{\"name_pattern\": \"report.txt\", \"path\": \".\"}",
+     "status": "ok",
+     "result_head": "OK: 找到 2 个文件",
+     "result_ids": []
+    },
+    {
+     "tool": "list_dir",
+     "arguments": "{\"path\": \"Archive\"}",
+     "status": "ok",
+     "result_head": "OK:",
+     "result_ids": []
+    }
+   ],
+   "trace_step": 2
+  },
+  {
+   "calls": [
+    {
+     "tool": "file_info",
+     "arguments": "{\"path\": \"Projects/alpha/report.txt\"}",
+     "status": "ok",
+     "result_head": "OK: file:Fd7650ce225",
+     "result_ids": [
+      "Fd7650ce225"
+     ]
+    },
+    {
+     "tool": "file_info",
+     "arguments": "{\"path\": \"Projects/beta/report.txt\"}",
+     "status": "ok",
+     "result_head": "OK: file:F27b1863038",
+     "result_ids": [
+      "F27b1863038"
+     ]
+    }
+   ],
+   "trace_step": 3
+  }
+ ]
+}

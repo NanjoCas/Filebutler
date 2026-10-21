@@ -126,3 +126,68 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .result-details > summary { cursor:pointer; color:#466f91; }
 .result-detail-section { border-top:1px solid #e6ebee; padding-top:10px; margin-top:12px; }
 .result-detail-section h4 { margin:6px 0; }
+
+/* Conversation rows: the title opens the chat, the ✕ asks before deleting it. */
+.conversation-row { position: relative; display: flex; align-items: center; border-radius: 8px; transition: background .15s; }
+.conversation-row:hover { background: #f0f2ef; }
+.conversation-row.active { background: #e9eeea; }
+.conversation-row .conversation-item { flex: 1; min-width: 0; padding-right: 34px; font-size: 13px; }
+.conversation-row .conversation-item:hover { background: transparent; }
+.conversation-row.active .conversation-item { color: #235a45; font-weight: 600; }
+.conversation-delete { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #9aa39d; font-size: 11px; opacity: 0; transition: opacity .15s, background .15s, color .15s; }
+.conversation-row:hover .conversation-delete, .conversation-row:focus-within .conversation-delete, .conversation-row.active .conversation-delete { opacity: 1; }
+.conversation-delete:hover { background: #fbe9e9; color: #b0524f; }
+.conversation-empty { padding: 10px; color: #a0a7a2; font-size: 12px; }
+@media (hover: none) { .conversation-delete { opacity: 1; } }
+
+/* Shared button states, so every control answers hover, press and disabled the same way. */
+.topbar-actions { display: flex; gap: 8px; }
+.icon-button { transition: background .15s, border-color .15s, color .15s; }
+.icon-button:hover { background: #f4f7f4; border-color: #d3ddd5; color: #2f5a45; }
+.new-chat { transition: background .15s; }
+.new-chat:hover { background: #e0ede5; }
+.icon-button:active, .new-chat:active, .secondary-button:active, .danger-button:active:not(:disabled), .composer-footer button:active:not(:disabled) { transform: translateY(1px); }
+.composer-footer button { transition: background .15s, opacity .15s; }
+.composer-footer button:hover:not(:disabled) { background: #125a45; }
+.composer { transition: border-color .15s, box-shadow .15s; }
+.composer:focus-within { border-color: #a8c7b5; box-shadow: 0 0 0 3px #176b5214, 0 5px 20px #17291d0a; }
+.chat-heading { gap: 14px; }
+.chat-heading > div { min-width: 0; }
+.chat-heading h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status { white-space: nowrap; }
+.messages.loading { opacity: .55; transition: opacity .15s; }
+
+/* Delete confirmation names the conversation and keeps Cancel as the default focus. */
+.delete-dialog { width: min(420px, calc(100vw - 32px)); padding: 22px 22px 18px; border: 1px solid #e1e9e3; border-radius: 14px; color: #2d3a32; background: #fff; box-shadow: 0 24px 80px #1d352a33; }
+.delete-dialog::backdrop { background: #1c302650; backdrop-filter: blur(2px); }
+.delete-dialog h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
+.delete-target { margin: 0 0 10px; font-size: 13px; color: #34473b; overflow-wrap: anywhere; }
+.delete-note { margin: 0; font-size: 12px; line-height: 1.7; color: #7c8580; }
+.delete-feedback { margin: 10px 0 0; font-size: 12px; color: #a5584a; }
+.delete-feedback:empty { display: none; }
+.delete-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.secondary-button, .danger-button { border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 600; transition: background .15s, border-color .15s, opacity .15s; }
+.secondary-button { border: 1px solid #dfe7e1; background: #fff; color: #4f5d55; }
+.secondary-button:hover { background: #f4f7f4; }
+.danger-button { border: 1px solid #b5524c; background: #b5524c; color: #fff; }
+.danger-button:hover:not(:disabled) { background: #9e443f; border-color: #9e443f; }
+.danger-button:disabled { opacity: .5; cursor: not-allowed; }
+.toast { position: fixed; left: 50%; top: 76px; transform: translateX(-50%); z-index: 20; display: flex; align-items: flex-start; gap: 12px; width: max-content; max-width: min(560px, calc(100vw - 32px)); padding: 11px 12px 11px 16px; border-radius: 10px; background: #24352c; color: #eef4f0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; box-shadow: 0 10px 30px #0003; animation: toast-in .2s ease-out; }
+.toast button { flex-shrink: 0; border: 0; padding: 0 2px; background: transparent; color: #b9c8bf; font-size: 12px; }
+.toast button:hover { color: #fff; }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* Narrow screens: the conversation list becomes a drawer instead of disappearing. */
+.sidebar-toggle, .sidebar-backdrop { display: none; }
+@media (max-width: 680px) {
+  .topbar { padding: 0 12px; }
+  .brand small { display: none; }
+  .topbar-actions { gap: 6px; }
+  .sidebar-toggle { display: inline-block; }
+  body.sidebar-open .sidebar { display: block; position: fixed; left: 0; top: 64px; bottom: 0; width: min(280px, 84vw); z-index: 15; box-shadow: 8px 0 30px #00000018; animation: sidebar-in .2s ease-out; }
+  body.sidebar-open .sidebar-backdrop { display: block; position: fixed; inset: 64px 0 0 0; z-index: 14; background: #1c302633; }
+  .chat-heading { height: auto; min-height: 62px; }
+  .composer-footer > span { display: none; }
+  .composer-footer { justify-content: flex-end; }
+}
+@keyframes sidebar-in { from { transform: translateX(-16px); opacity: .6; } to { transform: translateX(0); opacity: 1; } }

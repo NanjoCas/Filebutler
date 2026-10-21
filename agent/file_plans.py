@@ -84,6 +84,8 @@ def _visible(sb, value, *, write=False):
 
 
 def fingerprint(path):
+    if not path.exists() and not path.is_symlink():
+        raise ValueError('来源不存在，可能已被此前的操作移动或回收：'+path.name)
     before = signature(path)
     if path.is_file():
         result = dict(kind='file', stat=before, sha256=digest(path))
@@ -232,6 +234,36 @@ def prepare(runtime, args):
                     collection='classification_plans', id=classification['id'], goal_ids=[goal['id']], step_id=pid))
     runtime.store.checkpoint(task)
     return plan
+
+
+def conflicts(runtime, plan):
+    """Completion conditions this plan leaves unmet or contradicts, as hints.
+
+    Advisory only: a later plan may still place files, so nothing is rejected;
+    the model learns of a contract/plan mismatch before executing, not at finish.
+    """
+    from agent.completion import condition_key
+    task, sb = runtime.current, runtime.sb
+    goal_ids = task.get('file_plan_bindings', {}).get(plan['id'], {}).get('goal_ids', [])
+    steps = plan['payload']['steps']
+    sources = {s['source'] for s in steps if s['effect'] in {'move', 'rename'}}
+    removed = {s['source'] for s in steps if s['effect'] in {'move', 'rename', 'trash'}}
+    created = {s['destination'] for s in steps if s.get('destination')}
+    hints = []
+    for goal in task['goals']:
+        for index, c in enumerate(goal['conditions']):
+            if c['kind'] == 'path_exists' and c['path'] in removed:
+                hints.append(f"目标 {goal['id']} 要求 {c['path']} 存在，此计划会把它移走")
+            elif c['kind'] == 'path_absent' and c['path'] in created:
+                hints.append(f"目标 {goal['id']} 要求 {c['path']} 不存在，此计划会创建它")
+            snapshot = task.get('completion_snapshots', {}).get(condition_key(goal['id'], index))
+            if goal['id'] not in goal_ids or c['kind'] != 'files_placed' or not snapshot or snapshot['error']:
+                continue
+            missing = [row['dst'] for row in snapshot['files'] if row['src'] != row['dst']
+                       and row['src'] not in sources and not sb.path(row['dst'], exact=True).exists()]
+            if missing:
+                hints.append(f"目标 {goal['id']} 的 files_placed 执行前清单仍有 {len(missing)} 项未归集（如 {'、'.join(missing[:3])}）")
+    return hints
 
 
 def _attribute_steps(runtime, task, steps, requested, producers):

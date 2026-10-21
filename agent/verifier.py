@@ -8,16 +8,23 @@ def _in_scope(task, sb, path):
                for root in task['read_roots'])
 
 
+CONSUMERS = {'evidence': {'evidence_valid'}, 'classification_plans': {'plan_ready', 'plan_applied'},
+             'receipts': {'receipt_verified'}}
+
+
 def _reference(condition, task, collection, goal_id=None):
     explicit = condition.get('reference', '').removeprefix('evidence:').removeprefix('receipt:')
     if explicit:
         return [explicit]
     refs = list(task.get('references', [])) + [ref for obs in task['observations'] if obs['status']=='ok'
                                             for ref in obs.get('references', [])]
-    # Untagged legacy refs cannot be guessed across multiple goals.
+    # Untagged refs (produced outside any step) bind only when one goal alone
+    # verifies this collection; otherwise they cannot be guessed across goals.
+    consumers = [g['id'] for g in task['goals']
+                 if any(c['kind'] in CONSUMERS.get(collection, ()) for c in g.get('conditions', []))]
+    sole = len(task['goals']) == 1 or consumers == [goal_id]
     matches = list(dict.fromkeys(ref['id'] for ref in refs if ref['collection']==collection and
-        (goal_id in ref.get('goal_ids', []) or
-         (not ref.get('goal_ids') and len(task['goals']) == 1))))
+        (goal_id in ref.get('goal_ids', []) or (not ref.get('goal_ids') and sole))))
     if len(matches) > 1 and collection == 'classification_plans':
         raise ValueError('完成条件存在多个候选引用，请明确 reference，不能把历史对象全部当作本目标证据')
     return matches
@@ -53,6 +60,25 @@ def verify_bound_plans(task, goal_id, condition, sb):
         if pid not in receipts and missing:
             return False, f'计划 {pid} 部分执行后未完成：'+'、'.join(str(k[1] or k[2]) for k in missing[:3])
     return True, f"本目标 {len(done)} 个文件计划的位置与内容核验通过"
+
+
+def _followed(task, receipt, path):
+    """Where this task's own later logged moves put a receipt object.
+
+    Only operations recorded after the receipt's actions count, so a later step
+    of the same task (e.g. filing the kept copy) does not undo the receipt; an
+    unlogged move still fails the content check at the old path.
+    """
+    ops = task.get('operation_history', []) + task.get('operations', [])
+    moved = {tuple(m) for m in receipt.get('moved', [])}
+    done = [i for i, op in enumerate(ops) if (op.get('src'), op.get('dst')) in moved]
+    if moved and len(done) < len(moved):
+        return path
+    for op in ops[max(done) + 1 if done else 0:]:
+        if op.get('op') in {'move', 'rename'} and op.get('src') and (
+                path == op['src'] or path.startswith(op['src'].rstrip('/') + '/')):
+            path = op['dst'] + path[len(op['src']):]
+    return path
 
 
 def verify_task(task, sb):
@@ -100,10 +126,15 @@ def verify_task(task, sb):
                     # A goal may use several independent fragments.
                     refs = _reference(c, task, 'evidence', goal['id'])
                     ok = bool(refs)
+                    trashed = {op['dst']: op['src'] for op in task.get('operation_history', []) + task.get('operations', [])
+                               if op.get('op') == 'trash'}
                     for eid in refs:
                         ev = store.resolve_evidence(eid)
-                        _, row = store.resolve(ev['file_id'], allow_trash=False)
-                        ok = ok and _in_scope(task, sb, row['path'])
+                        _, row = store.resolve(ev['file_id'])
+                        # A fragment stays valid only if the file is visible, or
+                        # was recycled by this task's own logged operation.
+                        path = row['path'] if row['status'] != 'trash' else trashed.get(row['path'])
+                        ok = ok and bool(path) and _in_scope(task, sb, path)
                     review = True
                 elif kind in {'plan_ready', 'plan_applied'}:
                     refs = _reference(c, task, 'classification_plans', goal['id'])
@@ -159,7 +190,7 @@ def verify_task(task, sb):
                         for keeper in receipt['keeps']:
                             ok = ok and _in_scope(task, sb, keeper)
                             if c.get('evaluation') == 'execution_fact': continue
-                            p = sb.path(keeper, exact=True)
+                            p = sb.path(_followed(task, receipt, keeper), exact=True)
                             ok = ok and p.is_file()
                             ok = ok and p.is_file() and digest(p) == receipt.get('versions', {}).get(keeper)
                 if not ok and not detail:

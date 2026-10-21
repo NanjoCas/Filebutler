@@ -35,56 +35,134 @@ function bindReferences(container) {
     preview({path: ref.dataset.filePath, name: ref.textContent.trim(), artifactId: ref.dataset.artifactId, conversationId: ref.dataset.conversationId}, Number(ref.dataset.filePage) || null, true);
   });
 }
-function renderMessages(messages, animateLast = false) {
-  currentMessages = messages;
-  const area = $("messages"); area.replaceChildren(); latestActivity = null;
-  if (!messages.length) {
-    const welcome = node("div", "welcome");
-    welcome.innerHTML = '<div class="welcome-icon">✦</div><h2>你想整理什么？</h2><p>查找一篇论文，或把整个文件夹整理好。</p><div class="suggestions"><button>帮我找出有关强化学习的论文</button><button>列出文献目录里的 PDF</button><button>查看当前文件夹里有哪些文件</button></div>';
-    area.append(welcome);
-    welcome.querySelectorAll("button").forEach(button => button.onclick = () => { $("message-input").value = button.textContent; sendMessage(); });
-    return;
+const messageKeys = new WeakMap();
+let renderedConversation = null;
+function messageKey(message) {
+  const sections = (message.report?.sections || []).map(section => `${section.title}\u0001${section.html ?? section.markdown}`).join("\u0002");
+  return `${message.role}\u0000${message.html ?? message.content}\u0000${sections}`;
+}
+function wrapTables(container) {
+  container.querySelectorAll("table").forEach(table => { const wrap = node("div", "table-scroll"); table.replaceWith(wrap); wrap.append(table); });
+}
+function buildMessage(message) {
+  const item = node("article", `message ${message.role}`);
+  item.append(node("div", "message-label", message.role === "user" ? "你" : message.role === "event" ? "本地文件状态更新" : "✦ FileButler"));
+  const body = node("div", `message-body${message.role === "assistant" ? " markdown-body" : ""}`);
+  // html is produced only by the server's HTML-disabled Markdown renderer and verified file catalog.
+  if (message.role === "assistant" && typeof message.html === "string") body.innerHTML = message.html;
+  else body.textContent = message.content;
+  wrapTables(body); bindReferences(body); item.append(body);
+  if (message.report?.sections?.length) {
+    const details=node('details','result-details');
+    details.append(node('summary','','查看核验与过程详情'));
+    for (const section of message.report.sections) {
+      const part=node('section','result-detail-section'); part.append(node('h4','',section.title));
+      const content=node('div','markdown-body');
+      if (typeof section.html==='string') content.innerHTML=section.html; else content.textContent=section.markdown;
+      wrapTables(content); bindReferences(content);part.append(content);details.append(part);
+    }
+    item.append(details);
   }
-  messages.forEach((message, index) => {
-    const item = node("article", `message ${message.role}${animateLast && index === messages.length - 1 ? " message-enter" : ""}`);
-    item.append(node("div", "message-label", message.role === "user" ? "你" : message.role === "event" ? "本地文件状态更新" : "✦ FileButler"));
-    const body = node("div", `message-body${message.role === "assistant" ? " markdown-body" : ""}`);
-    // html is produced only by the server's HTML-disabled Markdown renderer and verified file catalog.
-    if (message.role === "assistant" && typeof message.html === "string") body.innerHTML = message.html;
-    else body.textContent = message.content;
-    body.querySelectorAll("table").forEach(table => { const wrap = node("div", "table-scroll"); table.replaceWith(wrap); wrap.append(table); });
-    bindReferences(body); item.append(body);
-    if (message.report?.sections?.length) {
-      const details=node('details','result-details');
-      details.append(node('summary','','查看核验与过程详情'));
-      for (const section of message.report.sections) {
-        const part=node('section','result-detail-section'); part.append(node('h4','',section.title));
-        const content=node('div','markdown-body');
-        if (typeof section.html==='string') content.innerHTML=section.html; else content.textContent=section.markdown;
-        content.querySelectorAll('table').forEach(table=>{const wrap=node('div','table-scroll');table.replaceWith(wrap);wrap.append(table);});
-        bindReferences(content);part.append(content);details.append(part);
-      }
-      item.append(details);
-    }
-    if (message.role === "assistant") {
-      const actions = node("div", "message-actions");
-      const copy = node("button", "text-button", "复制回复"); copy.type = "button";
-      copy.onclick = async () => { try { await navigator.clipboard.writeText(message.content); copy.textContent = "已复制"; setTimeout(() => copy.textContent = "复制回复", 1600); } catch { copy.textContent = "复制不可用"; } };
-      actions.append(copy); item.append(actions);
-    }
-    area.append(item);
-  });
+  if (message.role === "assistant") {
+    const actions = node("div", "message-actions");
+    const copy = node("button", "text-button", "复制回复"); copy.type = "button";
+    copy.onclick = async () => { try { await navigator.clipboard.writeText(message.content); copy.textContent = "已复制"; setTimeout(() => copy.textContent = "复制回复", 1600); } catch { copy.textContent = "复制不可用"; } };
+    actions.append(copy); item.append(actions);
+  }
+  messageKeys.set(item, messageKey(message));
+  return item;
+}
+function renderWelcome(area) {
+  const welcome = node("div", "welcome");
+  welcome.innerHTML = '<div class="welcome-icon">✦</div><h2>你想整理什么？</h2><p>查找一篇论文，或把整个文件夹整理好。</p><div class="suggestions"><button type="button">帮我找出有关强化学习的论文</button><button type="button">列出文献目录里的 PDF</button><button type="button">查看当前文件夹里有哪些文件</button></div>';
+  area.append(welcome);
+  welcome.querySelectorAll("button").forEach(button => button.onclick = () => { $("message-input").value = button.textContent; sendMessage(); });
+}
+// Messages are append-only in practice: keep every unchanged <article> (and its open
+// details/scroll state) and rebuild only from the first message that differs.
+function renderMessages(messages, animateLast = false, conversationId = currentConversation) {
+  const area = $("messages"), same = renderedConversation === conversationId;
+  const nearBottom = area.scrollHeight - area.scrollTop - area.clientHeight < 180;
+  currentMessages = messages; renderedConversation = conversationId; latestActivity = null;
+  if (!same) area.replaceChildren();
+  else for (const child of [...area.children]) if (!messageKeys.has(child)) child.remove();
+  if (!messages.length) { area.replaceChildren(); renderWelcome(area); return; }
+  const existing = [...area.children];
+  let index = 0;
+  while (index < messages.length && index < existing.length && messageKeys.get(existing[index]) === messageKey(messages[index])) index++;
+  existing.slice(index).forEach(child => child.remove());
+  let firstNew = null;
+  for (let i = index; i < messages.length; i++) {
+    const item = buildMessage(messages[i]);
+    if (animateLast && i === messages.length - 1) item.classList.add("message-enter");
+    firstNew ||= item; area.append(item);
+  }
+  if (!same) area.scrollTop = area.scrollHeight;
+  else if (firstNew && nearBottom) {
+    // Show the start of a long new reply rather than jumping past it to the end.
+    const last = area.lastElementChild;
+    if (animateLast && last.offsetHeight > area.clientHeight * 0.8) area.scrollTop += last.getBoundingClientRect().top - area.getBoundingClientRect().top - 12;
+    else area.scrollTop = area.scrollHeight;
+  }
+}
+function appendMessage(message) {
+  const area = $("messages");
+  area.querySelector(":scope > .welcome")?.remove();
+  currentMessages = [...currentMessages, message];
+  const item = buildMessage(message); item.classList.add("message-enter"); area.append(item);
   area.scrollTop = area.scrollHeight;
 }
+let conversationOrder = [];
 async function loadConversations() {
   const {items} = await api("/api/conversations");
+  conversationOrder = items.map(conv => conv.id);
   const nav = $("conversation-list"); nav.replaceChildren();
+  if (!items.length) nav.append(node("div", "conversation-empty", "还没有对话"));
   for (const conv of items) {
-    const button = node("button", `conversation-item ${conv.id === currentConversation ? "active" : ""}`, conv.title);
-    button.title = conv.title; button.onclick = () => openConversation(conv.id).catch(err => showError(err.message)); nav.append(button);
+    const row = node("div", `conversation-row ${conv.id === currentConversation ? "active" : ""}`); row.dataset.conversationId = conv.id;
+    const button = node("button", "conversation-item", conv.title); button.type = "button";
+    button.title = conv.title; if (conv.id === currentConversation) button.setAttribute("aria-current", "true");
+    button.onclick = () => { closeSidebar(); if (conv.id !== currentConversation) openConversation(conv.id).catch(err => showError(err.message)); };
+    const remove = node("button", "conversation-delete", "✕"); remove.type = "button";
+    remove.title = "删除对话"; remove.setAttribute("aria-label", `删除对话「${conv.title}」`);
+    remove.onclick = () => requestDeleteConversation(conv);
+    row.append(button, remove); nav.append(row);
   }
   return items;
 }
+function requestDeleteConversation(conv) {
+  const dialog = $("delete-dialog"), confirm = $("delete-confirm"), feedback = $("delete-feedback");
+  $("delete-conversation-title").textContent = conv.title; feedback.textContent = "";
+  const running = conv.id === currentConversation && (currentTurn || submitting);
+  confirm.disabled = !!running;
+  if (running) feedback.textContent = "该对话正在运行或等待确认，请先处理确认并等待本轮结束。";
+  confirm.onclick = async () => {
+    confirm.disabled = true; feedback.textContent = "正在删除…";
+    try {
+      const result = await api(`/api/conversations/${encodeURIComponent(conv.id)}`, {method: "DELETE"});
+      dialog.close(); await afterConversationDeleted(conv, result);
+    } catch (err) { feedback.textContent = err.message; confirm.disabled = false; }
+  };
+  if (!dialog.open) dialog.showModal();
+  $("delete-cancel").focus();
+}
+async function afterConversationDeleted(conv, result) {
+  const index = conversationOrder.indexOf(conv.id), wasCurrent = conv.id === currentConversation;
+  const runs = result.undoable_run_ids || [];
+  showToast(`已删除「${conv.title}」。` + (runs.length ? `其中 ${runs.length} 次运行的操作日志仍保留，可在终端运行 python main.py undo <运行编号> 撤销：${runs.join("、")}` : ""));
+  if (!wasCurrent) { await loadConversations(); return; }
+  // Invalidate any in-flight load or poll for the removed conversation before switching.
+  viewEpoch++; clearTimeout(pollTimer); currentConversation = null; currentTurn = null; renderedConversation = null;
+  const items = await loadConversations();
+  const next = items[Math.min(Math.max(index, 0), items.length - 1)];
+  if (next) await openConversation(next.id); else await newConversation();
+}
+let toastTimer = null;
+function showToast(text) {
+  const toast = $("toast"); toast.querySelector(".toast-text").textContent = text; toast.classList.remove("hidden");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.add("hidden"), text.length > 60 ? 12000 : 4000);
+}
+function closeSidebar() { document.body.classList.remove("sidebar-open"); }
 function resetConfirmation() {
   if ($("confirmation-review").open) $("confirmation-review").close();
   activeReview = null;
@@ -92,11 +170,15 @@ function resetConfirmation() {
 }
 async function openConversation(id, animateLast = false) {
   const epoch = ++viewEpoch;
+  const refresh = id === renderedConversation;
   clearTimeout(pollTimer); currentConversation = id; currentTurn = null; submitting = false;
-  resetConfirmation(); $("send-button").disabled = true; setStatus("加载中…");
-  const conv = await api(`/api/conversations/${id}`);
+  resetConfirmation(); $("send-button").disabled = true;
+  if (!refresh) { setStatus("加载中…"); $("messages").classList.add("loading"); markActiveConversation(id); }
+  let conv;
+  try { conv = await api(`/api/conversations/${id}`); }
+  finally { if (epoch === viewEpoch) $("messages").classList.remove("loading"); }
   if (epoch !== viewEpoch) return;
-  $("conversation-title").textContent = conv.title; renderMessages(conv.messages, animateLast);
+  $("conversation-title").textContent = conv.title; renderMessages(conv.messages, animateLast, id);
   const latest = conv.latest_turn;
   if (latest) {
     updateActivity(latest);
@@ -113,6 +195,9 @@ async function openConversation(id, animateLast = false) {
   $("send-button").disabled = !!currentTurn;
   loadConversations().catch(err => showError(err.message));
 }
+function markActiveConversation(id) {
+  document.querySelectorAll(".conversation-row").forEach(row => row.classList.toggle("active", row.dataset.conversationId === id));
+}
 async function newConversation() {
   const conv = await api("/api/conversations", {method: "POST", body: "{}"});
   await openConversation(conv.id); $("message-input").focus();
@@ -122,7 +207,7 @@ async function sendMessage() {
   if (!content || !currentConversation || currentTurn || submitting) return;
   const cid = currentConversation, epoch = viewEpoch;
   submitting = true; $("send-button").disabled = true; input.value = ""; autoGrow();
-  renderMessages([...currentMessages, {role: "user", content}]);
+  appendMessage({role: "user", content});
   updateActivity({id: "submitting", status: "queued", events: [], result: {}}); setStatus("提交中…", "running");
   try {
     const response = await api(`/api/conversations/${cid}/messages`, {method: "POST", body: JSON.stringify({content})});
@@ -195,6 +280,8 @@ function eventSteps(events) {
   }
   return steps;
 }
+const stepKeys = new WeakMap();
+let expandedTurn = null;
 function updateActivity(turn) {
   let card = $("agent-activity");
   if (!card) {
@@ -203,8 +290,11 @@ function updateActivity(turn) {
     heading.append(node("span", "activity-symbol", "✦"), node("span", "activity-title"), node("span", "activity-clock"), node("span", "activity-chevron", "⌄"));
     const current = node("div", "activity-current"); current.setAttribute("aria-live", "polite");
     const details = node("ol", "activity-steps hidden");
-    heading.onclick = () => { const open = heading.getAttribute("aria-expanded") !== "true"; heading.setAttribute("aria-expanded", String(open)); details.classList.toggle("hidden", !open); };
+    const toggle = (open) => { heading.setAttribute("aria-expanded", String(open)); details.classList.toggle("hidden", !open); if (open && card.turn) renderSteps(card, card.turn); };
+    heading.onclick = () => { const open = heading.getAttribute("aria-expanded") !== "true"; expandedTurn = open ? card.turn?.id : null; toggle(open); };
     card.append(heading, current, details);
+    // Keep the list open across the reload that follows completion.
+    if (expandedTurn && expandedTurn === turn.id) { card.turn = turn; toggle(true); }
     const last = $("messages").lastElementChild;
     if (turn.status === "completed" && last?.classList.contains("assistant")) last.before(card); else $("messages").append(card);
   }
@@ -217,22 +307,34 @@ function updateActivity(turn) {
   const localStep = [...events].reverse().find(event => event.type === "local_step");
   const detail = working ? ["本地查重与清理", "本地批量执行分类计划"].includes(activeStep?.title) && localStep ? localStep.message : activeStep?.detail || "" : turn.error || "展开查看执行步骤";
   card.querySelector(".activity-current").textContent = detail;
-  const signature = `${turn.id}:${events.length}:${turn.status}`;
+  // The step list is built only while expanded; collapsed cards update just the heading.
+  card.turn = turn;
+  if (card.querySelector(".activity-heading").getAttribute("aria-expanded") === "true") expandedTurn = turn.id;
+  if (!card.querySelector(".activity-steps").classList.contains("hidden")) renderSteps(card, turn);
+  turn.clockReceivedAt = performance.now();
+  latestActivity = turn; updateClock(); scrollIfNearBottom();
+}
+function renderSteps(card, turn) {
+  const events = turn.events || [], signature = `${turn.id}:${events.length}:${turn.status}`;
   if (card.dataset.signature !== signature) {
-    const list = card.querySelector(".activity-steps"); list.replaceChildren();
-    for (const step of steps) {
+    const steps = eventSteps(events), working = ACTIVE.has(turn.status);
+    // Patch only the steps whose state or text changed; earlier finished steps stay as they are.
+    const list = card.querySelector(".activity-steps"), items = list.children;
+    steps.forEach((step, index) => {
       const state = !working && (step.state === "active" || step.state === "waiting") ? "error" : step.state;
+      const key = `${state}\u0000${step.title}\u0000${step.detail || ""}\u0000${step.note || ""}`;
+      if (items[index] && stepKeys.get(items[index]) === key) return;
       const li = node("li", `activity-step ${state}`);
       li.append(node("span", "step-dot", state === "done" ? "✓" : state === "error" ? "!" : ""));
       const content = node("div", "step-content"); content.append(node("div", "step-title", step.title));
       if (step.detail) content.append(node("div", "step-detail", step.detail));
       if (step.note) content.append(node("div", "step-detail", step.note));
-      li.append(content); list.append(li);
-    }
+      li.append(content); stepKeys.set(li, key);
+      if (items[index]) items[index].replaceWith(li); else list.append(li);
+    });
+    while (items.length > steps.length) list.lastElementChild.remove();
     card.dataset.signature = signature;
   }
-  turn.clockReceivedAt = performance.now();
-  latestActivity = turn; updateClock(); scrollIfNearBottom();
 }
 function updateClock() {
   const clock = document.querySelector("#agent-activity .activity-clock"); if (!clock || !latestActivity) return;
@@ -398,7 +500,7 @@ function addRunActions(turn, epoch) {
       await openConversation(currentConversation); loadFiles();
     } catch (err) { undoButton.disabled = false; showError(err.message); }
   };
-  card.append(metrics, trace, undoButton); $("messages").append(card);
+  card.append(metrics, trace, undoButton); $("messages").append(card); scrollIfNearBottom();
 }
 async function loadFiles(path = currentFilePath) {
   const epoch = ++fileListEpoch;
@@ -453,12 +555,25 @@ async function preview(item, page = null, reveal = false) {
   } catch (err) { if (epoch === previewEpoch) pane.replaceChildren(node("div", "empty-preview", `无法打开文件：${err.message}。文件可能已移动或改名，请刷新对话后重试。`)); }
 }
 function autoGrow() { const input = $("message-input"); input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 150)}px`; }
-$("new-chat").onclick = () => newConversation().catch(err => showError(err.message));
+$("new-chat").onclick = () => {
+  closeSidebar();
+  // An untouched empty chat is already a new conversation; do not pile up blank entries.
+  if (currentConversation && !currentMessages.length && !currentTurn && !submitting) { $("message-input").focus(); return; }
+  newConversation().catch(err => showError(err.message));
+};
+$("toggle-sidebar").onclick = () => {
+  // On phones both panels are overlays; show one at a time.
+  if (!document.body.classList.contains("sidebar-open")) $("file-panel").classList.add("closed");
+  document.body.classList.toggle("sidebar-open");
+};
+$("sidebar-backdrop").onclick = closeSidebar;
+$("delete-cancel").onclick = () => $("delete-dialog").close();
+$("toast-close").onclick = () => $("toast").classList.add("hidden");
 $("composer").onsubmit = (event) => { event.preventDefault(); sendMessage(); };
 $("message-input").oninput = autoGrow;
 $("message-input").onkeydown = (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage(); } };
 $("refresh-files").onclick = () => loadFiles();
-$("toggle-files").onclick = () => $("file-panel").classList.toggle("closed");
+$("toggle-files").onclick = () => { closeSidebar(); $("file-panel").classList.toggle("closed"); };
 $("review-close").onclick = () => $("confirmation-review").close();
 $("confirmation-review").addEventListener("close", () => { if (activeReview) activeReview.previewEpoch++; $("review-preview").replaceChildren(); });
 if (matchMedia("(max-width: 1050px)").matches) $("file-panel").classList.add("closed");

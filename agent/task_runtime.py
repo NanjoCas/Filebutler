@@ -59,6 +59,7 @@ class TaskRuntime:
         self.current = None
         self.final_answer, self.stop_reason = None, 'done'
         self.queries = self.reads = self.blocked = 0
+        self.blocked_reasons = []
         self.outputs = []
         self._output_indices = {}
         self.finished = False
@@ -214,6 +215,7 @@ class TaskRuntime:
             return raw, None
         except (ValueError, SandboxError, KeyError, registry.ToolError) as exc:
             self.blocked += 1
+            self.blocked_reasons.append(str(exc))
             return raw, 'ERROR: ' + str(exc)
 
     def _check_write(self, tool, args):
@@ -309,7 +311,11 @@ class TaskRuntime:
                 if name == 'prepare_file_plan':
                     plan = file_plans.prepare(self, PrepareFilePlan.model_validate_json(raw))
                     self.capture_output(name, file_plans.markdown(plan), plan['id'])
-                    outcome = registry.ToolResult(status='ok', text=f"OK: plan_id={plan['id']}；已预检 {len(plan['payload']['steps'])} 项操作；尚未执行。下一步 execute_file_plan 仅需此 ID。")
+                    text = f"OK: plan_id={plan['id']}；已预检 {len(plan['payload']['steps'])} 项操作；尚未执行。下一步 execute_file_plan 仅需此 ID。"
+                    hints = file_plans.conflicts(self, plan)
+                    if hints:
+                        text += '\n注意：' + '；'.join(hints) + '。若与用户要求不符，请先用 edit_task 修正完成条件。'
+                    outcome = registry.ToolResult(status='ok', text=text)
                 elif name == 'inspect_file_plan':
                     plan = self.store.file_plan(ExecuteFilePlan.model_validate_json(raw).plan_id)
                     outcome = registry.ToolResult(status='ok', text='OK: '+file_plans.markdown(plan))
@@ -460,6 +466,7 @@ class TaskRuntime:
                                     raise ValueError('文件内容保持核验失败；已执行操作有日志，可撤销')
         except (ValueError, SandboxError, registry.ToolError) as exc:
             self.blocked += 1
+            self.blocked_reasons.append(str(exc))
             if self.current:
                 add_blocker(self.current, name, self._blocker_object(name, raw), str(exc), self.run_id)
                 try: self.store.checkpoint(self.current)
@@ -554,11 +561,17 @@ class TaskRuntime:
             self.dispatch('finish_task', json.dumps({'summary': (content or '')[:12000 if detail == 'full' else 1200]}),
                           self.sb, None, None)
         if self.final_answer is None:
-            if self.blocked:
+            if self.blocked and self.operations:
                 self.final_answer = '本轮存在被拦截的操作，未形成可核验的任务记录，不能确认完成。'
                 self.stop_reason = 'unverified_answer'
                 return
             self.final_answer = content or '本轮没有返回内容。'
+            if self.blocked:
+                # Without a task no write was opened. Keep the reply (often a
+                # question for the user) and state the local facts beside it.
+                reason = self.blocked_reasons[-1].splitlines()[0][:200] if self.blocked_reasons else ''
+                self.final_answer += (f'\n\n本轮未执行任何文件操作；{self.blocked} 次调用被拦截'
+                                      + ('，最近原因：' + reason if reason else '') + '。')
             self.stop_reason = 'answered'
             self.report = dict(version=1, state='answered', summary=self.final_answer, sections=[])
 

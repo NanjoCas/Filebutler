@@ -122,8 +122,12 @@ def validate_operations(runtime, operations):
     pending = []
     oplog = getattr(runtime, '_oplog', None)
     if oplog and oplog.path.exists():
-        pending = [dict(json.loads(line), goal_ids=goal_ids) for line in
-                   oplog.path.read_text().splitlines()[runtime._journal_offset:] if line.strip()]
+        # The plan executor records each action itself, so its journal lines
+        # are already in runtime.operations and must not be counted twice.
+        recorded = {row.get('action_id') for row in runtime.operations if row.get('action_id')}
+        pending = [dict(row, goal_ids=goal_ids) for row in
+                   (json.loads(line) for line in oplog.path.read_text().splitlines()[runtime._journal_offset:]
+                    if line.strip()) if not row.get('action_id') or row['action_id'] not in recorded]
     prior_run = runtime.operations + pending
     for constraint in task['constraints']:
         scoped = [op for op, op_goals, _ in bound if applies(constraint, op_goals)]
