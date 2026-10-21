@@ -27,7 +27,7 @@
 | 仓库根目录 | `/Users/nanjo/Desktop/projects/DocAgent/filebutler` |
 | 当前分支 | `optimize/completion-binding`（从 `master` 的 `a489b21` 分出） |
 | 分支提交 | `7312f61` 任务运行时 V2 与 P0；`aee0270` 真实复验修复、多维判定、前端优化与删除对话；`f11b990` 可拖动分栏、删除按钮修复、标题截断；之后还有一次文档更新提交 |
-| GitHub | https://github.com/NanjoCas/Filebutler，**本分支未推送**，也未合并回 `master` |
+| GitHub | https://github.com/NanjoCas/Filebutler，本分支已于 2026-10-21 推送到 origin（`optimize/completion-binding`），**未合并回 `master`** |
 | origin fetch / push | `https://github.com/NanjoCas/Filebutler.git` / `git@github.com:NanjoCas/Filebutler.git` |
 
 交接时工作区是干净的。被 `.gitignore` 排除的内容不在提交里：`eval/results/`、`logs/`、`data/real/`、`sandbox/`、`.filebutler-ui/`、`.env`。真实验收的原始证据只在本机，需要时另外保存。
