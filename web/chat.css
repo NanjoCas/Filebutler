@@ -108,14 +108,14 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .preview-loading { animation: agent-breathe 1.5s ease-in-out infinite; }
 .file-panel-reveal { animation: file-reveal .3s ease-out; }
 .file-panel.closed { display: none; }
-.layout:has(.file-panel.closed) { grid-template-columns: 240px minmax(420px, 1fr); }
+.layout:has(.file-panel.closed) { grid-template-columns: var(--sidebar-w, 240px) minmax(420px, 1fr); }
 .status.running::before { content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-right: 6px; vertical-align: middle; background: #7eaa89; animation: step-pulse 1.4s ease-in-out infinite; }
 @keyframes text-shimmer { from { background-position: 180% 0; } to { background-position: -70% 0; } }
 @keyframes agent-breathe { 0%, 100% { opacity: .5; transform: scale(.94); } 50% { opacity: 1; transform: scale(1); } }
 @keyframes step-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 @keyframes message-appear { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes file-reveal { from { opacity: .5; transform: translateX(12px); } to { opacity: 1; transform: translateX(0); } }
-@media (max-width: 1050px) { .layout:has(.file-panel.closed) { grid-template-columns: 210px minmax(400px, 1fr); } }
+@media (max-width: 1050px) { .layout:has(.file-panel.closed) { grid-template-columns: var(--sidebar-w, 210px) minmax(400px, 1fr); } }
 @media (max-width: 680px) { .layout:has(.file-panel.closed) { grid-template-columns: 1fr; } .message.user { max-width: 90%; } .markdown-body th, .markdown-body td { padding: 9px 11px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } .working .activity-title { background: none; color: #718579; } }
 
@@ -127,14 +127,17 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .result-detail-section { border-top:1px solid #e6ebee; padding-top:10px; margin-top:12px; }
 .result-detail-section h4 { margin:6px 0; }
 
-/* Conversation rows: the title opens the chat, the ✕ asks before deleting it. */
-.conversation-row { position: relative; display: flex; align-items: center; border-radius: 8px; transition: background .15s; }
+/* Conversation rows: the title opens the chat, the ✕ asks before deleting it.
+   The grid column must not grow to the longest title, or ✕ is pushed out of view. */
+.sidebar { overflow-x: hidden; }
+.conversation-list { grid-template-columns: minmax(0, 1fr); }
+.conversation-row { min-width: 0; position: relative; display: flex; align-items: center; border-radius: 8px; transition: background .15s; }
 .conversation-row:hover { background: #f0f2ef; }
 .conversation-row.active { background: #e9eeea; }
 .conversation-row .conversation-item { flex: 1; min-width: 0; padding-right: 34px; font-size: 13px; }
 .conversation-row .conversation-item:hover { background: transparent; }
 .conversation-row.active .conversation-item { color: #235a45; font-weight: 600; }
-.conversation-delete { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #9aa39d; font-size: 11px; opacity: 0; transition: opacity .15s, background .15s, color .15s; }
+.conversation-delete { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #7f8983; font-size: 12px; opacity: .55; transition: opacity .15s, background .15s, color .15s; }
 .conversation-row:hover .conversation-delete, .conversation-row:focus-within .conversation-delete, .conversation-row.active .conversation-delete { opacity: 1; }
 .conversation-delete:hover { background: #fbe9e9; color: #b0524f; }
 .conversation-empty { padding: 10px; color: #a0a7a2; font-size: 12px; }
@@ -191,3 +194,31 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   .composer-footer { justify-content: flex-end; }
 }
 @keyframes sidebar-in { from { transform: translateX(-16px); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
+
+/* Draggable panel borders. Widths live in CSS variables that app.js sets and remembers. */
+.layout { position: relative; grid-template-columns: var(--sidebar-w, 240px) minmax(420px, 1fr) var(--files-w, 340px); }
+.file-list { height: var(--filelist-h, 42%); }
+.resize-handle { position: absolute; top: 0; bottom: 0; width: 8px; z-index: 6; cursor: col-resize; touch-action: none; }
+#resize-sidebar { left: calc(var(--sidebar-w, 240px) - 4px); }
+#resize-files { right: calc(var(--files-w, 340px) - 4px); }
+.layout:has(.file-panel.closed) #resize-files { display: none; }
+.resize-row { position: relative; flex-shrink: 0; height: 8px; margin: -4px 0; z-index: 2; cursor: row-resize; touch-action: none; }
+.resize-handle::after, .resize-row::after { content: ''; position: absolute; background: transparent; transition: background .15s; }
+.resize-handle::after { top: 0; bottom: 0; left: 3px; width: 2px; }
+.resize-row::after { left: 0; right: 0; top: 3px; height: 2px; }
+.resize-handle:hover::after, .resize-row:hover::after, .resize-handle:focus-visible::after, .resize-row:focus-visible::after,
+.resize-handle.active::after, .resize-row.active::after { background: #7eaa89; }
+.resize-handle:focus-visible, .resize-row:focus-visible { outline: none; }
+/* While dragging, keep the cursor and stop text selection and preview iframes from stealing the pointer. */
+body.resizing { user-select: none; cursor: col-resize; }
+body.resizing.resizing-row { cursor: row-resize; }
+body.resizing iframe { pointer-events: none; }
+@media (max-width: 1050px) {
+  .layout { grid-template-columns: var(--sidebar-w, 210px) minmax(400px, 1fr); }
+  #resize-sidebar { left: calc(var(--sidebar-w, 210px) - 4px); }
+  #resize-files { display: none; }
+}
+@media (max-width: 680px) {
+  .layout, .layout:has(.file-panel.closed) { grid-template-columns: 1fr; }
+  #resize-sidebar { display: none; }
+}

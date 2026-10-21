@@ -20,6 +20,8 @@
       <nav id="conversation-list" class="conversation-list" aria-label="最近对话"><div class="conversation-empty">正在读取…</div></nav>
     </aside>
     <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+    <div id="resize-sidebar" class="resize-handle" role="separator" aria-orientation="vertical" aria-label="拖动调整对话列表宽度，双击恢复默认" tabindex="0"></div>
+    <div id="resize-files" class="resize-handle" role="separator" aria-orientation="vertical" aria-label="拖动调整文件区宽度，双击恢复默认" tabindex="0"></div>
     <section class="chat-panel">
       <div class="chat-heading"><div><h1 id="conversation-title">新对话</h1><p id="chat-subtitle">FileButler 在本机沙盒中帮你查找和整理文件</p></div><span id="run-status" class="status" role="status" aria-live="polite"></span></div>
       <div id="messages" class="messages" role="region" aria-label="对话记录" tabindex="0"><div class="welcome"><div class="welcome-icon">✦</div><h2>你想整理什么？</h2><p>可以用自然语言查找、阅读、分类或整理沙盒里的文件。</p><div class="suggestions"><button>帮我找出有关强化学习的论文</button><button>列出文献目录里的 PDF</button><button>查看当前文件夹里有哪些文件</button></div></div></div>
@@ -31,6 +33,7 @@
       <div class="file-heading"><div><h2>沙盒文件</h2><p id="sandbox-label">加载中…</p></div><button id="refresh-files" class="icon-button" title="刷新">↻</button></div>
       <div class="breadcrumbs"><button id="file-up" class="up-button" disabled>↑ 上级</button><span id="current-path">.</span></div>
       <div id="file-list" class="file-list" role="region" aria-label="沙盒文件列表" tabindex="0"></div>
+      <div id="resize-filelist" class="resize-row" role="separator" aria-orientation="horizontal" aria-label="拖动调整文件列表与预览的高度，双击恢复默认" tabindex="0"></div>
       <div class="preview-heading"><span>预览</span><span id="preview-type"></span></div>
       <div id="preview" class="preview" role="region" aria-label="文件预览" tabindex="0"><div class="empty-preview">选择文件查看内容</div></div>
     </aside>

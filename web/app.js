@@ -113,6 +113,12 @@ function appendMessage(message) {
   area.scrollTop = area.scrollHeight;
 }
 let conversationOrder = [];
+// Sidebar titles show a fixed-length preview; the full title stays in the tooltip.
+const TITLE_PREVIEW_CHARS = 16;
+function previewTitle(title) {
+  const chars = [...(title || "").replace(/\s+/g, " ").trim()];
+  return chars.length > TITLE_PREVIEW_CHARS ? chars.slice(0, TITLE_PREVIEW_CHARS).join("") + "…" : chars.join("");
+}
 async function loadConversations() {
   const {items} = await api("/api/conversations");
   conversationOrder = items.map(conv => conv.id);
@@ -120,7 +126,7 @@ async function loadConversations() {
   if (!items.length) nav.append(node("div", "conversation-empty", "还没有对话"));
   for (const conv of items) {
     const row = node("div", `conversation-row ${conv.id === currentConversation ? "active" : ""}`); row.dataset.conversationId = conv.id;
-    const button = node("button", "conversation-item", conv.title); button.type = "button";
+    const button = node("button", "conversation-item", previewTitle(conv.title)); button.type = "button";
     button.title = conv.title; if (conv.id === currentConversation) button.setAttribute("aria-current", "true");
     button.onclick = () => { closeSidebar(); if (conv.id !== currentConversation) openConversation(conv.id).catch(err => showError(err.message)); };
     const remove = node("button", "conversation-delete", "✕"); remove.type = "button";
@@ -577,6 +583,61 @@ $("toggle-files").onclick = () => { closeSidebar(); $("file-panel").classList.to
 $("review-close").onclick = () => $("confirmation-review").close();
 $("confirmation-review").addEventListener("close", () => { if (activeReview) activeReview.previewEpoch++; $("review-preview").replaceChildren(); });
 if (matchMedia("(max-width: 1050px)").matches) $("file-panel").classList.add("closed");
+
+// Draggable panel borders. Sizes are a per-browser convenience, so storage may be unavailable.
+const layoutEl = document.querySelector(".layout");
+const SIZE_VARS = {sidebar: "--sidebar-w", files: "--files-w", filelist: "--filelist-h"};
+function panelSize(name) {
+  return name === "sidebar" ? $("sidebar").offsetWidth : name === "files" ? $("file-panel").offsetWidth : $("file-list").offsetHeight;
+}
+function clampSize(name, px) {
+  // Keep the chat column at least 420px wide and both file-panel halves usable.
+  const width = layoutEl.clientWidth, files = $("file-panel").classList.contains("closed") ? 0 : panelSize("files");
+  if (name === "sidebar") return Math.max(160, Math.min(px, 420, width - files - 420));
+  if (name === "files") return Math.max(260, Math.min(px, 720, width - panelSize("sidebar") - 420));
+  const panel = $("file-panel").clientHeight;
+  return panel ? Math.max(80, Math.min(px, panel - 200)) : px;
+}
+function applySize(name, px, save = true) {
+  px = Math.round(clampSize(name, px));
+  layoutEl.style.setProperty(SIZE_VARS[name], `${px}px`);
+  if (save) try { localStorage.setItem(`filebutler.size.${name}`, String(px)); } catch {}
+}
+function resetSize(name) {
+  layoutEl.style.removeProperty(SIZE_VARS[name]);
+  try { localStorage.removeItem(`filebutler.size.${name}`); } catch {}
+}
+function bindResize(handle, name, axis) {
+  // The file panel grows leftwards, so its drag delta is inverted.
+  const sign = name === "files" ? -1 : 1, coord = event => axis === "x" ? event.clientX : event.clientY;
+  handle.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
+    event.preventDefault(); handle.setPointerCapture(event.pointerId);
+    const start = coord(event), base = panelSize(name);
+    document.body.classList.add("resizing", axis === "y" ? "resizing-row" : "resizing-col"); handle.classList.add("active");
+    const move = e => applySize(name, base + sign * (coord(e) - start), false);
+    const end = () => {
+      handle.removeEventListener("pointermove", move); handle.removeEventListener("pointerup", end); handle.removeEventListener("pointercancel", end);
+      document.body.classList.remove("resizing", "resizing-row", "resizing-col"); handle.classList.remove("active");
+      applySize(name, panelSize(name));
+    };
+    handle.addEventListener("pointermove", move); handle.addEventListener("pointerup", end); handle.addEventListener("pointercancel", end);
+  });
+  handle.addEventListener("keydown", event => {
+    const step = event.shiftKey ? 48 : 16;
+    const delta = axis === "x" ? {ArrowLeft: -step, ArrowRight: step}[event.key] : {ArrowUp: -step, ArrowDown: step}[event.key];
+    if (delta) { event.preventDefault(); applySize(name, panelSize(name) + sign * delta); }
+  });
+  handle.ondblclick = () => resetSize(name);
+}
+bindResize($("resize-sidebar"), "sidebar", "x");
+bindResize($("resize-files"), "files", "x");
+bindResize($("resize-filelist"), "filelist", "y");
+for (const name of Object.keys(SIZE_VARS)) {
+  let saved = null;
+  try { saved = Number(localStorage.getItem(`filebutler.size.${name}`)); } catch {}
+  if (saved) applySize(name, saved, false);
+}
 (async () => {
   try {
     const [health, items] = await Promise.all([api("/api/health"), loadConversations(), loadFiles(".")]);
