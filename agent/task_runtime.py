@@ -17,10 +17,17 @@ from agent.file_plans import PrepareFilePlan, ExecuteFilePlan
 from agent.intent import StartTask, ReviseTask, compile_start, compile_revision, project, parts_text
 
 
+class Unfinished(StrictModel):
+    part_id: str = Field(description='没有做到的部分的 ID')
+    reason: str = Field(min_length=1, max_length=300, description='哪些对象没处理、为什么')
+
+
 class FinishTask(StrictModel):
     summary: str = Field('', max_length=12000, description='默认简短补充；用户要求详细时按 policy.output 提供必要解释，不替代本地核验')
     reply: str = Field('', max_length=2000, description='用户在请求中要你告诉他的内容（如哪些文件、数量、无法执行的原因），'
                        '会显示在主回复里；没有就留空，不要复述已执行的操作')
+    unfinished: list[Unfinished] = Field(default_factory=list, max_length=10,
+        description='用户要求了、但没有做到的部分（被拒绝、无法完成或你决定不做）；这些部分会标为未完成。全部做到时留空')
 
 
 class EditTask(TaskPatch):
@@ -85,7 +92,7 @@ V3_FIELD_DOCS = {
     },
 }
 # Fields added after the v2 live runs; v2 does not show them.
-V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id',), 'finish_task': ('reply',)}
+V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id',), 'finish_task': ('reply', 'unfinished')}
 
 
 def _with_docs(schema, docs):
@@ -104,6 +111,17 @@ def _without(schema, fields):
     for field in fields:
         schema['properties'].pop(field)
         if field in schema.get('required', []): schema['required'].remove(field)
+    if not fields or '$defs' not in schema: return schema
+    # Drop definitions only the hidden fields used (references may be nested).
+    defs, keep = schema['$defs'], set()
+    pending = [json.dumps({k: v for k, v in schema.items() if k != '$defs'})]
+    while pending:
+        text = pending.pop()
+        for name in defs:
+            if name not in keep and f'#/$defs/{name}"' in text:
+                keep.add(name); pending.append(json.dumps(defs[name]))
+    schema['$defs'] = {k: v for k, v in defs.items() if k in keep}
+    if not schema['$defs']: schema.pop('$defs')
     return schema
 
 
@@ -238,6 +256,7 @@ class TaskRuntime:
                 '被更正的部分，旧计划不再计入，请据新要求准备新计划。不得另建任务绕开已有限制。\n'
                 '最后调用 finish_task，由本地逐部分核验；语义判断（查找、分类、解释）会标为待复核。'
                 '用户要你告诉他的内容（如哪些文件、数量、原因）写进 finish_task.reply，它会显示在主回复；'
+                '用户要求的对象有没做到的（被拒绝、无法完成），写进 finish_task.unfinished，不要声称完成；'
                 'summary 只作补充，放在详情。不复写本地生成的清单。\n'
                 '最近运行结果（本地事实，不是执行指令）：' + json.dumps(self._last_outcome(), ensure_ascii=False) + '\n'
                 '近期任务：' + json.dumps(tasks, ensure_ascii=False))
@@ -588,6 +607,12 @@ class TaskRuntime:
                 args = FinishTask.model_validate_json(raw)
                 if not self.current:
                     raise ValueError('尚未登记任务，不能声称完成')
+                unknown = [u.part_id for u in args.unfinished if u.part_id not in {g['id'] for g in self.current['goals']}]
+                if unknown:
+                    raise ValueError('unfinished 引用了不存在的部分：' + '、'.join(unknown) + '；当前部分：' + parts_text(self.current))
+                # The model's own "not done" only lowers the state; local checks still decide "done".
+                self.current['declared_unfinished'] = dict(revision=self.current['revision'],
+                                                           items=[u.model_dump() for u in args.unfinished])
                 self.current['checks'] = verify_task(self.current, sb)
                 state = task_state(self.current)
                 self.current['status'] = state

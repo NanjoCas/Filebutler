@@ -198,6 +198,10 @@ def verify_task(task, sb):
             except (ValueError, KeyError, OSError, AttributeError, SandboxError) as exc:
                 ok, detail = False, str(exc)
             rows.append(dict(kind=kind, passed=bool(ok), needs_review=review, detail=detail))
+        declared = task.get('declared_unfinished') or {}
+        if declared.get('revision') == task['revision']:
+            rows += [dict(kind='declared_unfinished', passed=False, needs_review=False, detail='模型声明未完成：'+u['reason'])
+                     for u in declared.get('items', []) if u['part_id'] == goal['id']]
         checks.append(dict(goal_id=goal['id'], description=goal['description'],
                            passed=all(r['passed'] for r in rows),
                            needs_review=goal['semantic_review'] or any(r['needs_review'] for r in rows),

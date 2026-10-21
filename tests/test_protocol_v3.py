@@ -137,7 +137,9 @@ def test_v3_tool_surface_is_smaller_and_hides_contract_tools():
     assert {'set_task', 'edit_task', 'apply_task_edit', 'begin_step', 'move', 'rename', 'trash', 'make_dir'}.isdisjoint(names)
     assert {'start_task', 'revise_task', 'prepare_file_plan', 'execute_file_plan', 'finish_task', 'apply_dedup'} <= names
     size = lambda schemas: sum(len(json.dumps(s, ensure_ascii=False)) for s in schemas)
-    assert size(v3) < 0.75 * size(v2), (size(v3), size(v2))
+    # Guard against regrowth. 0.75 held until finish_task gained reply/unfinished
+    # and every v3 field got a description (25.4k vs 33.3k chars on 2026-10-21).
+    assert size(v3) < 0.8 * size(v2), (size(v3), size(v2))
 
 
 # ============================================================================ boundary
@@ -671,3 +673,74 @@ def test_without_reply_the_main_answer_stays_compact(tmp_path):
                  dict(effect='move', source='Inbox/b.txt', destination='Archive')]), alias=PLAN)),
         execute(), step(call('finish_task', dict(summary='很长的过程复述')))])
     assert '很长的过程复述' not in result.final and len(result.final) < 60
+
+
+# ============================================================================ user run 2026-10-21 22:40
+# logs/20261021-224026-606418: "把文献文件夹里的所有内容平铺到根目录并删除空文件夹".
+# (1) A plan that moved files out and recycled their folders was rejected with
+# a generic message (twice). (2) 文献 held only a hidden .DS_Store, so it was
+# "not empty" though listings showed it empty; the model retried paths and then
+# guessed a wrong cause. (3) 文献 stayed, yet the answer said "本地核验通过".
+
+from agent.verifier import verify_task
+
+
+def flatten_fixture(root):
+    for rel in ('文献/01/x.pdf', '文献/02/y.pdf'):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True); (root / rel).write_text(rel)
+    (root / '文献/.DS_Store').write_text('finder metadata')
+
+
+PARTS = [dict(kind='organize', description='文献内所有文件平铺到根目录'),
+         dict(kind='organize', description='回收清空后的子文件夹和文献文件夹本身')]
+MOVE_ALL = dict(path='文献', recursive=True, effect='move', destination='.')
+
+
+def test_folder_emptied_only_by_this_plan_gets_a_split_instruction(tmp_path):
+    flatten_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('平铺', [step(start(PARTS), call('prepare_file_plan', dict(
+        description='平铺并回收', selection=MOVE_ALL, actions=[dict(effect='trash', source='文献/01')])))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert '文献/01 要等本计划中的移动完成后才会变空' in text and '单独准备回收计划' in text
+    assert (tmp_path / '文献/01/x.pdf').is_file()
+
+
+def test_folder_with_only_hidden_files_names_them_and_is_not_recycled(tmp_path):
+    flatten_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = session.run('平铺', [
+        step(start(PARTS), call('prepare_file_plan', dict(description='平铺', selection=MOVE_ALL), alias=PLAN)),
+        execute(),
+        step(call('prepare_file_plan', dict(description='回收子文件夹', actions=[
+            dict(effect='trash', source='文献/01'), dict(effect='trash', source='文献/02')]), alias=PLAN2)),
+        execute(PLAN2),
+        step(call('prepare_file_plan', dict(description='回收文献', actions=[dict(effect='trash', source='文献')]))),
+        step(call('finish_task', dict(summary='', unfinished=[
+            dict(part_id='organize_2', reason='文献 只含隐藏文件 .DS_Store，工具不能回收，需用户手动删除')])))])
+    text = client.calls('prepare_file_plan')[-1]['text']
+    assert '只含隐藏文件 .DS_Store' in text and 'Finder' in text and '不要再换路径重试' in text
+    assert (tmp_path / '文献/.DS_Store').is_file() and (tmp_path / 'x.pdf').is_file()
+    # (3) The part the model could not finish is not reported as verified.
+    assert result.runtime['task_status'] == 'partial' and result.stop_reason == 'partial'
+    assert '尚未全部完成' in result.final and '.DS_Store' in result.final and '本地核验通过' not in result.final
+    task = session.sb.runtime.current
+    assert not next(c for c in verify_task(task, session.sb) if c['goal_id'] == 'organize_2')['passed']  # survives recheck
+    assert next(c for c in task['checks'] if c['goal_id'] == 'organize_1')['passed']
+
+
+def test_unfinished_must_name_an_existing_part(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('移动', [step(start([dict(kind='organize', description='m')])),
+                                     step(call('finish_task', dict(unfinished=[dict(part_id='nope', reason='x')]))), finish()])
+    text = client.calls('finish_task')[0]['text']
+    assert '不存在的部分：nope' in text and 'organize_1（organize）' in text
+
+
+def test_unfinished_cannot_turn_a_failed_part_into_a_passed_one(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, _ = session.run('移动', [step(start([dict(kind='organize', description='m')])),
+                                    step(call('finish_task', dict(unfinished=[])))])
+    assert result.runtime['task_status'] == 'partial'  # no plan executed: still not done

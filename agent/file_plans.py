@@ -84,7 +84,21 @@ def _visible(sb, value, *, write=False):
     return path
 
 
-def fingerprint(path):
+def not_empty(path, label=None):
+    """Why a directory is not empty, in facts the model cannot see itself."""
+    entries = sorted(path.iterdir(), key=lambda p: p.name)
+    hidden = [p.name for p in entries if p.name.startswith('.')]
+    visible = [p.name for p in entries if not p.name.startswith('.')]
+    name = label or path.name
+    if not visible:
+        return (f"{name} 不是空目录：只含隐藏文件 {'、'.join(hidden[:5])}（列表工具不显示隐藏项）。"
+                '本工具不处理隐藏文件，不能回收此文件夹；请如实告诉用户，可由用户在 Finder 中手动删除，或保留该文件夹，不要再换路径重试')
+    text = f"{name} 不是空目录：含 {len(visible)} 个可见项（如 {'、'.join(visible[:5])}）"
+    if hidden: text += f"，另有隐藏文件 {'、'.join(hidden[:5])}"
+    return text + '。通用计划仅处理普通文件和空目录，非空目录应先明确其文件清单'
+
+
+def fingerprint(path, label=None):
     if not path.exists() and not path.is_symlink():
         raise ValueError('来源不存在，可能已被此前的操作移动或回收：'+path.name)
     before = signature(path)
@@ -93,10 +107,16 @@ def fingerprint(path):
     elif path.is_dir() and not any(path.iterdir()):
         result = dict(kind='empty_directory', stat=before, sha256=None)
     else:
-        raise ValueError('通用计划仅处理普通文件和空目录；非空目录应先明确其文件清单')
+        raise ValueError(not_empty(path, label))
     if signature(path) != before:
         raise ValueError('生成文件快照期间对象变化，请重新规划')
     return result
+
+
+def _emptied_by(sb, folder, moved_out):
+    """Every file under the folder (hidden ones included) is moved out by this plan."""
+    files = [p for p in folder.rglob('*') if not p.is_dir()]
+    return bool(files) and all(sb.rel(p) in moved_out for p in files)
 
 
 def _same(path, expected, *, moved=False):
@@ -147,6 +167,7 @@ def prepare(runtime, args):
         raise ValueError('计划必须包含 1–500 项明确操作，请缩小选择范围')
     pid = 'X'+uuid.uuid4().hex[:12]
     steps, dirs, sources, destinations = [], {}, set(), set()
+    moved_out = {runtime._resolve(a['source']) for a in actions if a['effect'] in {'move', 'rename'} and a['source']}
     for action in actions:
         effect, src, dst = action['effect'], action['source'], action['destination']
         src = runtime._resolve(src) if src else None
@@ -174,7 +195,13 @@ def prepare(runtime, args):
                 raise ValueError('创建目标已被文件占用：'+dst)
         elif target and target.exists():
             raise ValueError('目标已存在，不会覆盖：'+dst)
-        snap = fingerprint(source) if source else None
+        try:
+            snap = fingerprint(source, src) if source else None
+        except ValueError:
+            if effect == 'trash' and source.is_dir() and _emptied_by(sb, source, moved_out):
+                raise ValueError(f'{src} 要等本计划中的移动完成后才会变空，但计划在准备时就核对每个对象的当前状态，'
+                                 '不能在同一计划里先移出再回收。请先只准备并执行移动计划，再为变空的文件夹单独准备回收计划')
+            raise
         if snap and snap['kind'] != 'file' and effect != 'trash':
             raise ValueError('移动/改名计划只接收普通文件；目录请先展开为明确文件清单')
         if target:
