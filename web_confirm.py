@@ -124,9 +124,13 @@ def build_confirmation(request: dict, sb: Sandbox) -> dict:
                              + '、'.join(_hidden_label(sb, row['folder'], p, row.get('notes', {}).get(p, '')) for p in row['metadata'])
                              + '（可撤销）。')
             if row['hidden']:
-                notes.append(f"⚠ {row['folder']} 含非系统隐藏文件："
-                             + '、'.join(_hidden_label(sb, row['folder'], p, row.get('notes', {}).get(p, '')) for p in row['hidden'])
-                             + '。它们可能是配置或密钥，确认后将一起移入回收区（可撤销）。')
+                names = '、'.join(_hidden_label(sb, row['folder'], p, row.get('notes', {}).get(p, '')) for p in row['hidden'])
+                if row.get('consent_source') == 'option':
+                    notes.append(f"含你已同意回收的隐藏文件：{names}（可撤销）。")
+                elif row.get('consent_source') == 'text':
+                    notes.append(f"⚠ 你在对话中以文字回复，请在此确认：{row['folder']} 将连同隐藏文件 {names} 一起移入回收区（可撤销）。")
+                else:
+                    notes.append(f"⚠ {row['folder']} 含非系统隐藏文件：{names}。它们可能是配置或密钥，确认后将一起移入回收区（可撤销）。")
             if row.get('sensitive'):
                 from agent.secrets_scan import describe
                 notes.append('⚠⚠ 本地检查发现疑似密钥，建议保留：'
