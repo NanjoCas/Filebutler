@@ -15,6 +15,8 @@
 
 同日已完成[真实模型复验](docs/live-acceptance-2026-10-21.md)：文件结果与撤销 8/8，但三轮错误 partial，整体未通过；78 次实际请求、净耗时 176.94 秒，未证明整体提速。
 
+同日下午完成[完成条件本地绑定](docs/completion-binding-2026-10-21.md)和多维验收判定，又做了[三轮真实复验](docs/live-acceptance-2026-10-21-rounds.md)。最后一轮 holdout 5/5、回归套件 6/8，没通过的两组只差状态口径，文件结果都正确，整体仍未通过；回归套件请求数 78 → 62，但每组只采样一次，不声称稳定提速。离线回归 494 passed。
+
 V2 任务状态保存在沙盒内部的 `.oplog/tasks.sqlite3`，按资料库和会话隔离，网页可通过 `GET /api/conversations/{id}/tasks` 查看。只有本地条件通过才标记完成；工具成功、原文证据有效和语义判断正确分别处理，结果可能为部分完成或待核实。V2 写入需要日志和确认策略，`risky` 也会展示操作确认；`never` 仍为调用方显式选择的免确认策略。
 
 网页右上角“任务与复核”支持任务编辑差异预览、目标/约束调整、取消恢复和人工复核。路径保护、文件类型、空目录、数量、扩展名和内容保持等规则在本地执行检查。[2026-10-20 真实模型验收](docs/live-acceptance-2026-10-20.md)已执行，发现契约纠错往返、状态一致性及失败原因展示问题，尚未整体验收通过。浏览器现场验收仍待完成。
@@ -96,6 +98,17 @@ python main.py eval --exp e12_no_search --tasks retrieval --repeats 5 --set retr
 python -m eval.replay eval/results/<实验>/<任务>_<次>.json --times 20   # 回放失败
 python -m eval.label_real papers                              # 给 data/real/papers/ 预填标注（不覆盖已有标注）
 ```
+
+V2 生产 Agent 验收（多维判定，文件/状态/主答复/约束都通过才算总验收通过）：
+
+```bash
+python -m eval.live_policy --dry-run --suite holdout --out <新目录>          # 脚本模型干跑，无 API 费用
+python -m eval.live_policy --live --suite regression --out eval/results/<新目录> --total-cap 0.8   # 收费
+python -m eval.live_policy --live --suite holdout --out eval/results/<新目录> --total-cap 0.6      # 收费
+python -m eval.rejudge eval/results/<已有结果目录> --out <新目录>              # 用新判定离线重判历史结果
+```
+
+`--suite` 可选 `regression`（原 8 组）、`holdout`（5 组，已参与调试，不再是盲测）、`all`。输出目录必须是新的，不会覆盖已有结果。
 
 - **真实数据（主评测）**：`data/real/papers/` 是 51 篇真实论文，标准答案在 `data/real/papers.labels.yaml`；两者都**不进 git**。
   标注由 Claude 完成（与被测的 DeepSeek 不是同一个模型）：PyMuPDF 抽取文字、按字号定位标题，乱码页渲染成图片核对，主题依据摘要判断。
@@ -237,6 +250,8 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 路径识别兼容唯一目录后缀、Unicode/大小写和首尾空格差异；目录引用会打开文件列表。含空格或括号的 Markdown 链接仅在核实目标存在后修正编码，无法确定的引用显示具体原因。
 
 写操作确认显示结构化操作卡片：重复文件按组放在一起，每项标注保留或待回收，待回收文件使用浅红色；移动或重命名显示前后路径。点击文件或“展开核对”打开大尺寸预览窗口，核对后再确认或拒绝。核对窗口可预览 PDF/图片/文本、浏览文件夹；关闭窗口不会自动允许操作。
+
+对话列表每行右侧的 ✕ 可删除对话：先弹窗确认；运行中或待确认时拒绝删除；只删网页里的会话记录，不动操作日志、回收区、PDF 缓存和文件，已记录的操作仍可用 `python main.py undo <运行编号>` 撤销。侧栏标题超过 16 字显示省略号，悬停看完整标题。对话列表、聊天区、文件区之间，以及文件列表和预览之间的分隔条都可以拖动，尺寸记在浏览器里，双击恢复默认。
 
 检索覆盖统计使用明确字段：扫描/已索引 PDF、解析失败 PDF、前两页无可检索词项 PDF、跳过非 PDF 文件。
 非 PDF 文件不能称为无文字层 PDF；前两页无词项也不证明整份 PDF 无文字层。当前默认 `v7_classification` 继承本地批量策略，
