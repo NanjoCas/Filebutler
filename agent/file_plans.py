@@ -24,6 +24,9 @@ class Action(StrictModel):
     effect: Literal['create', 'move', 'rename', 'trash']
     source: str | None = None
     destination: str | None = None
+    include_metadata: bool = Field(False, description='仅 trash 文件夹：同意连同其中的系统元数据（.DS_Store 等）一起回收')
+    include_hidden: list[str] = Field(default_factory=list, max_length=20,
+        description='仅 trash 文件夹：用户已通过 ask_user 同意一起回收的其他隐藏文件，逐个写出完整路径')
 
     @model_validator(mode='after')
     def endpoints(self):
@@ -33,6 +36,8 @@ class Action(StrictModel):
             raise ValueError('此操作需要 destination（完整目标路径）')
         if self.effect == 'create' and self.source or self.effect == 'trash' and self.destination:
             raise ValueError('create 只指定 destination；trash 只指定 source')
+        if self.effect != 'trash' and (self.include_metadata or self.include_hidden):
+            raise ValueError('include_metadata / include_hidden 只用于回收文件夹')
         return self
 
 
@@ -113,13 +118,98 @@ def fingerprint(path, label=None):
     return result
 
 
-def _emptied_by(sb, folder, moved_out):
-    """Every file under the folder (hidden ones included) is moved out by this plan."""
-    files = [p for p in folder.rglob('*') if not p.is_dir()]
-    return bool(files) and all(sb.rel(p) in moved_out for p in files)
+# Risk tiers for what a recycled folder still holds (decided locally, never by the model):
+#   metadata  OS-generated files: recycled with an explicit include_metadata, shown on the card
+#   hidden    other dot-files (.env, ...): only after the user agreed via ask_user, listed exactly
+#   special   hidden folders, symlinks, app/document packages (.git, .app): never recycled
+METADATA_NAMES = {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
+METADATA_MAX = 1 << 20
+PACKAGES = ('.app', '.bundle', '.framework', '.photoslibrary', '.pages', '.numbers', '.key', '.rtfd')
 
 
-def _same(path, expected, *, moved=False):
+def _is_metadata(path):
+    return ((path.name in METADATA_NAMES or path.name.startswith('._')) and path.is_file()
+            and not path.is_symlink() and path.stat().st_size <= METADATA_MAX)
+
+
+def scan_tree(folder):
+    """Everything under a folder, by risk tier; paths relative to the folder."""
+    out = dict(visible=[], dirs=[], metadata={}, hidden={}, special=[])
+    for base, dirnames, files in os.walk(folder, followlinks=False):
+        base = Path(base)
+        for name in sorted(dirnames):
+            p = base / name
+            rel = p.relative_to(folder).as_posix()
+            if p.is_symlink() or name.startswith('.') or name.lower().endswith(PACKAGES):
+                out['special'].append(rel); dirnames.remove(name)
+            else:
+                out['dirs'].append(rel)
+        for name in sorted(files):
+            p = base / name
+            rel = p.relative_to(folder).as_posix()
+            if p.is_symlink() or not p.is_file(): out['special'].append(rel)
+            elif not name.startswith('.'): out['visible'].append(rel)
+            elif _is_metadata(p): out['metadata'][rel] = digest(p)
+            else: out['hidden'][rel] = digest(p)
+    return out
+
+
+def _names(rows, limit=5):
+    rows = list(rows)
+    return '、'.join(rows[:limit]) + ('等' if len(rows) > limit else '')
+
+
+def tree_snapshot(folder, src, moved_out, action, consent):
+    """A folder recycled with what this plan leaves in it, or a precise refusal."""
+    t = scan_tree(folder)
+    if t['special']:
+        raise ValueError(f"{src} 含特殊对象 {_names(t['special'])}（隐藏文件夹、符号链接或应用包），"
+                         '可能是代码仓库或程序目录，工具不会回收此文件夹。请如实告诉用户由用户自行处理；其余操作可以照常进行')
+    moving = {p for p in t['visible'] if f'{src}/{p}' in moved_out}
+    left = [p for p in t['visible'] if p not in moving]
+    if left:
+        raise ValueError(not_empty(folder, src) if not moving else
+                         f"{src} 还有 {len(left)} 个可见文件不在本计划的移动中（如 {_names(left)}），回收它会连带删除这些文件；"
+                         '如需回收，先在计划中移走它们，或只回收其中的空子文件夹')
+    if t['metadata'] and not action.get('include_metadata'):
+        raise ValueError(f"{src} 含系统元数据文件 {_names(t['metadata'])}（macOS/Windows 自动生成，列表工具不显示）。"
+                         '若要连同回收，在这条 trash 动作中设置 include_metadata=true，确认卡片会把它们列给用户')
+    if t['hidden']:
+        listed = {Path(p).relative_to(src).as_posix() if Path(p).is_relative_to(src) else p
+                  for p in action.get('include_hidden') or []}
+        agreed = any(Path(src) == Path(c) or Path(src).is_relative_to(c) for c in consent)
+        if not agreed:
+            raise ValueError(f"{src} 含非系统隐藏文件 {_names(t['hidden'])}，可能是配置或密钥。回收前必须先调用 ask_user 询问用户"
+                             f"（subject 填 {src}，表示同意的选项设 consent=include_hidden）；不要猜测用户意愿")
+        if listed != set(t['hidden']):
+            raise ValueError(f"include_hidden 必须逐个列出 {src} 中的全部隐藏文件，不多不少："
+                             + _names([f'{src}/{p}' for p in t['hidden']], 20))
+    elif action.get('include_hidden'):
+        raise ValueError(f'{src} 没有需要 include_hidden 的隐藏文件')
+    return dict(kind='directory_tree', stat=signature(folder), sha256=None, moved_out=sorted(moving),
+                dirs=t['dirs'], files={**t['metadata'], **t['hidden']},
+                metadata=sorted(t['metadata']), hidden=sorted(t['hidden']))
+
+
+def _tree_same(path, expected, pending):
+    """The folder holds what was confirmed. Before the plan's moves (pending) the
+    files they will move may still be there; afterwards nothing visible may be.
+    Finder may add metadata at any time; other new contents stop the plan."""
+    if not path.is_dir() or path.is_symlink(): return False
+    t = scan_tree(path)
+    if t['special'] or not set(t['dirs']) <= set(expected['dirs']): return False
+    if not set(t['visible']) <= (set(expected['moved_out']) if pending else set()): return False
+    files = {**t['metadata'], **t['hidden']}
+    for rel, sha in expected['files'].items():
+        if rel in expected['metadata'] and rel not in files: continue  # Finder may remove its own files
+        if files.get(rel) != sha: return False
+    return all(rel in expected['files'] or rel in t['metadata'] for rel in files)
+
+
+def _same(path, expected, *, moved=False, pending=False):
+    if expected['kind'] == 'directory_tree':
+        try: return _tree_same(path, expected, pending)
+        except OSError: return False
     try:
         actual = fingerprint(path)
         return (actual['kind'] == expected['kind'] and actual['sha256'] == expected['sha256']
@@ -168,6 +258,7 @@ def prepare(runtime, args):
     pid = 'X'+uuid.uuid4().hex[:12]
     steps, dirs, sources, destinations = [], {}, set(), set()
     moved_out = {runtime._resolve(a['source']) for a in actions if a['effect'] in {'move', 'rename'} and a['source']}
+    consent = getattr(runtime, 'hidden_consent', set())
     for action in actions:
         effect, src, dst = action['effect'], action['source'], action['destination']
         src = runtime._resolve(src) if src else None
@@ -195,13 +286,10 @@ def prepare(runtime, args):
                 raise ValueError('创建目标已被文件占用：'+dst)
         elif target and target.exists():
             raise ValueError('目标已存在，不会覆盖：'+dst)
-        try:
+        if effect == 'trash' and source.is_dir() and not source.is_symlink() and any(source.iterdir()):
+            snap = tree_snapshot(source, src, moved_out, action, consent)
+        else:
             snap = fingerprint(source, src) if source else None
-        except ValueError:
-            if effect == 'trash' and source.is_dir() and _emptied_by(sb, source, moved_out):
-                raise ValueError(f'{src} 要等本计划中的移动完成后才会变空，但计划在准备时就核对每个对象的当前状态，'
-                                 '不能在同一计划里先移出再回收。请先只准备并执行移动计划，再为变空的文件夹单独准备回收计划')
-            raise
         if snap and snap['kind'] != 'file' and effect != 'trash':
             raise ValueError('移动/改名计划只接收普通文件；目录请先展开为明确文件清单')
         if target:
@@ -218,9 +306,16 @@ def prepare(runtime, args):
             steps.append(dict(effect=effect, source=src, destination=dst, snapshot=snap))
     if sources & destinations:
         raise ValueError('计划包含互相依赖的来源与目标；请分为多个明确阶段，不能覆盖或循环移动')
+    # A folder recycled whole carries its nested folders: a separate trash of one
+    # of them is the same effect, merged. Recycled folders go last, after the
+    # moves that empty them.
+    folders = [Path(s['source']) for s in steps if s['effect'] == 'trash' and s['snapshot']['kind'] != 'file']
+    steps = [s for s in steps if not (s['effect'] == 'trash' and any(
+        Path(s['source']) != f and Path(s['source']).is_relative_to(f) for f in folders))]
+    steps.sort(key=lambda s: s['effect'] == 'trash' and s['snapshot']['kind'] == 'directory_tree')
     # A source directory cannot contain another action or target.
     for row in steps:
-        if row['snapshot']['kind'] == 'empty_directory':
+        if row['snapshot']['kind'] in {'empty_directory', 'directory_tree'}:
             p = sb.path(row['source'], exact=True)
             if any(sb.path(s['destination'], exact=True).is_relative_to(p) for s in [*dirs.values(), *steps] if s['destination'] and s is not row):
                 raise ValueError('回收目录包含计划目标，请拆分阶段')
@@ -429,7 +524,7 @@ def _check_remaining(runtime, plan):
     for s in plan['payload']['steps']:
         if s['id'] in plan['progress']: continue
         if s['source']:
-            if not _same(_visible(sb, s['source'], write=True), s['snapshot']):
+            if not _same(_visible(sb, s['source'], write=True), s['snapshot'], pending=True):
                 raise ValueError('源文件版本变化或不存在：'+s['source'])
         if s['effect'] == 'trash' and (sb.root/'.trash').is_symlink():
             raise ValueError('回收区不能是符号链接')
@@ -554,6 +649,11 @@ def execute(runtime, plan_id, oplog, confirmer):
                 {k:s[k] for k in ('effect','source','destination')} for s in remaining])
             if plan['payload'].get('scope_additions'):
                 review['scope_additions'] = plan['payload']['scope_additions']
+            trees = [s for s in remaining if s['snapshot'] and s['snapshot']['kind'] == 'directory_tree'
+                     and (s['snapshot']['metadata'] or s['snapshot']['hidden'])]
+            if trees:
+                review['hidden_contents'] = [dict(folder=s['source'], metadata=s['snapshot']['metadata'],
+                                                  hidden=s['snapshot']['hidden']) for s in trees]
             if not confirmer.allow('file_plan', review, file_count=len(remaining), force=True,
                                    **({'notes': runtime.text_limits()} if runtime.text_limits() else {})):
                 raise ValueError('用户拒绝执行此计划，未执行剩余操作')

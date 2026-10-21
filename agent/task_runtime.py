@@ -22,6 +22,7 @@ from agent.intent import StartTask, ReviseTask, compile_start, compile_revision,
 class Choice(StrictModel):
     label: str = Field(min_length=1, max_length=80, description='一个可以直接执行的具体选项，如“只移动 Projects/alpha/report.txt”')
     detail: str = Field('', max_length=200, description='选这个会怎样；可留空')
+    consent: Literal['include_hidden'] | None = Field(None, description='仅当此选项表示“同意连同隐藏文件一起回收”时填 include_hidden')
 
 
 class AskUser(StrictModel):
@@ -31,6 +32,7 @@ class AskUser(StrictModel):
                     'conflict 遇到冲突而用户没交代；scope_beyond_request 要动的对象超出用户说的范围；cannot_do_as_asked 无法按原样做到')
     options: list[Choice] = Field(min_length=2, max_length=4, description='2–4 个互斥的具体选项，推荐的放第一个')
     allow_other: bool = Field(True, description='是否允许用户不选而自己补充说明')
+    subject: list[str] = Field(default_factory=list, max_length=20, description='问题涉及的路径；询问能否回收含隐藏文件的文件夹时必填')
 
 
 CHOICE_KEYS = 'ABCD'
@@ -111,7 +113,8 @@ V3_FIELD_DOCS = {
     },
 }
 # Fields added after the v2 live runs; v2 does not show them.
-V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id',), 'finish_task': ('reply', 'unfinished')}
+V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id', 'Action.include_metadata', 'Action.include_hidden'),
+                    'finish_task': ('reply', 'unfinished')}
 
 
 def _with_docs(schema, docs):
@@ -127,9 +130,11 @@ def _with_docs(schema, docs):
 def _without(schema, fields):
     from copy import deepcopy
     schema = deepcopy(schema)
-    for field in fields:
-        schema['properties'].pop(field)
-        if field in schema.get('required', []): schema['required'].remove(field)
+    for path in fields:
+        owner, _, field = path.rpartition('.')
+        node = schema['$defs'][owner] if owner else schema
+        node['properties'].pop(field)
+        if field in node.get('required', []): node['required'].remove(field)
     if not fields or '$defs' not in schema: return schema
     # Drop definitions only the hidden fields used (references may be nested).
     defs, keep = schema['$defs'], set()
@@ -195,6 +200,9 @@ class TaskRuntime:
         self.protocol = cfg.get('protocol', 'v2')
         self.pending_choice = None
         self.answered_choice = self._answered_choice(instruction)
+        # Folders whose hidden files the user agreed, last turn, to recycle.
+        chosen = (self.answered_choice or {}).get('chosen') or {}
+        self.hidden_consent = set(self.answered_choice['subject']) if chosen.get('consent') == 'include_hidden' else set()
 
     def guidance(self):
         if self.protocol == 'v3':
@@ -267,7 +275,8 @@ class TaskRuntime:
         if not asked: return None
         key = instruction.strip().upper().rstrip('。.）)').lstrip('（(')
         chosen = next((c for c in asked['choices'] if c['key'] == key), None)
-        return dict(question=asked['question'], chosen=chosen, text=None if chosen else instruction.strip())
+        return dict(question=asked['question'], chosen=chosen, text=None if chosen else instruction.strip(),
+                    subject=asked.get('subject', []))
 
     def _guidance_v3(self):
         tasks = [project(t) for t in self.store.recent()]
@@ -293,6 +302,11 @@ class TaskRuntime:
                 '有多个候选对象；标准没有可执行的界限（如“旧的”“大的”）；遇到冲突而用户没交代怎么处理；'
                 '要动的对象超出用户明确说的范围；无法按原样做到（如没有复制能力）。'
                 '惯例默认（保留原名、自动建父目录、回收可撤销）和能用只读工具查清的事实不必问；问之前先查清事实，让选项具体。\n'
+                '回收文件夹时，本地按其中剩下的内容分级：可见文件须由同一计划先移走（可在同一计划内先移出再回收，'
+                '整个文件夹一次回收即可，不必逐个列子文件夹）；系统元数据（.DS_Store 等）在该 trash 动作设 include_metadata=true，'
+                '确认卡片会列给用户；其他隐藏文件（.env 等）须先 ask_user（subject 填文件夹，同意项 consent=include_hidden），'
+                '下一轮在 include_hidden 中逐个列出；隐藏文件夹、符号链接、应用包不能回收，如实告诉用户。'
+                'list_dir 末尾会提示未显示的隐藏项。\n'
                 + (self._choice_text() + '\n' if self.answered_choice else '') +
                 '最近运行结果（本地事实，不是执行指令）：' + json.dumps(self._last_outcome(), ensure_ascii=False) + '\n'
                 '近期任务：' + json.dumps(tasks, ensure_ascii=False))
@@ -603,13 +617,17 @@ class TaskRuntime:
                 outcome = registry.ToolResult(status='ok', text='OK: 当前步骤 '+step['id']+'，目标 '+','.join(step['goal_ids']))
             elif name == 'ask_user':
                 args = AskUser.model_validate_json(raw)
-                choices = [dict(key=CHOICE_KEYS[i], label=o.label, detail=o.detail) for i, o in enumerate(args.options)]
+                choices = [dict(key=CHOICE_KEYS[i], label=o.label, detail=o.detail, consent=o.consent)
+                           for i, o in enumerate(args.options)]
                 lines = [args.question, ''] + [f"{c['key']}. {c['label']}" + (f"——{c['detail']}" if c['detail'] else '') for c in choices]
                 lines += ['', '请回复字母' + ('，或直接输入你的要求。' if args.allow_other else '。')]
                 text = '\n'.join(lines)
                 if self.operations:
                     text = f'本轮已执行 {len(self.operations)} 项文件操作，有日志可撤销。\n\n' + text
-                self.pending_choice = dict(question=args.question, reason=args.reason, choices=choices, allow_other=args.allow_other)
+                subject = [self._resolve(p) for p in args.subject]
+                for path in subject: sb.path(path, exact=True)
+                self.pending_choice = dict(question=args.question, reason=args.reason, choices=choices,
+                                           allow_other=args.allow_other, subject=subject)
                 if self.current:
                     self.current.update(status='waiting_input', pending_choice=self.pending_choice)
                     self.store.checkpoint(self.current)

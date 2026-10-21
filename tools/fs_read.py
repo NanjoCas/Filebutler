@@ -12,6 +12,9 @@ from tools.registry import ToolError, tool
 from tools.scopes import paths
 from agent.policy import evidence_policy
 
+# Product-internal folders at the library root; never user content.
+INTERNAL_NAMES = {'.trash', '.oplog'}
+
 TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml", ".py"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".gif", ".bmp", ".webp"}
 
@@ -106,6 +109,11 @@ def list_dir(a: ListDirArgs, sb: Sandbox) -> str:
     lines = [f"{e.name} · {'文件夹' if e.is_dir() else '文件'} · "
              f"{'-' if e.is_dir() else _fmt_size(e.stat().st_size)} · {_mtime(e)}" for e in entries]
     shown, footer = _paginate(lines, a.page, a.page_size)
+    # Hidden entries are never listed, but their existence changes what can be
+    # recycled; name a few (internal folders excepted) so the model can plan.
+    hidden = sorted(e.name for e in d.iterdir() if is_hidden(e) and not (d == sb.root and e.name in INTERNAL_NAMES))
+    if hidden:
+        footer += f"\n另有 {len(hidden)} 个隐藏项未显示（{'、'.join(hidden[:3])}{'等' if len(hidden) > 3 else ''}）"
     return "OK:\n" + "\n".join(shown or ["（空）"]) + "\n" + footer
 
 
