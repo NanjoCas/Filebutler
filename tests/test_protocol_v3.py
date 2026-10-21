@@ -288,7 +288,8 @@ def test_two_parts_verifying_receipts_still_need_an_explicit_step(tmp_path):
     _, client = session.run('清理', [
         step(start([dict(kind='dedup', description='a'), dict(kind='dedup', description='b')]),
              call('deduplicate', dict(path='Inbox', mode='bytes', keep='shortest_name'))), finish()])
-    assert 'begin_step' in client.calls('deduplicate')[0]['text']
+    text = client.calls('deduplicate')[0]['text']
+    assert '无法确定归属' in text and 'revise_task' in text and 'begin_step' not in text
     assert (tmp_path / 'Inbox/copy_of_a.txt').is_file()
 
 
@@ -544,3 +545,48 @@ def test_v3_task_id_and_recursive_are_explained():
     plan = next(s for s in visible_schemas('v3') if s['function']['name'] == 'prepare_file_plan')['function']['parameters']
     assert '本层' in plan['$defs']['Selection']['properties']['recursive']['description']
     assert 'task_id' in plan['properties']
+
+
+# ============================================================================ round 06 follow-ups
+# Live: policy_live_20261021_06_v3_all/holdout_search_dedup_move. The model
+# recycled the duplicate inside a file plan; no dedup receipt existed, so the
+# dedup part ended partial although every file was right.
+
+
+def test_plan_recycling_files_in_a_dedup_task_is_flagged_before_execution(tmp_path):
+    duplicates_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('清理', [
+        step(start([dict(id='dedup', kind='dedup', description='字节副本保留最短名'),
+                    dict(id='organize', kind='organize', description='回收空文件夹')]),
+             call('prepare_file_plan', dict(description='回收副本和空文件夹', actions=[
+                 dict(effect='trash', source='Inbox/copy_of_a.txt'), dict(effect='trash', source='Inbox/empty')])))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert 'deduplicate' in text and '不会产生回执' in text and 'Inbox/copy_of_a.txt' in text
+    assert 'revise_task' in text and 'edit_task' not in text  # v3 names its own tools
+    assert (tmp_path / 'Inbox/copy_of_a.txt').is_file()
+
+
+def test_only_dedup_part_rejects_plan_trash_naming_v3_tools(tmp_path):
+    duplicates_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('清理', [
+        step(start([dict(id='dedup', kind='dedup', description='字节副本保留最短名')]),
+             call('prepare_file_plan', dict(description='回收副本', actions=[dict(effect='trash', source='Inbox/copy_of_a.txt')])))])
+    result = client.calls('prepare_file_plan')[0]
+    assert result['status'] == 'error' and 'deduplicate' in result['text']
+    assert 'revise_task' in result['text'] and 'edit_task' not in result['text']
+
+
+def test_plan_recycling_an_empty_folder_is_not_flagged(tmp_path):
+    duplicates_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('清理', [
+        step(start([dict(kind='dedup', description='去重'), dict(kind='organize', description='回收空文件夹')]),
+             call('prepare_file_plan', dict(description='回收空文件夹', actions=[dict(effect='trash', source='Inbox/empty')])))])
+    assert '不会产生回执' not in client.calls('prepare_file_plan')[0]['text']
+
+
+def test_notes_description_states_its_cost():
+    notes = StartTask.model_json_schema()['$defs']['Limits']['properties']['notes']['description']
+    assert '通常留空' in notes and '人工复核' in notes and '不要复述' in notes

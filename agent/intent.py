@@ -45,7 +45,9 @@ class Limits(StrictModel):
     only_extensions: list[str] = Field(default_factory=list, max_length=30, description='只处理这些后缀')
     max_files: int | None = Field(None, ge=0, description='移动/改名/回收的对象总数上限，不含自动创建的目录')
     notes: list[str] = Field(default_factory=list, max_length=20,
-        description='无法用以上字段表达的用户限制；执行前列入确认卡片，结果需人工复核')
+        description='只放用户提出、但以上字段和 parts 都无法表达的限制，通常留空。'
+                    '不要复述 parts 的内容，也不要重复已由其他字段表达的限制（如后缀、保持原样、禁止操作、去重保留规则）。'
+                    '每写一条，执行前都要用户确认，结果会进入人工复核')
 
 
 class StartTask(StrictModel):

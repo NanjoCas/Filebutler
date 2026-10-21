@@ -197,10 +197,14 @@ def require_receipt_producers(task, sb, bound):
                 try: bound_refs = _reference(c, task, product, gid)
                 except ValueError: bound_refs = ['ambiguous']
                 if bound_refs: continue
+                if getattr(getattr(sb, 'runtime', None), 'protocol', 'v2') == 'v3':
+                    fix = '若这部分并非用户要求的去重，先用 revise_task 修正部分类型'
+                else:
+                    fix = ('若此条件与操作不符，先 edit_task 改为相符的条件'
+                           '（普通文件计划用 file_plan_verified，reference 留空由本地绑定）')
                 raise ValueError(f"目标 {gid} 的完成条件 {c['kind']} 只能由{executor}的回执满足；"
                                  f"当前对 {op.get('source')} 的 {op['effect']} 不会产生该回执，执行后也无法核验。"
-                                 "请改用对应执行器；若此条件与操作不符，先 edit_task 改为相符的条件"
-                                 "（普通文件计划用 file_plan_verified，reference 留空由本地绑定）")
+                                 "请改用对应执行器；" + fix)
 
 
 def enforce_cleanup_condition(task, sb, bound):
