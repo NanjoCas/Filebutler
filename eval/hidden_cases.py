@@ -35,6 +35,8 @@ def hidden_fixture(root, kind):
     elif kind == 'hidden_lock':
         (root / 'Archive').mkdir()
         _write(root, {'Reports/q4.docx': 'quarter four report', 'Reports/~$q4.docx': 'owner lock'})
+    elif kind == 'hidden_already_empty':
+        _write(root, {'文献/.DS_Store': DS_STORE, 'x.pdf': 'flattened earlier', 'y.pdf': 'flattened earlier too'})
     elif kind == 'hidden_git':
         _write(root, {'代码/main.py': 'print(1)', '代码/.git/config': '[core]\n', '代码/.git/HEAD': 'ref: refs/heads/main\n'})
     else:
@@ -64,6 +66,11 @@ HIDDEN_CASES = [
          expect=dict(turns=[dict(status=['waiting_input', 'answered', 'partial', 'needs_review'],
                                  answer=dict(include_any=[['.git', 'Git', '仓库']]),
                                  constraints=dict(effects=['move', 'create'], write_scope=['.']))])),
+    # Added 2026-10-22 after the user's run logs/20261022-004220-614628 (the five
+    # cases above are unchanged): the folder was already flattened before.
+    dict(id='hidden_already_empty', fixture='hidden_already_empty', tags=TAGS + ['metadata', 'nothing_to_do'],
+         turns=['把文献文件夹里的所有内容平铺到根目录并删除空文件夹'],
+         expect=dict(turns=[dict(status=['done'], constraints=dict(effects=['trash', 'move', 'create'], write_scope=['.']))])),
 ]
 
 
@@ -92,6 +99,9 @@ def hidden_checks(case_id, turn, root, before, runtime, first_task):
     elif case_id == 'hidden_lock_file_busy':
         result['lock_kept'] = after.get('Reports/~$q4.docx') == before['Reports/~$q4.docx']
         result['folder_kept'] = (root / 'Reports').is_dir()
+    elif case_id == 'hidden_already_empty':
+        result['folder_recycled'] = _gone(root, '文献') and in_trash('.DS_Store')
+        result['root_files_kept'] = all(after.get(n) == before[n] for n in ('x.pdf', 'y.pdf'))
     elif case_id == 'hidden_git_refused':
         result['repo_kept'] = (root / '代码/.git/config').is_file() and (root / '代码/.git/HEAD').is_file()
         result['folder_kept'] = (root / '代码').is_dir()
