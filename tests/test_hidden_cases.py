@@ -8,11 +8,11 @@ from eval.hidden_cases import HIDDEN_CASES, hidden_checks, hidden_fixture
 from eval.live_policy import SUITES
 
 # Doing nothing is correct where the folder must stay.
-KEEP = {'hidden_env_asks_first', 'hidden_lock_file_busy', 'hidden_git_refused'}
+KEEP = {'hidden_env_text_consent', 'hidden_env_asks_first', 'hidden_lock_file_busy', 'hidden_git_refused'}
 
 
 def test_registered():
-    assert SUITES['hidden'] is HIDDEN_CASES and len(HIDDEN_CASES) == 6
+    assert SUITES['hidden'] is HIDDEN_CASES and len(HIDDEN_CASES) == 7
 
 
 @pytest.mark.parametrize('case', HIDDEN_CASES, ids=lambda c: c['id'])
