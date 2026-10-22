@@ -2,6 +2,8 @@
 import time
 from typing import Callable
 
+from safety.names import escape
+
 OPTIONS = {"y": "允许", "n": "拒绝", "a": "本次全部允许"}
 OPTIONS_TEXT = "   ".join(f"{k} = {v}" for k, v in OPTIONS.items())
 ASK_TEXT = "请输入 " + " / ".join(OPTIONS) + "："
@@ -42,8 +44,9 @@ class Confirmer:
                 or self.file_writes > self.threshold)
         if not need:
             return True
-        lines = "".join(f"\n    {k} = {v}" for k, v in args.items())
-        lines += "".join(f"\n    ⚠ {n}" for n in notes or [])
+        # Names may carry newlines or bidi characters; the terminal shows them escaped.
+        lines = "".join(f"\n    {k} = {escape(v) if isinstance(v, str) else v}" for k, v in args.items())
+        lines += "".join(f"\n    ⚠ {escape(n)}" for n in notes or [])
         request = {"tool": tool_name, "args": args, "file_count": count}
         if notes:
             request["notes"] = list(notes)

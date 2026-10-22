@@ -2,6 +2,7 @@
 from pathlib import Path
 import unicodedata
 
+from safety import names as safe_names
 from safety.sandbox import Sandbox, SandboxError
 from tools.fs_read import _fmt_size
 
@@ -86,6 +87,47 @@ def _hidden_label(sb, folder, rel, note=''):
 
 
 def build_confirmation(request: dict, sb: Sandbox) -> dict:
+    return _mark_names(_build_confirmation(request, sb), sb)
+
+
+def _mark_names(card: dict, sb: Sandbox) -> dict:
+    """Mark invisible and bidi characters wherever the user reads a name. item["path"]
+    stays raw for previews; the text shown for it is item["path_text"]."""
+    items = [item for g in card["groups"] for item in g["items"]]
+    # Names to mark whole inside notes (where newlines are layout): planned names
+    # from the items, which may not exist yet, and every such name on disk.
+    raw = {part for item in items for value in (item["path"], item.get("destination") or "")
+           for part in Path(value).parts if safe_names.VISIBLE.search(part)}
+    raw |= {n for n in safe_names.unsafe_names(sb.root) if safe_names.VISIBLE.search(n)}
+    ordered = sorted(raw, key=len, reverse=True)
+
+    def shown(text, multiline=False):
+        for name in ordered:
+            text = text.replace(name, safe_names.mark(name))
+        return safe_names.mark(text, keep_newlines=multiline)
+
+    flagged = set()
+    for item in items:
+        flagged |= {p for p in Path(item["path"]).parts + Path(item.get("destination") or "").parts if p in raw}
+        for key in ("name", "destination", "message"):
+            if item.get(key):
+                item[key] = shown(item[key])
+        item["path_text"] = shown(item["path"])
+    for g in card["groups"]:
+        g["title"] = shown(g["title"])
+        if g.get("description"):
+            g["description"] = shown(g["description"])
+    flagged |= {n for n in raw if any(n in text for text in card["notes"] + [card["summary"]])}
+    card["summary"] = shown(card["summary"])
+    card["notes"] = [shown(n, multiline=True) for n in card["notes"]]
+    if flagged:
+        card["notes"].insert(0, "⚠ 以下名称含不可见字符或会改变显示顺序的字符，已用 ⟦⟧ 标出，请核对后再确认："
+                             + "、".join(safe_names.mark(n) + (f"（实际扩展名 {Path(n).suffix}）" if Path(n).suffix else "")
+                                        for n in sorted(flagged)) + "。")
+    return card
+
+
+def _build_confirmation(request: dict, sb: Sandbox) -> dict:
     tool, args = request["tool"], request["args"]
     groups, notes = [], []
 

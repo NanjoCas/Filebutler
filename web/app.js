@@ -398,9 +398,9 @@ function renderConfirmationGroups(container, state, compact = false) {
       const row = node("div", `confirmation-file-row ${item.disposition || ""}`); row.dataset.reviewPath = item.path;
       if (item.disposition) row.append(node("span", `file-disposition ${item.disposition}`, item.disposition === "trash" ? "待回收" : "保留"));
       const button = node("button", "confirmation-file-button"); button.type = "button"; button.disabled = !item.previewable;
-      const text = node("span", "confirmation-file-text"); text.append(node("span", "confirmation-file-name", item.name), node("span", "confirmation-file-path", item.path));
+      const text = node("span", "confirmation-file-text"); text.append(node("span", "confirmation-file-name", item.name), node("span", "confirmation-file-path", item.path_text || item.path));
       button.append(node("span", "confirmation-file-icon", item.kind === "directory" ? "▰" : "▤"), text, node("span", "confirmation-file-open", item.previewable ? "预览 ↗" : item.planned ? "待创建" : "不可预览"));
-      button.title = item.previewable ? `预览 ${item.path}` : item.message;
+      button.title = item.previewable ? `预览 ${item.path_text || item.path}` : item.message;
       button.onclick = () => compact ? openConfirmationReview(state, item) : showReviewPreview(state, item);
       row.append(button);
       const meta = node("div", "confirmation-file-meta", [item.size_text, item.message].filter(Boolean).join(" · "));
@@ -471,7 +471,7 @@ async function showReviewPreview(state, item) {
     const disposition = item.disposition || related?.disposition;
     const heading = node("div", `review-preview-heading ${disposition || ""}`);
     if (disposition) heading.append(node("span", `file-disposition ${disposition}`, disposition === "trash" ? "待回收 · 确认后移入回收区" : "保留 · 本次不改动"));
-    heading.append(node("strong", "", item.name), node("span", "", item.path));
+    heading.append(node("strong", "", item.name), node("span", "", item.path_text || item.path));
     const body = node("div", "review-preview-body"); panel.replaceChildren(heading, body);
     if (item.kind === "directory") {
       if (data.parent !== null) {
