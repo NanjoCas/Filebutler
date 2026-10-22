@@ -11,7 +11,7 @@ import os
 import re
 
 # C0/C1 控制字符、行/段分隔符、零宽字符、双向控制符、BOM，以及会伪造标签的尖括号。
-UNSAFE = re.compile('[\x00-\x1f\x7f-\x9f؜​-‏ -‮⁠-⁩﻿<>]')
+UNSAFE = re.compile('[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff<>]')
 _NAMED = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
 
 
@@ -58,3 +58,20 @@ def shield(text: str, sb) -> str:
     if folders:
         note += '文件夹 ' + '、'.join(folders) + ' 无法按名称操作，需要处理时请告诉用户先在访达里改名。'
     return text + note
+
+
+# ---------- 给用户看的确认卡片 ----------
+# 卡片里名字被双向控制符反转（invoice\u202etxt.exe 显示成 invoiceexe.txt）或藏着换行时，
+# 用户会确认一个与所见不同的操作。尖括号在网页里按文本显示，无需标出。
+VISIBLE = re.compile('[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]')
+_LABELS = {'\n': '换行', '\r': '回车', '\t': '制表'}
+
+
+def mark(text: str, keep_newlines: bool = False) -> str:
+    """把不可见字符换成 ⟦换行⟧、⟦U+202E⟧ 这样的可见标记。"""
+    def sub(m):
+        ch = m.group()
+        if keep_newlines and ch == '\n':
+            return ch
+        return f"⟦{_LABELS.get(ch, f'U+{ord(ch):04X}')}⟧"
+    return VISIBLE.sub(sub, text)
