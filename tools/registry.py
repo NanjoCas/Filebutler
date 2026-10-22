@@ -187,6 +187,20 @@ def _dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
 
 def _trash_batch(plan: TrashBatch, sandbox: Sandbox, oplog: OpLog | None,
                  confirmer: Confirmer | None) -> str:
+    """Dedup's batch recycle holds the same library lock as file plans, so two
+    conversations never write to one library at once."""
+    from agent.file_plans import library_lock
+    try:
+        with library_lock(sandbox):
+            return _trash_batch_locked(plan, sandbox, oplog, confirmer)
+    except ValueError as exc:
+        if '已有计划正在执行' in str(exc):
+            raise ToolError('资料库正有另一项整理在执行，请稍后重试') from exc
+        raise
+
+
+def _trash_batch_locked(plan: TrashBatch, sandbox: Sandbox, oplog: OpLog | None,
+                        confirmer: Confirmer | None) -> str:
     from tools.fs_write import TrashArgs, trash
 
     if not oplog:

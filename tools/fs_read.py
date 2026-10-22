@@ -221,6 +221,9 @@ def read_file(a: ReadArgs, sb: Sandbox) -> str:
     cache = getattr(sb, '_read_evidence', {})
     if fid and key in cache:
         return f'OK: 此片段本轮已提供，复用 evidence:{cache[key]}；无需重复读取。'
+    from agent.artifacts import cloud_only
+    if cloud_only(p):  # reading would download it from iCloud
+        raise ToolError(f"{a.path} 只在 iCloud 云端，没有下载到本机；读取会触发下载。请告诉用户先在访达里右键“立即下载”")
     ext = p.suffix.lower()
     scope = '文本片段'
     if ext == ".pdf":

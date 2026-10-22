@@ -63,7 +63,8 @@ def _members(sb, op):
     if not source:
         return [op]
     p = sb.path(source, exact=True)
-    if not p.is_dir():
+    from agent.completion import is_package
+    if not p.is_dir() or is_package(p):  # a package (.app, .pages) is checked as one object
         return [op]
     members = [op]
     for base, dirs, files in os.walk(p, followlinks=False):

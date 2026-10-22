@@ -106,7 +106,8 @@ def scan_duplicates(sb, path=".", mode="near", threshold=0.85, keep="longest_tex
     if not base.is_dir() or any(x.startswith(".") for x in base.relative_to(sb.root).parts):
         raise ToolError("查重范围必须是可见的沙盒内文件夹")
     files, sizes = {}, defaultdict(list)
-    stats = dict(files=0, pdf=0, parsed=0, text_cache_hits=0, byte_hashed=0, parse_failed=0, short_or_empty=0, symlinks=0)
+    stats = dict(files=0, pdf=0, parsed=0, text_cache_hits=0, byte_hashed=0, parse_failed=0, short_or_empty=0, symlinks=0, cloud_only=0, hard_links=0)
+    seen_inodes = set()
     for folder, dirs, names in os.walk(base, followlinks=False):
         d = Path(folder)
         stats["symlinks"] += sum((d / n).is_symlink() for n in dirs if not n.startswith("."))
@@ -120,8 +121,18 @@ def scan_duplicates(sb, path=".", mode="near", threshold=0.85, keep="longest_tex
                 continue
             if not p.is_file():
                 continue
+            from agent.artifacts import cloud_only
+            if cloud_only(p):  # content only in iCloud: comparing it would download it
+                stats["cloud_only"] += 1
+                continue
             p = sb.path(sb.rel(p))
             sig = signature(p)
+            # A hard link is another name for the same file, not a copy: recycling it frees
+            # nothing. The first name found stands for the file.
+            if (sig[0], sig[1]) in seen_inodes:
+                stats["hard_links"] += 1
+                continue
+            seen_inodes.add((sig[0], sig[1]))
             rel = sb.rel(p)
             files[rel] = dict(stat=sig, byte_hash=None, text_hash=None, chars=0)
             sizes[sig[2]].append(rel)
@@ -295,7 +306,9 @@ def find_duplicates(a, sb):
     safe = sum(sum(len(u["members"]) - 1 for u in g["confirmed_subgroups"]) if g["review_required"]
                else len(g["members"]) - 1 for g in scan["groups"])
     header = (f"OK: scan_id={scan['id']} 范围={json.dumps(scan['path'], ensure_ascii=False)} mode={scan['mode']}\n"
-            f"扫描 {s['files']} 文件、{s['pdf']} PDF；全文解析 {s['parsed']}，缓存复用 {s['text_cache_hits']}，失败 {s['parse_failed']}，过短/无文字 {s['short_or_empty']}，跳过链接 {s['symlinks']}\n"
+            f"扫描 {s['files']} 文件、{s['pdf']} PDF；全文解析 {s['parsed']}，缓存复用 {s['text_cache_hits']}，失败 {s['parse_failed']}，过短/无文字 {s['short_or_empty']}，跳过链接 {s['symlinks']}"
+            + (f"，跳过只在 iCloud 云端的文件 {s['cloud_only']}" if s.get('cloud_only') else "")
+            + (f"，跳过同一文件的硬链接 {s['hard_links']}" if s.get('hard_links') else "") + "\n"
             f"重复/近似组 {len(scan['groups'])}，确定副本可回收 {safe}；similar 不是确定重复，默认仅清理其确定重复子组。\n")
     budget = min(1700, MAX_RESULT_CHARS - len(header) - 120)
     if budget < 100 or any(len(line) > budget for line in lines):
