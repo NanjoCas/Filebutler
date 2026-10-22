@@ -190,7 +190,7 @@ def test_max_files_does_not_count_created_folders(tmp_path):
     session = Session(tmp_path)
     moves = [dict(effect='move', source=f'Inbox/{n}', destination='New/Deep') for n in ('a.txt', 'b.txt')]
     result, client = session.run('移动', [step(start([dict(kind='organize', description='m')], limits=dict(max_files=2)),
-                                              call('prepare_file_plan', dict(description='m', actions=moves), alias=PLAN)),
+                                              call('prepare_file_plan', dict(description='m', actions=moves, create_requested=True), alias=PLAN)),
                                          execute(), finish()])
     assert errors(client) == []
     assert (tmp_path / 'New/Deep/a.txt').is_file() and (tmp_path / 'New/Deep/b.txt').is_file()
@@ -422,7 +422,7 @@ def test_scenario_holdout_search_dedup_move(tmp_path):
         step(*reads),
         step(call('report_findings', dict(findings=[finding(0), finding(2)])),
              call('deduplicate', dict(path='Notes', mode='bytes', keep='shortest_name')),
-             call('prepare_file_plan', dict(description='移到 Topics/光合作用', actions=[
+             call('prepare_file_plan', dict(description='移到 Topics/光合作用', create_requested=True, actions=[
                  dict(effect='move', source='Notes/note_01.txt', destination='Topics/光合作用'),
                  dict(effect='move', source='Notes/note_02.txt', destination='Topics/光合作用')]), alias=PLAN)),
         execute(), finish()])
@@ -1479,20 +1479,34 @@ def test_the_chosen_scope_must_actually_be_done(tmp_path):
 
 # ============================================================================ a target folder that does not exist
 # User decision 2026-10-22 (after E4): ask before creating a target folder the user did
-# not ask for: a folder of similar meaning (to confirm it is meant), where to create it, or cancel. Said in the plan result, where the model
-# decides, so it costs nothing in the system prompt.
+# not ask for: a folder of similar meaning (to confirm it is meant), where to create it, or cancel.
+# Round 25: a hint after the plan was ignored once, so the plan is refused; the model's
+# claim that the user asked for a new folder is shown on the confirmation card.
 
-NEW_FOLDER = '本计划会新建文件夹'
+NEW_FOLDER = '目标文件夹'
 
 
-def test_a_plan_creating_a_target_folder_carries_the_rule(tmp_path):
+def test_a_plan_creating_a_target_folder_is_refused_until_the_user_decides(tmp_path):
     files_fixture(tmp_path)
     session = Session(tmp_path)
     _, client = session.run('把 a.txt 移到 Big', [step(start([dict(kind='organize', description='移动')]), call(
         'prepare_file_plan', dict(description='移动', actions=[dict(effect='move', source='Inbox/a.txt', destination='Big/sub/a.txt')])))])
     text = client.calls('prepare_file_plan')[0]['text']
-    assert f'{NEW_FOLDER}：Big。' in text and '是否指它' in text and 'ask_user' in text and '取消' in text
+    assert text.startswith('ERROR') and f'{NEW_FOLDER} Big 不存在' in text and '是否指它' in text and 'create_requested' in text
     assert not (tmp_path / 'Big').exists()
+
+
+def test_a_requested_new_folder_is_stated_on_the_card(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = session.run('新建 Big 文件夹，把 a.txt 移进去', [step(start([dict(kind='organize', description='移动')]), call(
+        'prepare_file_plan', dict(description='移动', create_requested=True,
+                                  actions=[dict(effect='move', source='Inbox/a.txt', destination='Big/a.txt')]), alias=PLAN)), execute(), finish()])
+    assert errors(client) == [] and (tmp_path / 'Big/a.txt').is_file()
+    from web_confirm import build_confirmation
+    [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
+    notes = build_confirmation(request, H.Sandbox(tmp_path))['notes']
+    assert any(n.startswith('按你的要求新建文件夹：Big') for n in notes)
 
 
 def test_no_rule_for_an_existing_folder_or_after_a_choice(tmp_path):
@@ -1500,13 +1514,13 @@ def test_no_rule_for_an_existing_folder_or_after_a_choice(tmp_path):
     session = Session(tmp_path)
     _, client = session.run('把 a.txt 移到 Archive', [step(start([dict(kind='organize', description='移动')]), call(
         'prepare_file_plan', dict(description='移动', actions=[dict(effect='move', source='Inbox/a.txt', destination='Archive')])))])
-    assert NEW_FOLDER not in client.calls('prepare_file_plan')[0]['text']
+    assert client.calls('prepare_file_plan')[0]['text'].startswith('OK')
     session.run('把 a.txt 移到 Big', [step(call('ask_user', dict(question='Big 建在哪里？', reason='missing_criterion', options=[
         dict(label='在根目录新建 Big', actions=[dict(effect='move', path='Inbox/a.txt', destination='Big/a.txt')]),
         dict(label='取消', actions=[])])))])
     _, client = session.run('A', [step(start([dict(kind='organize', description='移动')]), call(
         'prepare_file_plan', dict(description='移动', actions=[dict(effect='move', source='Inbox/a.txt', destination='Big/a.txt')])))])
-    assert NEW_FOLDER not in client.calls('prepare_file_plan')[0]['text']
+    assert client.calls('prepare_file_plan')[0]['text'].startswith('OK')  # the user chose where
 
 
 def test_v2_is_unchanged_by_the_new_folder_rule(tmp_path):
@@ -1518,6 +1532,31 @@ def test_v2_is_unchanged_by_the_new_folder_rule(tmp_path):
     runtime = TaskRuntime('移动', dict(protocol='v2'), sb, 'one'); sb.runtime = runtime
     text = runtime.dispatch('prepare_file_plan', json.dumps(dict(description='移动', actions=[
         dict(effect='move', source='Inbox/a.txt', destination='Big/a.txt')])), sb, None, None)
-    assert text.startswith('OK') and NEW_FOLDER not in text
+    assert text.startswith('OK')
     plan = runtime.store.file_plan(text.split('plan_id=')[1].split('；')[0])
     assert new_folders(plan) == ['Big']
+
+
+def ask_archive(options):
+    return call('ask_user', dict(question='没有「归档」，要放到哪里？', reason='multiple_candidates', subject=['Inbox/a.txt'], options=options))
+
+
+NEW_GUIDANG = dict(label='新建「归档」并移入', actions=[dict(effect='move', path='Inbox/a.txt', destination='归档')])
+USE_ARCHIVE = dict(label='放进已有的 Archive', actions=[dict(effect='move', path='Inbox/a.txt', destination='Archive')])
+
+
+def test_options_into_an_existing_folder_come_first_and_cancel_is_added(tmp_path):
+    # Round 25: the model offered "new 归档" before "Archive" and no way to cancel.
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    asked, _ = session.run('把 a.txt 移到归档', [step(ask_archive([NEW_GUIDANG, USE_ARCHIVE]))])
+    labels = [(c['key'], c['label'], c.get('local', False)) for c in asked.report['choices']]
+    assert labels == [('A', '放进已有的 Archive', False), ('B', '新建「归档」并移入', False), ('C', '取消这部分，不移动', True)]
+    assert 'C. 取消这部分，不移动　（本地补充）' in asked.final
+
+
+def test_a_cancel_the_model_offered_is_not_doubled(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    asked, _ = session.run('把 a.txt 移到归档', [step(ask_archive([USE_ARCHIVE, NEW_GUIDANG, dict(label='先不动', actions=[])]))])
+    assert [c['label'] for c in asked.report['choices']] == ['放进已有的 Archive', '新建「归档」并移入', '先不动']
