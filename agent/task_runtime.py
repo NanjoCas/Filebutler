@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from typing import Literal
@@ -222,6 +223,13 @@ class TaskRuntime:
         self.hidden_consent = set(self.consent_source)
         # The chosen option's declared actions bound the next plan (None: not declared).
         self.chosen_option = chosen if chosen.get('actions') is not None else None
+        # Files the user agreed to overwrite (user decision 2026-10-22: a same-name
+        # target is the user's call). An option grants exactly the targets its actions
+        # overwrite; a free-text reply grants the question's subject, and the card confirms.
+        if chosen:
+            self.overwrite_consent = {t: 'option' for t in chosen.get('overwrite') or []}
+        else:
+            self.overwrite_consent = {f: 'text' for f in answered.get('subject', [])} if answered else {}
 
     def guidance(self):
         if self.protocol == 'v3':
@@ -324,7 +332,10 @@ class TaskRuntime:
                 '有多个候选对象；标准没有可执行的界限（如“旧的”“大的”）；遇到冲突而用户没交代怎么处理；'
                 '要动的对象超出用户明确说的范围；无法按原样做到（如没有复制能力）。'
                 '惯例默认（保留原名、自动建父目录、回收可撤销）和能用只读工具查清的事实不必问；问之前先查清事实，让选项具体。'
-                '选项必须是工具能做到的：隐藏文件和隐藏文件夹不能移动或读取，锁文件不能移动或回收，隐藏文件只能随所在文件夹一起回收。'
+                '目标已有同名文件而用户没交代时，问用户：保留两份（新文件改用本地建议的名字）、不移动、覆盖'
+                '（选项 actions 同时写 trash 旧文件和 move 新文件到原名，旧文件移入回收区，可撤销）；未经用户选择的覆盖会被拒绝。'
+                '选项必须是工具能做到的：隐藏文件和隐藏文件夹不能移动或读取，锁文件不能移动或回收，隐藏文件只能随所在文件夹一起回收，'
+                '回收区不能由工具清空（只能由用户在访达中手动清空）。'
                 '每个选项写 actions（move/rename/trash/read 及路径，不做操作写空列表），本地会在用户看到前检查，做不到的退回给你改写；'
                 '用户选中的选项会约束下一轮计划，不能超出它声明的操作。\n'
                 '回收文件夹时，本地按其中剩下的内容分级：可见文件须由同一计划先移走（可在同一计划内先移出再回收，'
@@ -364,6 +375,9 @@ class TaskRuntime:
                 why, found = self._action_check(a, moved, sb)
                 if why: problems.append(f"选项 {c['key']}（{c['label'][:30]}）：{why}")
                 hidden += found
+            why, replaced = self._overwrite_check(actions, sb)
+            if why: problems.append(f"选项 {c['key']}（{c['label'][:30]}）：{why}")
+            if replaced: c['overwrite'] = replaced
             if hidden:
                 c['consent'] = 'include_hidden'
                 c['warn'] = '、'.join(Path(h).name for h in hidden[:3]) + ('等' if len(hidden) > 3 else '')
@@ -378,6 +392,33 @@ class TaskRuntime:
                                 detail='', consent='include_hidden', local=True, warn=names,
                                 actions=None))  # consent only: it does not bound the other operations
         return choices
+
+    def _overwrite_check(self, actions, sb):
+        """(why not, files this option overwrites). A move onto an existing file is an
+        overwrite only when the same option also recycles that file."""
+        from agent.file_plans import free_name
+        trashed = set()
+        for a in actions:
+            if a['effect'] == 'trash':
+                try: trashed.add(sb.path(self._resolve(a['path']), exact=True))
+                except Exception: pass
+        replaced = []
+        for a in actions:
+            if a['effect'] not in {'move', 'rename'} or not a.get('destination'): continue
+            try:
+                source = sb.path(self._resolve(a['path']), exact=True)
+                target = sb.path(self._resolve(a['destination']), exact=True)
+            except Exception: continue
+            if target.is_dir() and not (source.exists() and os.path.samefile(target, source)):
+                target = target / source.name  # mv semantics: into the folder, keeping the name
+            if not target.is_file() or (source.exists() and os.path.samefile(source, target)): continue
+            rel = sb.rel(target)
+            if any(os.path.samefile(target, t) for t in trashed if t.exists()):
+                replaced.append(rel)
+            else:
+                return (f'{rel} 已有同名文件。保留两份请改用新名字（如 {free_name(sb, rel)}）；'
+                        f'覆盖请在同一选项里同时 trash {rel}'), []
+        return None, replaced
 
     def _action_check(self, action, moved, sb):
         """(why the tools cannot do it or None, hidden files it would recycle)."""
@@ -762,7 +803,8 @@ class TaskRuntime:
                 lines = [args.question, '']
                 for c in choices:
                     lines.append(f"{c['key']}. {c['label']}" + (f"——{c['detail']}" if c['detail'] else '')
-                                 + (f"　⚠ 会一起删除你看不到的 {c['warn']}" if c.get('warn') else ''))
+                                 + (f"　⚠ 会一起删除你看不到的 {c['warn']}" if c.get('warn') else '')
+                                 + (f"　⚠ 覆盖 {'、'.join(c['overwrite'])}，旧文件移入回收区（可撤销）" if c.get('overwrite') else ''))
                 lines += self._sensitive_lines(args.subject, sb)
                 if any(c.get('local') for c in choices):
                     lines += ['（最后一项由本地根据文件夹内容补充。）']
