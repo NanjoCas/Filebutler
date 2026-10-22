@@ -226,6 +226,8 @@ def verify_task(task, sb):
                      for u in declared.get('items', []) if u['part_id'] == goal['id']]
         checks.append(dict(goal_id=goal['id'], description=goal['description'],
                            passed=all(r['passed'] for r in rows),
-                           needs_review=goal['semantic_review'] or any(r['needs_review'] for r in rows),
+                           # A part the user's choice excluded has nothing left to judge.
+                           needs_review=(goal['semantic_review'] and not (scope and goal['id'] in scope['excluded']))
+                                        or any(r['needs_review'] for r in rows),
                            conditions=rows))
     return checks

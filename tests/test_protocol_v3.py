@@ -1562,3 +1562,16 @@ def test_a_cancel_the_model_offered_is_not_doubled(tmp_path):
     session = Session(tmp_path)
     asked, _ = session.run('把 a.txt 移到归档', [step(ask_archive([USE_ARCHIVE, NEW_GUIDANG, dict(label='先不动', actions=[])]))])
     assert [c['label'] for c in asked.report['choices']] == ['放进已有的 Archive', '新建「归档」并移入', '先不动']
+
+
+def test_choosing_to_do_nothing_is_complete_not_left_for_review(tmp_path):
+    # Browser check 2026-10-22: "先不动" was chosen, the model recorded it as an answer part,
+    # and the turn ended as needs_review with only "部分结果待核实".
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', dict(ASK_SCOPE, options=ASK_SCOPE['options'] + [
+        dict(label='先不动', actions=[])])))])
+    result, _ = session.run('C', [step(start([dict(kind='answer', description='按用户选择本轮不做改动')])),
+                                  finish_with([], reply='按你的选择，本轮没有改动。')])
+    assert result.stop_reason == 'done' and '待核实' not in result.final
+    assert (tmp_path / 'Inbox/a.txt').is_file()

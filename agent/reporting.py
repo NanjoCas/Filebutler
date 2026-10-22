@@ -142,8 +142,9 @@ def build_report(task, model_summary, records, reply=''):
             # Nothing to change: say so; the checks behind it are in the developer details.
             summary = '已完成：文件已经符合要求，没有改动。' if task.get('allowed_effects') else '已完成。'
         elif state=='partial': summary = incomplete_reason(task, bool(reply.strip()))
+        elif state=='needs_review': summary = model_summary or ''
         else: summary = model_summary or STATE_TEXT.get(state,state)+'。'
-        if state=='needs_review': summary += '\n\n结果待核实，可在“任务与复核”中查看依据。'
+        if state=='needs_review': summary = (summary + '\n\n' if summary else '') + '这一轮的结果待核实，依据在“任务与复核”里。'
         if state=='waiting_input' and task.get('allowed_effects') and not task.get('operation_history'):
             summary += '\n\n本轮未执行任何文件操作，等待你的决定。'
     # What the user asked to be told, stated by the model; local facts lead.

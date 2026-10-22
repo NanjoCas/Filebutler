@@ -95,7 +95,7 @@ function buildMessage(message) {
       const notes = [choice.detail, ...(choice.warnings || []).map(w => `⚠ ${w}`)].filter(Boolean);
       if (notes.length) button.append(node("span", "choice-note", notes.join("　")));
       if (choice.local) button.append(node("span", "choice-local", "系统补充"));
-      button.onclick = () => { $("message-input").value = choice.key; sendMessage(); };
+      button.onclick = () => { bar.classList.add("settled"); $("message-input").value = choice.key; sendMessage(); };
       bar.append(button);
     }
     if (message.report.allow_other) bar.append(node("span", "choice-hint", "或在下方直接输入你的要求"));
@@ -135,6 +135,7 @@ function renderMessages(messages, animateLast = false, conversationId = currentC
     if (animateLast && i === messages.length - 1) item.classList.add("message-enter");
     firstNew ||= item; area.append(item);
   }
+  settleChoices();
   if (!same) area.scrollTop = area.scrollHeight;
   else if (firstNew && nearBottom) {
     // Show the start of a long new reply rather than jumping past it to the end.
@@ -143,12 +144,22 @@ function renderMessages(messages, animateLast = false, conversationId = currentC
     else area.scrollTop = area.scrollHeight;
   }
 }
+// Only the latest question keeps its buttons; once answered (any later message) they are
+// hidden: pressing an old one would send a letter that no pending question resolves.
+function settleChoices() {
+  const area = $("messages"), last = [...area.children].filter(el => el.matches("article.message")).pop();
+  area.querySelectorAll(".choice-buttons").forEach(bar => {
+    const open = bar.closest("article") === last;
+    bar.classList.toggle("settled", !open);
+    bar.querySelectorAll("button").forEach(button => button.disabled = !open);
+  });
+}
 function appendMessage(message) {
   const area = $("messages");
   area.querySelector(":scope > .welcome")?.remove();
   currentMessages = [...currentMessages, message];
   const item = buildMessage(message); item.classList.add("message-enter"); area.append(item);
-  area.scrollTop = area.scrollHeight;
+  settleChoices(); area.scrollTop = area.scrollHeight;
 }
 let conversationOrder = [];
 // Sidebar titles show a fixed-length preview; the full title stays in the tooltip.
