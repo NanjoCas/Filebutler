@@ -4,9 +4,11 @@ The model proposes objects and intent. This module derives mechanical scopes,
 parents and verification. Existing tasks never gain permissions from a plan.
 """
 import copy
+import errno
 import hashlib
 import json
 import os
+import stat as stat_flags
 import unicodedata
 import uuid
 from contextlib import contextmanager
@@ -16,7 +18,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from agent.artifacts import digest, signature, label
-from agent.completion import selected, require_valid_snapshots, attribute, claims
+from agent.completion import selected, walk_selection, is_package, require_valid_snapshots, attribute, claims
 from agent.task import StrictModel, TaskSubmission
 
 
@@ -124,7 +126,7 @@ def fingerprint(path, label=None):
 #   hidden    other dot-files (.env, ...): only after the user agreed via ask_user, listed exactly
 #   busy      lock files of open documents: refused until the program is closed
 #   special   hidden folders, symlinks, packages, volume system folders: never recycled
-FOLDER_KINDS = {'empty_directory', 'directory_tree', 'folder'}
+FOLDER_KINDS = {'empty_directory', 'directory_tree', 'folder', 'package'}
 PACKAGES = ('.app', '.bundle', '.framework', '.photoslibrary', '.pages', '.numbers', '.key', '.rtfd')
 
 
@@ -250,7 +252,17 @@ def _tree_same(path, expected, pending):
     return all(rel in expected['files'] or rel in t['metadata'] for rel in files)
 
 
+def package_snapshot(folder):
+    """A package (.pages, .app, ...) is one object to the user: its whole content is one
+    digest, so its internals (links, nested bundles) are neither judged nor taken apart."""
+    return dict(kind='package', stat=signature(folder), sha256=_tree_digest(folder))
+
+
 def _same(path, expected, *, moved=False, pending=False):
+    if expected['kind'] == 'package':
+        try: return is_package(path) and _tree_digest(path) == expected['sha256'] and (
+            signature(path)[:2] == expected['stat'][:2] if moved else True)
+        except OSError: return False
     if expected['kind'] == 'folder':
         try: return _folder_same(path, expected, pending)
         except OSError: return False
@@ -263,6 +275,51 @@ def _same(path, expected, *, moved=False, pending=False):
                 and (actual['stat'][:2] == expected['stat'][:2] if moved else actual['stat'] == expected['stat']))
     except (ValueError, OSError):
         return False
+
+
+def on_disk(sb, rel):
+    """The existing object the model meant when its spelling of a name is off.
+
+    Exact first; then the sandbox's own tolerance (surrounding spaces, real on-disk
+    spelling); then a single sibling equal under NFKC + casefold (full-width "（" and
+    "("). Several matches are never guessed between. Only for sources, which exist.
+    """
+    path = sb.path(rel, exact=True)
+    if path.exists() or path.is_symlink():
+        return rel
+    try:
+        tolerant = sb.path(rel)
+        if tolerant.exists() and tolerant.is_relative_to(sb.root):
+            return sb.rel(tolerant)
+    except Exception:
+        pass
+    if path.parent.is_dir():
+        want = _key(path.name.strip())
+        hits = [c for c in path.parent.iterdir() if _key(c.name.strip()) == want and not c.name.startswith('.')]
+        if len(hits) == 1:
+            return sb.rel(hits[0])
+    return rel
+
+
+def _writable(sb, source, src):
+    """Refuse before the confirmation what the system would refuse after it."""
+    flags = getattr(os.lstat(source), 'st_flags', 0)
+    if flags & (getattr(stat_flags, 'UF_IMMUTABLE', 0) | getattr(stat_flags, 'SF_IMMUTABLE', 0)):
+        raise ValueError(f'{src} 已被锁定（访达“显示简介”里勾选了“已锁定”），工具不会解锁。请告诉用户先取消锁定再试')
+    if not os.access(source.parent, os.W_OK):
+        raise ValueError(f'{src} 所在的文件夹 {sb.rel(source.parent)} 是只读的，无法移走其中的内容。请告诉用户检查文件夹权限')
+
+
+def os_reason(exc, sb):
+    """A system error as the user reads it: no English text, no absolute path."""
+    where = ''
+    if getattr(exc, 'filename', None):
+        try: where = '：' + sb.rel(Path(exc.filename))
+        except ValueError: where = ''
+    text = {errno.EPERM: '没有权限（文件可能已被锁定）', errno.EACCES: '没有权限（文件夹可能是只读的）',
+            errno.ENOSPC: '磁盘空间不足', errno.ENOENT: '文件已不存在', errno.EEXIST: '目标位置已有同名项',
+            errno.EXDEV: '不能跨磁盘移动', errno.EROFS: '磁盘是只读的'}.get(exc.errno, '系统拒绝了这个操作')
+    return text + where
 
 
 def _key(path):
@@ -292,8 +349,8 @@ def prepare(runtime, args):
             from agent.constraints import within
             if not within(sb, sel['path'], runtime.current['read_roots']):
                 raise ValueError('选择集超出已有任务读取范围：'+sel['path'])
-        files, _, _ = selected(sb, sel)
-        for src in files:
+        files, _, _, packages = walk_selection(sb, sel)
+        for src in files + packages:  # a package (.pages, .app) moves whole
             dst = None
             if sel['effect'] == 'move':
                 tail = Path(src).relative_to(sel['path']) if sel['preserve_tree'] else Path(src).name
@@ -309,11 +366,11 @@ def prepare(runtime, args):
         raise ValueError('计划必须包含 1–500 项明确操作，请缩小选择范围')
     pid = 'X'+uuid.uuid4().hex[:12]
     steps, dirs, sources, destinations = [], {}, set(), set()
-    moved_out = {runtime._resolve(a['source']) for a in actions if a['effect'] in {'move', 'rename'} and a['source']}
+    moved_out = {on_disk(sb, runtime._resolve(a['source'])) for a in actions if a['effect'] in {'move', 'rename'} and a['source']}
     consent = getattr(runtime, 'hidden_consent', set())
     for action in actions:
         effect, src, dst = action['effect'], action['source'], action['destination']
-        src = runtime._resolve(src) if src else None
+        src = on_disk(sb, runtime._resolve(src)) if src else None
         if runtime.current:
             from agent.constraints import within
             for value in (src, dst):
@@ -321,6 +378,8 @@ def prepare(runtime, args):
                     raise ValueError('计划对象超出已有任务读取范围：'+value)
         source = _visible(sb, src, write=True) if src else None
         target = _visible(sb, dst, write=True) if dst else None
+        if source is not None and (source.exists() or source.is_symlink()):
+            _writable(sb, source, sb.rel(source))
         src = sb.rel(source) if source else None
         dst = sb.rel(target) if target else None
         if source and _key(source) in sources:
@@ -342,7 +401,9 @@ def prepare(runtime, args):
             if entry and entry['tier'] == 'busy':
                 raise ValueError(f"{src} 是锁文件（{entry['note']}），表明对应文档正被程序打开。请告诉用户先保存并关闭相关程序；"
                                  '计划中不要包含锁文件，关闭程序后它会自动消失')
-        if effect == 'trash' and source.is_dir() and not source.is_symlink() and any(source.iterdir()):
+        if source is not None and is_package(source):
+            snap = package_snapshot(source)
+        elif effect == 'trash' and source.is_dir() and not source.is_symlink() and any(source.iterdir()):
             snap = tree_snapshot(source, src, moved_out, action, consent)
             if snap['hidden']:
                 # Where the consent came from decides what the confirmation card says.
@@ -353,7 +414,7 @@ def prepare(runtime, args):
             snap = dict(kind='folder')  # filled in below, once every step of the plan is known
         else:
             snap = fingerprint(source, src) if source else None
-        if snap and snap['kind'] not in {'file', 'folder'} and effect != 'trash':
+        if snap and snap['kind'] not in {'file', 'folder', 'package'} and effect != 'trash':
             raise ValueError('移动/改名计划只接收普通文件；目录请先展开为明确文件清单')
         if target:
             parent = target if effect == 'create' else target.parent
@@ -480,7 +541,7 @@ def _normalize(runtime, actions):
             if is_dir:
                 try: is_dir = not os.path.samefile(sb.path(runtime._resolve(action['source']), exact=True), sb.path(dst, exact=True))
                 except OSError: pass
-            name = Path(runtime._resolve(action['source'])).name
+            name = Path(on_disk(sb, runtime._resolve(action['source']))).name  # the real name, spaces included
             if action['destination'].endswith('/') or is_dir or dst in creates or shared[action['destination']] > 1:
                 action['destination'] = (Path(dst) / name).as_posix()
             else:
@@ -1015,6 +1076,8 @@ def execute(runtime, plan_id, oplog, confirmer):
             rebased = f"（任务已修订，原计划 {plan['rebased_from']} 已按第 {task['revision']} 版重新生成）" if plan.get('rebased_from') else ''
             return f"OK: plan_id={plan_id}{rebased}；本地完成并核验 {len(plan['progress'])} 项操作，无需逐文件重新调用工具"
         except (ValueError, OSError) as exc:
+            if isinstance(exc, OSError) and exc.errno:
+                exc = ValueError(os_reason(exc, runtime.sb))
             plan['status'] = 'blocked'; plan['error'] = str(exc)
             runtime.store.save_file_plan(plan)
             if plan['progress'] or plan.get('inflight'):

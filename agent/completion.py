@@ -12,8 +12,23 @@ def condition_key(goal_id, index):
     return f'{goal_id}:{index}'
 
 
+# Folders that apps treat as one document or program (macOS packages). Never taken apart.
+PACKAGES = ('.app', '.bundle', '.framework', '.photoslibrary', '.pages', '.numbers', '.key', '.rtfd',
+            '.band', '.logicx', '.fcpbundle', '.imovielibrary', '.musiclibrary', '.xcodeproj', '.playground')
+
+
+def is_package(path):
+    return path.is_dir() and not path.is_symlink() and path.name.lower().endswith(PACKAGES)
+
+
 def selected(sb, condition):
-    """Return a complete visible selection or fail, never silently skip read errors."""
+    """Return a complete visible selection or fail, never silently skip read errors.
+    Packages (.pages, .app, ...) are neither entered nor listed; see walk_selection."""
+    return walk_selection(sb, condition)[:3]
+
+
+def walk_selection(sb, condition):
+    """(files, directories, skipped, packages): packages are whole objects, kept apart."""
     base = sb.path(condition['path'], exact=True)
     if not base.is_dir():
         raise ValueError('核验范围必须是存在的目录')
@@ -21,7 +36,7 @@ def selected(sb, condition):
     suffixes = {x.lower().lstrip('.') for x in condition.get('extensions', [])}
     def omitted(p):
         return any(p.is_relative_to(e) for e in excluded)
-    files, directories, skipped = [], [], 0
+    files, directories, skipped, packages = [], [], 0, []
     def error(exc): raise exc
     for root, dirs, names in os.walk(base, followlinks=False, onerror=error):
         folder = Path(root)
@@ -30,6 +45,9 @@ def selected(sb, condition):
             p = folder / name
             if name.startswith('.') or p.is_symlink():
                 skipped += 1
+            elif is_package(p):
+                if not omitted(p) and (not suffixes or p.suffix.lower().lstrip('.') in suffixes):
+                    packages.append(sb.rel(p))
             elif not omitted(p):
                 sb.path(sb.rel(p), exact=True)
                 directories.append(sb.rel(p)); kept.append(name)
@@ -42,7 +60,7 @@ def selected(sb, condition):
             if suffixes and p.suffix.lower().lstrip('.') not in suffixes: continue
             p = sb.path(sb.rel(p), exact=True)
             if p.is_file(): files.append(sb.rel(p))
-    return files, directories, skipped
+    return files, directories, skipped, packages
 
 
 def capture_conditions(task, sb, previous=None):

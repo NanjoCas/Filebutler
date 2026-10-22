@@ -299,3 +299,122 @@ def test_a_rename_with_a_new_extension_or_an_existing_target_folder_still_works(
     run(r, [dict(effect='move', source='a.txt', destination='Archive'),     # existing folder: into it
             dict(effect='move', source='notes', destination='Archive/notes2')])  # no extension to lose
     assert names(tmp_path/'Archive') == ['a.txt', 'notes2', 'x.md']
+
+
+# ---------------------------------------------------------------- file-system edges (P2, 2026-10-22)
+
+@pytest.mark.parametrize('on_disk,given', [(' paper.pdf', 'paper.pdf'), ('报告（终稿）.pdf', '报告(终稿).pdf'), ('Report.PDF', 'report.pdf')])
+def test_a_slightly_misspelt_source_finds_the_one_file_and_keeps_its_real_name(tmp_path, on_disk, given):
+    write(tmp_path, {on_disk: 'x', 'out/keep.txt': 'k'})
+    r = runtime(tmp_path)
+    run(r, [dict(effect='move', source=given, destination='out')])
+    assert (tmp_path/'out'/on_disk).read_text() == 'x'
+
+
+def test_two_files_matching_a_misspelling_are_not_guessed_between(tmp_path):
+    write(tmp_path, {'报告（终稿）.pdf': '1', '报告(终稿).pdf ': '2', 'out/keep.txt': 'k'})
+    r = runtime(tmp_path)
+    with pytest.raises(ValueError, match='来源不存在'):
+        prepare(r, proposal(actions=[dict(effect='move', source='报告 (终稿).pdf', destination='out')]))
+
+
+def test_a_package_moves_whole_and_a_selection_never_takes_it_apart(tmp_path):
+    write(tmp_path, {'资料/a.pdf': 'a', '资料/报告.pages/index.xml': 'i', '资料/报告.pages/Data/img.png': 'p'})
+    r = runtime(tmp_path)
+    plan = prepare(r, proposal(selection=dict(path='资料', destination='平铺')))
+    assert sorted(s['source'] for s in plan['payload']['steps'] if s['effect'] == 'move') == ['资料/a.pdf', '资料/报告.pages']
+    execute(r, plan['id'], OpLog(r.sb, 'one'), Confirmer('never'))
+    assert (tmp_path/'平铺/报告.pages/Data/img.png').read_text() == 'p' and not (tmp_path/'平铺/img.png').exists()
+    assert all(c['passed'] for c in verify_task(r.current, r.sb))
+    undo(r.sb, 'one')
+    assert (tmp_path/'资料/报告.pages/index.xml').read_text() == 'i'
+
+
+def test_a_package_with_links_inside_is_recycled_whole(tmp_path):
+    write(tmp_path, {'Tool.app/Contents/MacOS/tool': 'bin', 'Tool.app/Contents/Info.plist': 'p'})
+    (tmp_path/'Tool.app/Contents/Current').symlink_to('MacOS')
+    r = runtime(tmp_path)
+    run(r, [dict(effect='trash', source='Tool.app')])
+    assert not (tmp_path/'Tool.app').exists()
+
+
+def test_locked_or_read_only_sources_are_refused_before_confirmation_in_plain_words(tmp_path):
+    import os, subprocess
+    write(tmp_path, {'a.pdf': 'a', 'ro/b.pdf': 'b', 'out/keep.txt': 'k'})
+    subprocess.run(['chflags', 'uchg', str(tmp_path/'a.pdf')], check=True)
+    os.chmod(tmp_path/'ro', 0o555)
+    try:
+        r = runtime(tmp_path)
+        with pytest.raises(ValueError, match='已被锁定'):
+            prepare(r, proposal(actions=[dict(effect='move', source='a.pdf', destination='out')]))
+        with pytest.raises(ValueError, match='只读'):
+            prepare(r, proposal(actions=[dict(effect='move', source='ro/b.pdf', destination='out')]))
+    finally:
+        subprocess.run(['chflags', 'nouchg', str(tmp_path/'a.pdf')]); os.chmod(tmp_path/'ro', 0o755)
+
+
+def test_a_system_error_during_execution_reads_in_plain_words(tmp_path):
+    import errno
+    from agent.file_plans import os_reason
+    from safety.sandbox import Sandbox
+    sb = Sandbox(tmp_path)
+    text = os_reason(PermissionError(errno.EACCES, 'Permission denied', str(tmp_path/'out/a.pdf')), sb)
+    assert text == '没有权限（文件夹可能是只读的）：out/a.pdf' and str(tmp_path) not in text
+
+
+# iCloud "dataless" files (content only in the cloud): reading would download them.
+# A real one cannot be made here, so the flag check is replaced for one name.
+
+@pytest.fixture
+def cloud(monkeypatch):
+    import agent.artifacts as artifacts
+    real = artifacts.cloud_only
+    monkeypatch.setattr(artifacts, 'cloud_only', lambda path: path.name.startswith('cloud') or real(path))
+
+
+def test_cloud_only_files_are_not_hashed_for_a_plan(tmp_path, cloud):
+    write(tmp_path, {'cloud.pdf': 'x', 'out/keep.txt': 'k'})
+    r = runtime(tmp_path)
+    with pytest.raises(ValueError, match='只在 iCloud 云端'):
+        prepare(r, proposal(actions=[dict(effect='move', source='cloud.pdf', destination='out')]))
+
+
+def test_dedup_skips_cloud_only_files_and_says_so(tmp_path, cloud):
+    from tools.dedup import scan_duplicates
+    from safety.sandbox import Sandbox
+    write(tmp_path, {'a.txt': 'same', 'b.txt': 'same', 'cloud_a.txt': 'same'})
+    scan = scan_duplicates(Sandbox(tmp_path), mode='bytes')
+    assert scan['stats']['cloud_only'] == 1
+    assert all('cloud_a.txt' not in g['members'] for g in scan['groups'])
+
+
+def test_read_file_refuses_a_cloud_only_file(tmp_path, cloud):
+    import json
+    from tools import registry
+    from safety.sandbox import Sandbox
+    write(tmp_path, {'cloud.txt': 'secret text'})
+    text = registry.dispatch('read_file', json.dumps(dict(path='cloud.txt')), Sandbox(tmp_path))
+    assert '只在 iCloud 云端' in text and 'secret text' not in text
+
+
+def test_a_hard_link_is_not_a_duplicate_copy(tmp_path):
+    import os
+    from tools.dedup import scan_duplicates
+    from safety.sandbox import Sandbox
+    write(tmp_path, {'a.txt': 'same', 'b.txt': 'same'})
+    os.link(tmp_path/'a.txt', tmp_path/'a_link.txt')
+    scan = scan_duplicates(Sandbox(tmp_path), mode='bytes')
+    assert scan['stats']['hard_links'] == 1
+    assert [sorted(g['members']) for g in scan['groups']] == [['a.txt', 'b.txt']]
+
+
+def test_dedup_batch_waits_for_no_other_writer(tmp_path):
+    from agent.file_plans import library_lock
+    from tools.registry import _trash_batch, ToolError, TrashBatch
+    from safety.sandbox import Sandbox
+    write(tmp_path, {'a.txt': 'same', 'b.txt': 'same'})
+    sb = Sandbox(tmp_path)
+    with library_lock(sb):  # another conversation is executing a plan
+        with pytest.raises(ToolError, match='另一项整理'):
+            _trash_batch(TrashBatch(paths=['b.txt'], keeps=['a.txt'], validate=lambda: None), sb, OpLog(sb, 'one'), Confirmer('never'))
+    assert (tmp_path/'b.txt').exists()

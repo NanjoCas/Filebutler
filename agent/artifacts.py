@@ -5,6 +5,7 @@ access: every resolution checks the configured sandbox, symlinks and version.
 """
 import copy
 import hashlib
+import os
 import json
 import logging
 import re
@@ -18,7 +19,24 @@ def signature(path):
     return [s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns]
 
 
+# macOS marks a file whose content lives only in iCloud ("dataless"); reading it
+# triggers a download, possibly large and silent. Content is never read for those.
+SF_DATALESS = 0x40000000
+
+
+class CloudOnly(ValueError):
+    pass
+
+
+def cloud_only(path):
+    try: return bool(getattr(os.stat(path), 'st_flags', 0) & SF_DATALESS)
+    except OSError: return False
+
+
 def digest(path):
+    if cloud_only(path):
+        raise CloudOnly(f'{path.name} 只在 iCloud 云端，没有下载到本机；读取它会触发下载。'
+                        '请告诉用户先在访达里右键“立即下载”，或不处理它')
     h = hashlib.sha256()
     with path.open('rb') as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b''):
