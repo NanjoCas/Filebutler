@@ -34,6 +34,12 @@ def _step_key(step):
     return (step['effect'], step['source'], None if step['effect'] == 'trash' else step['destination'])
 
 
+def _later(receipts, pid):
+    """Executed steps of the task's other plans, which may carry this plan's results on."""
+    return [s for other, r in receipts.items() if other != pid
+            for s in r['payload']['steps'] if s['id'] in r.get('progress', {})]
+
+
 def verify_bound_plans(task, goal_id, condition, sb):
     """file_plan_verified: an explicit X, or every plan locally bound to this goal."""
     from agent.file_plans import verify_plan
@@ -43,7 +49,7 @@ def verify_bound_plans(task, goal_id, condition, sb):
         plan = receipts.get(condition['reference'])
         if not plan:
             return False, '尚无此计划的完整执行回执：'+condition['reference']
-        return verify_plan(plan, sb)
+        return verify_plan(plan, sb, later=_later(receipts, condition['reference']))
     bound = [pid for pid, b in bindings.items() if goal_id in b['goal_ids']]
     done = [pid for pid in bound if pid in receipts]
     if not done:
@@ -51,7 +57,7 @@ def verify_bound_plans(task, goal_id, condition, sb):
         return False, ('已准备的计划尚未执行完成：'+'、'.join(waiting[:3]) if waiting
                        else '本目标尚无已执行的文件计划')
     for pid in done:
-        ok, detail = verify_plan(receipts[pid], sb)
+        ok, detail = verify_plan(receipts[pid], sb, later=_later(receipts, pid))
         if not ok: return False, detail
     # A started plan that stopped midway must be finished by a later bound plan.
     covered = {_step_key(s) for pid in done for s in receipts[pid]['payload']['steps']}

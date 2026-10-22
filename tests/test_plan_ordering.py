@@ -173,3 +173,29 @@ def test_resume_after_first_step_of_a_chain(tmp_path, monkeypatch):
     new = runtime(tmp_path, run='two')
     assert execute(new, plan['id'], OpLog(new.sb, 'two'), Confirmer('never')).startswith('OK')
     assert (tmp_path/'B.txt').read_text() == 'a' and (tmp_path/'C.txt').read_text() == 'b'
+
+
+def _two_plan_swap(tmp_path):
+    from agent.task import TaskSubmission
+    from tests.test_task_runtime_v2 import spec
+    write(tmp_path, {'a.txt': 'a', 'b.txt': 'b'})
+    r = runtime(tmp_path)
+    r.current = r.store.submit(TaskSubmission.model_validate(spec(('互换', [dict(kind='file_plan_verified')]),
+        read_roots=['.'], write_roots=['.'], allowed_effects=['rename'])), '互换', 'one')
+    run(r, [dict(effect='rename', source='a.txt', destination='a.txt.swap-tmp')])
+    run(r, [dict(effect='rename', source='b.txt', destination='a.txt'),
+            dict(effect='rename', source='a.txt.swap-tmp', destination='b.txt')])
+    return r
+
+
+def test_later_plan_of_the_task_carries_an_earlier_result_on(tmp_path):
+    # Live round 17: a swap in two plans was judged unfinished at the temporary name.
+    r = _two_plan_swap(tmp_path)
+    assert (tmp_path/'a.txt').read_text() == 'b' and (tmp_path/'b.txt').read_text() == 'a'
+    assert all(c['passed'] for c in verify_task(r.current, r.sb))
+
+
+def test_handoff_does_not_excuse_a_move_outside_the_plans(tmp_path):
+    r = _two_plan_swap(tmp_path)
+    (tmp_path/'b.txt').rename(tmp_path/'elsewhere.txt')
+    assert not verify_task(r.current, r.sb)[0]['passed']

@@ -969,7 +969,23 @@ def _binding(task, plan):
         goal_ids=plan['payload']['goal_ids'], revision=plan['payload']['revision'], pending=[]))
 
 
-def verify_plan(plan, sb, partial=False):
+def _handed_on(plan, step, later):
+    """A later executed plan of the same task picked this step's result up and
+    moved it on. Its snapshot equals the state this step left (full stat, so an
+    earlier plan that once held the same inode there does not qualify; content
+    for a file), and that plan's own verification covers the final place."""
+    progress = plan['progress'][step['id']]
+    for x in later:
+        if x['effect'] not in {'move', 'rename'} or x['source'] != step['destination']: continue
+        snap = x['snapshot']
+        if snap['stat'] != progress['stat']: continue
+        if step['snapshot'] and step['snapshot']['kind'] == 'file' and snap.get('sha256') != step['snapshot']['sha256']: continue
+        return True
+    return False
+
+
+def verify_plan(plan, sb, partial=False, later=()):
+    """``later``: executed steps of the task's other plans; see _handed_on."""
     sel = plan['payload'].get('empty_selection')
     if sel:
         count = _selection_count(sb, sel)
@@ -978,10 +994,15 @@ def verify_plan(plan, sb, partial=False):
     if not partial and (plan['status'] not in {'completed','executing'} or len(plan['progress']) != len(plan['payload']['steps'])):
         return False, '计划尚未全部执行：'+plan['id']
     done = [s for s in plan['payload']['steps'] if s['id'] in plan['progress']]
-    refilled = [sb.path(s['destination'], exact=True) for s in done if s['effect'] != 'trash']
+    refilled = [sb.path(x['destination'], exact=True) for x in [*done, *later] if x['effect'] != 'trash']
     for s in done:
         if s['effect'] == 'trash' and (sb.root/'.trash').is_symlink():
             raise ValueError('回收区不能是符号链接')
+        if s['effect'] != 'trash' and _handed_on(plan, s, later):
+            if s['source'] and _visible(sb, s['source']).exists() and not any(
+                    _same_object(_visible(sb, s['source']), d) for d in refilled):
+                return False, '原位置仍存在：'+s['source']
+            continue
         target = sb.path(s['destination'], exact=True)
         if s['effect'] == 'create':
             if not _visible(sb, s['destination']).is_dir() or signature(target)[:2] != plan['progress'][s['id']]['stat'][:2]:
