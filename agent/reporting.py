@@ -10,17 +10,31 @@ STATE_TEXT = {'completed':'本地核验通过', 'partial':'尚未全部完成', 
               'waiting_input':'等待补充信息', 'cancelled':'任务已取消'}
 
 
+def _clause(text, limit=180):
+    """One clause without trailing punctuation, so joining never yields "。。"."""
+    text = text.strip().rstrip('。.；;，, ')
+    return text if len(text) <= limit else text[:limit].rstrip() + '…'
+
+
 def incomplete_reason(task):
-    reasons=[]
+    """尚未全部完成。原因：one line per unmet part, its local reason or the model's declared one."""
+    lines=[]
     for g in task.get('checks',[]):
         if not g['passed']:
-            details='；'.join(c['detail'] for c in g['conditions'] if not c['passed'] and c['detail'])
-            reasons.append(f"{g['description'][:70]}：{details[:180] or '完成条件未满足'}")
-    reasons += task.get('constraint_failures', [])
+            details='；'.join(_clause(c['detail'].replace('模型声明未完成：', '模型说明：'), 120)
+                            for c in g['conditions'] if not c['passed'] and c['detail'])
+            lines.append(f"- {_clause(g['description'], 70)}：{details or '完成条件未满足'}")
+    lines += ['- '+_clause(f) for f in task.get('constraint_failures', [])]
     errors=[o for o in task.get('observations',[]) if o['status']!='ok']
-    if errors and reasons:
-        reasons.append(errors[-1]['tool']+'：'+(errors[-1].get('summary') or errors[-1].get('error_code') or '调用未完成')[:180])
-    return '；'.join(reasons[:3]) or '尚缺少可核验的完成依据'
+    if errors and lines:
+        lines.append('- 最近一次失败的调用 '+errors[-1]['tool']+'：'+_clause(errors[-1].get('summary') or errors[-1].get('error_code') or '调用未完成'))
+    return '尚未全部完成。原因：\n'+'\n'.join(lines[:5]) if lines else '尚未全部完成。原因：尚缺少可核验的完成依据。'
+
+
+def _all_explained(task):
+    """The model declared a reason for every unmet part (finish_task.unfinished)."""
+    unmet = [g for g in task.get('checks', []) if not g['passed']]
+    return bool(unmet) and all(any(c['kind'] == 'declared_unfinished' for c in g['conditions']) for g in unmet)
 
 
 def build_report(task, model_summary, records, reply=''):
@@ -59,7 +73,7 @@ def build_report(task, model_summary, records, reply=''):
     if operations:
         summary = '；'.join(actions)+'。'
         if state=='completed': summary += '\n\n本地核验通过，可撤销本轮文件操作。'
-        elif state=='partial': summary += '\n\n尚未全部完成。原因：'+incomplete_reason(task)+'。'
+        elif state=='partial': summary += '\n\n'+incomplete_reason(task)
         elif state=='needs_review': summary += '\n\n文件操作已执行，部分结果待核实；请查看核验详情。'
         else: summary += '\n\n'+STATE_TEXT.get(state,state)+'。'
     else:
@@ -67,32 +81,39 @@ def build_report(task, model_summary, records, reply=''):
         # paraphrase of a locally generated table.
         if records:
             summary = '\n\n'.join(r['text'] for r in records)
-            if state=='partial': summary = '尚未全部完成。原因：'+incomplete_reason(task)+'。'
+            if state=='partial': summary = incomplete_reason(task)
         elif state=='completed':
             facts = [c['detail'] for g in task['checks'] for c in g['conditions'] if c['detail']]
             summary = '本地核验通过。'+(' '.join(facts) if facts else '')
-        elif state=='partial': summary = '尚未全部完成。原因：'+incomplete_reason(task)+'。'
+        elif state=='partial': summary = incomplete_reason(task)
         else: summary = model_summary or STATE_TEXT.get(state,state)+'。'
         if state=='needs_review': summary += '\n\n结果待核实，可在“任务与复核”中查看依据。'
         if state=='waiting_input' and task.get('allowed_effects') and not task.get('operation_history'):
             summary += '\n\n本轮未执行任何文件操作，等待你的决定。'
     # What the user asked to be told, stated by the model; local facts lead.
-    if reply.strip() and reply.strip() not in summary:
-        summary += '\n\n' + reply.strip()
-    if state in {'partial', 'waiting_input'} and model_summary and not reply.strip() and model_summary[:1200] not in summary:
-        summary += '\n\n补充原因（模型说明）：'+model_summary[:1200]
+    # Main answer: local facts, unmet parts one line each, then the model's reply.
+    reply = reply.strip()
+    if reply and reply not in summary:
+        summary += '\n\n' + (reply if len(reply) <= 1500 else reply[:1500] + '…')
+    if state in {'partial', 'waiting_input'} and model_summary and not reply and model_summary[:1200] not in summary:
+        summary += '\n\n补充原因（模型说明）：'+_clause(model_summary, 1200)+'。'
     # Unresolved blockers (control rejections, plan failures and failed writes)
     # are current reasons. A failed write stays visible even when the task is
-    # otherwise complete, until the same call or object later succeeds.
+    # otherwise complete, until the same call or object later succeeds. When the
+    # model declared a reason for every unmet part, they are process detail.
     from tools.registry import TOOLS
     current = open_blockers(task)
     shown = [b for b in current if state != 'completed']
     if shown:
-        summary += '\n\n阻塞原因：'+'；'.join(b['message'] for b in shown[-3:])
+        text = '；'.join(_clause(b['message'], 300) for b in shown[-3:]) + '。'
+        if _all_explained(task):
+            sections.append(dict(title='阻塞原因', markdown=text))
+        else:
+            summary += '\n\n阻塞原因：' + text
     failed = [b for b in current if b not in shown and TOOLS.get(b.get('source')) and TOOLS[b['source']].writes]
     if failed:
-        reasons='；'.join(b['source']+'：'+b['message'][:180] for b in failed[:2])
-        if reasons not in summary:summary+='\n\n文件操作未成功。原因：'+reasons+'。'
+        reasons='；'.join(b['source']+'：'+_clause(b['message']) for b in failed[:2])
+        if reasons not in summary:summary+='\n\n文件操作未成功。原因：'+reasons+'。'  # always in the answer
     if task['unresolved_questions']:
         summary += '\n\n待确认：'+'；'.join(task['unresolved_questions'])
     report = dict(version=1, state=state, summary=summary, sections=sections)
