@@ -58,7 +58,7 @@ class PrepareFilePlan(StrictModel):
     classification_plan_id: str | None = Field(None, description='已有分类计划的精确 P 标识；本地展开全部来源和目标，不必抄写文件路径')
     goal_ids: list[str] = Field(default_factory=list, max_length=30,
         description='已有任务中此计划服务的目标；可省略，本地按完成条件逐项归属，无法确定时才要求提供')
-    task_id: str | None = Field(None, description='续做近期任务时填写其 ID，沿用原限制；本轮已登记任务时留空')
+    task_id: str | None = Field(None, description='仅在续做以前的任务时填写，复制完整 ID，沿用原限制；本轮已调用 start_task 时不要填')
     semantic_review: bool = Field(False, description='分类或相关性等语义结论须为 true，本地只能证明文件操作')
 
 
