@@ -42,6 +42,14 @@ function bindReferences(container) {
     if (!ref.dataset.evidence) ref.textContent = shownName(ref.dataset.fileName);
     if (ref.dataset.fileStatus === 'trash') ref.title += '（已回收，可预览）';
   });
+  // A link to a name with hidden characters shows that real name, marked; the model's
+  // own label (often an escaped form of the hidden character) would hide what the name really is.
+  container.querySelectorAll('.file-reference[data-file-path]').forEach(ref => {
+    const path = ref.dataset.filePath, name = path.split("/").pop();
+    HIDDEN_CHARS.lastIndex = 0;
+    if (HIDDEN_CHARS.test(path)) { if (!ref.dataset.fileName) ref.textContent = shownName(name); ref.title = `查看 ${shownName(path)}`; }
+    HIDDEN_CHARS.lastIndex = 0;
+  });
   container.addEventListener("click", (event) => {
     const ref = event.target.closest(".file-reference[data-file-path]");
     if (!ref || !container.contains(ref)) return;
