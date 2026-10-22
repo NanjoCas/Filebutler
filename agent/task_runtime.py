@@ -872,6 +872,10 @@ class TaskRuntime:
                     self._producers, self._attributions = tool.produces, {}
                 try: outcome = registry.dispatch_result(name, raw, sb, oplog, confirmer)
                 finally: self._producers = ()
+                if self.protocol == 'v3' and outcome.status == 'ok' and '下一页用 page=' in outcome.text:
+                    # logs/20261021-230636: six pages listed one by one before a selection plan.
+                    outcome.text += ('\n批量移动、平铺或回收不必翻完所有页：prepare_file_plan 的 selection 由本地展开全部文件，'
+                                     '预检时检查重名；只需要数量时用 inventory_files。')
                 attributions, self._attributions = self._attributions or {}, None
                 if tool and tool.writes and oplog and oplog.path.exists():
                     for line in oplog.path.read_text().splitlines()[len(before):]:
