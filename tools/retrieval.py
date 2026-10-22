@@ -170,6 +170,12 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
               f"范围外：跳过非PDF文件={stats['non_pdf']}（不是无文字层PDF），跳过符号链接={stats['symlinks']}\n"
               f"有词项重合 {stats.get('matched', 0)} 篇，候选 {len(hits)} 篇；低分不证明主题不相关，不能保证找全。")
     artifacts = getattr(sb, 'artifacts', None)
+    from agent.sensitive import reasons, granted
+    def withheld(hit):
+        """Why this hit's text is not shown: a sensitive file the user has not granted."""
+        text = '\n'.join(sb._paper_index.cache[sb.path(hit['path'])][1].pages)
+        why = reasons(hit['path'], text)
+        return '；'.join(why) if why and not granted(sb, hit['path']) else ''
     if artifacts and a.view == 'evidence':
         blocks = []
         # Page bounded batches; top_k is the retained candidate count, not a
@@ -182,6 +188,10 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
         for index, hit in enumerate(shown_hits, (a.page-1)*page_size+1):
             p = sb.path(hit['path'])
             fid = artifacts.register(sb.rel(p))
+            why = withheld(hit)
+            if why:
+                blocks.append(f"{index}. file:{fid} 名称={p.stem[:65]}\n[敏感文件：{why}；未显示内容，读取需用户授权]")
+                continue
             if tuple(artifacts.data['files'][fid]['stat']) != sb._paper_index.cache[p][0]:
                 raise ToolError('检索期间文件变化，请重新查询后再引用')
             snippet = hit['snippet'][:min(240, allowance)]
@@ -199,6 +209,10 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
         blocks.append(f"{i}. {json.dumps(h['path'], ensure_ascii=False)} · score={h['score']:.4f} · "
                       f"page={h['page']} offset={h['offset']}")
         if a.view == "detail":
+            why = withheld(h)
+            if why:
+                blocks[-1] += f"\n[敏感文件：{why}；未显示内容，读取需用户授权]"
+                continue
             escaped = html.escape(h['snippet'], quote=False)
             blocks[-1] += f"\n<file_content>{escaped}</file_content>"
     budget = min(1700, 2000 - len(header) - 100)

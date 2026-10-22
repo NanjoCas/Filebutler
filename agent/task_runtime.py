@@ -226,6 +226,10 @@ class TaskRuntime:
         # Files the user agreed to overwrite (user decision 2026-10-22: a same-name
         # target is the user's call). An option grants exactly the targets its actions
         # overwrite; a free-text reply grants the question's subject, and the card confirms.
+        # Sensitive files the user agreed to have read (decision 2026-10-22: per file,
+        # this task only). Only a chosen option grants it: a read has no confirmation
+        # card to catch a misread free-text reply.
+        self.read_grants = list(chosen.get('read_grant') or [])
         if chosen:
             self.overwrite_consent = {t: 'option' for t in chosen.get('overwrite') or []}
         else:
@@ -336,6 +340,8 @@ class TaskRuntime:
                 '（选项 actions 同时写 trash 旧文件和 move 新文件到原名，旧文件移入回收区，可撤销）；未经用户选择的覆盖会被拒绝。'
                 '选项必须是工具能做到的：隐藏文件和隐藏文件夹不能移动或读取，锁文件不能移动或回收，隐藏文件只能随所在文件夹一起回收，'
                 '回收区不能由工具清空（只能由用户在访达中手动清空）。'
+                '敏感文件（凭据、证件、合同、财务、医疗，或内容含密钥、身份证号、银行卡号）默认不读取内容，'
+                '只能按文件名整理；确需内容时 ask_user，同意的选项 actions 写 read 该文件，授权只在本任务内有效。'
                 '每个选项写 actions（move/rename/trash/read 及路径，不做操作写空列表），本地会在用户看到前检查，做不到的退回给你改写；'
                 '用户选中的选项会约束下一轮计划，不能超出它声明的操作。\n'
                 '回收文件夹时，本地按其中剩下的内容分级：可见文件须由同一计划先移走（可在同一计划内先移出再回收，'
@@ -378,6 +384,9 @@ class TaskRuntime:
             why, replaced = self._overwrite_check(actions, sb)
             if why: problems.append(f"选项 {c['key']}（{c['label'][:30]}）：{why}")
             if replaced: c['overwrite'] = replaced
+            reads = [self._resolve(a['path']) for a in actions if a['effect'] == 'read']
+            sensitive_reads = [r for r in reads if self._is_sensitive(r, sb)]
+            if sensitive_reads: c['read_grant'] = sensitive_reads
             if hidden:
                 c['consent'] = 'include_hidden'
                 c['warn'] = '、'.join(Path(h).name for h in hidden[:3]) + ('等' if len(hidden) > 3 else '')
@@ -392,6 +401,17 @@ class TaskRuntime:
                                 detail='', consent='include_hidden', local=True, warn=names,
                                 actions=None))  # consent only: it does not bound the other operations
         return choices
+
+    def sensitive_grants(self):
+        """Granted sensitive paths for the current task; a fresh grant is kept with the task."""
+        grants = set(self.read_grants)
+        if self.current is not None:
+            kept = set(self.current.get('sensitive_grants', []))
+            if grants - kept:
+                self.current['sensitive_grants'] = sorted(kept | grants)
+                self.store.checkpoint(self.current)
+            grants |= kept
+        return grants
 
     def _overwrite_check(self, actions, sb):
         """(why not, files this option overwrites). A move onto an existing file is an
@@ -419,6 +439,11 @@ class TaskRuntime:
                 return (f'{rel} 已有同名文件。保留两份请改用新名字（如 {free_name(sb, rel)}）；'
                         f'覆盖请在同一选项里同时 trash {rel}'), []
         return None, replaced
+
+    def _is_sensitive(self, rel, sb):
+        from agent.sensitive import file_reasons
+        try: return bool(sb.path(rel, exact=True).is_file() and file_reasons(sb, rel))
+        except Exception: return False
 
     def _action_check(self, action, moved, sb):
         """(why the tools cannot do it or None, hidden files it would recycle)."""
@@ -804,7 +829,9 @@ class TaskRuntime:
                 for c in choices:
                     lines.append(f"{c['key']}. {c['label']}" + (f"——{c['detail']}" if c['detail'] else '')
                                  + (f"　⚠ 会一起删除你看不到的 {c['warn']}" if c.get('warn') else '')
-                                 + (f"　⚠ 覆盖 {'、'.join(c['overwrite'])}，旧文件移入回收区（可撤销）" if c.get('overwrite') else ''))
+                                 + (f"　⚠ 覆盖 {'、'.join(c['overwrite'])}，旧文件移入回收区（可撤销）" if c.get('overwrite') else '')
+                                 + (f"　⚠ 授权读取敏感文件 {'、'.join(c['read_grant'])} 的内容并发送给模型（仅本任务）"
+                                    if c.get('read_grant') else ''))
                 lines += self._sensitive_lines(args.subject, sb)
                 if any(c.get('local') for c in choices):
                     lines += ['（最后一项由本地根据文件夹内容补充。）']
