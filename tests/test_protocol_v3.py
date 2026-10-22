@@ -1478,8 +1478,8 @@ def test_the_chosen_scope_must_actually_be_done(tmp_path):
 
 
 # ============================================================================ a target folder that does not exist
-# User decision 2026-10-22 (after E4): use a folder of the same meaning if one exists;
-# otherwise ask where to create it, or cancel. Said in the plan result, where the model
+# User decision 2026-10-22 (after E4): ask before creating a target folder the user did
+# not ask for: a folder of similar meaning (to confirm it is meant), where to create it, or cancel. Said in the plan result, where the model
 # decides, so it costs nothing in the system prompt.
 
 NEW_FOLDER = '本计划会新建文件夹'
@@ -1491,7 +1491,7 @@ def test_a_plan_creating_a_target_folder_carries_the_rule(tmp_path):
     _, client = session.run('把 a.txt 移到 Big', [step(start([dict(kind='organize', description='移动')]), call(
         'prepare_file_plan', dict(description='移动', actions=[dict(effect='move', source='Inbox/a.txt', destination='Big/sub/a.txt')])))])
     text = client.calls('prepare_file_plan')[0]['text']
-    assert f'{NEW_FOLDER}：Big。' in text and '意思相同或相近' in text and 'ask_user' in text and '取消' in text
+    assert f'{NEW_FOLDER}：Big。' in text and '是否指它' in text and 'ask_user' in text and '取消' in text
     assert not (tmp_path / 'Big').exists()
 
 
