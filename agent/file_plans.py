@@ -381,7 +381,20 @@ def prepare(runtime, args):
             if inside:
                 raise ValueError(f"本计划移动或回收的文件夹 {row['source']} 内还有计划目标（如 {_names(inside)}），"
                                  '请拆分阶段：先执行这一个计划，再为后续操作准备新计划')
-    steps = _order(sb, steps)
+    try:
+        steps = _order(sb, steps)
+    except ValueError as exc:
+        if getattr(runtime, 'protocol', 'v2') != 'v3' or not str(exc).startswith('目标已存在'): raise
+        dst = str(exc).split('：', 1)[1]
+        raise ValueError(f"{exc}。同名文件的处理由用户决定：用户没交代时先 ask_user，给三个选项——"
+                         f"保留两份（新文件改名为 {free_name(sb, dst, [s['destination'] for s in steps if s['destination']])}）、"
+                         '不移动、覆盖（选项 actions 同时写 trash 旧文件和 move 新文件到原名；旧文件移入回收区，可撤销）') from exc
+    replaced = overwrites(sb, steps)
+    agreed = getattr(runtime, 'overwrite_consent', {})
+    refused = [d for d in replaced if not any(_key(d) == _key(runtime._resolve(c)) for c in agreed)]
+    if refused:
+        raise ValueError(f"此计划会覆盖 {_names(refused)}：旧文件移入回收区，再放入新文件。覆盖必须由用户选择："
+                         '先调用 ask_user（subject 填被覆盖的文件），给出保留两份、不移动、覆盖三个选项；不要自行决定')
     steps = list(dirs.values()) + steps
     for i, row in enumerate(steps): row['id'] = f'{pid}:{i}'
     producers = ['file_plans'] + (['classification_plans'] if classification else [])
@@ -409,6 +422,9 @@ def prepare(runtime, args):
     payload = dict(task_id=task['id'], revision=task['revision'], goal_ids=goal_ids,
                    description=args.description, steps=steps, classification=classification)
     if additions: payload['scope_additions'] = additions
+    if replaced:
+        payload['overwrites'] = [dict(target=d, consent_source=next(v for c, v in agreed.items()
+                                      if _key(d) == _key(runtime._resolve(c)))) for d in replaced]
     plan = dict(id=pid, payload=payload, digest=checksum(payload), status='ready', progress={}, error='')
     _validate(runtime, plan)
     runtime.store.save_file_plan(plan)
@@ -577,6 +593,26 @@ def _order(sb, steps):
                              '请分两次：先只把其中一个改成临时名并执行，再准备下一个计划')
         order.append(ready); done.add(ready)
     return [steps[i] for i in order]
+
+
+def free_name(sb, rel, taken=()):
+    """The first "name (n).ext" beside rel that is free on disk and in this plan."""
+    path = Path(rel)
+    keys = {_key(t) for t in taken}
+    for n in range(1, 1000):
+        candidate = path.with_name(f'{path.stem} ({n}){path.suffix}').as_posix()
+        target = sb.path(candidate, exact=True)
+        if not target.exists() and not target.is_symlink() and _key(candidate) not in keys:
+            return candidate
+    raise ValueError('找不到可用的新名字：'+rel)
+
+
+def overwrites(sb, steps):
+    """Targets this plan overwrites: a file recycled here and another put in its place."""
+    trashed = [sb.path(s['source'], exact=True) for s in steps
+               if s['effect'] == 'trash' and s['snapshot']['kind'] == 'file']
+    return [s['destination'] for s in steps if s['effect'] in {'move', 'rename'}
+            and any(_same_object(sb.path(s['destination'], exact=True), t) for t in trashed)]
 
 
 def _selection_count(sb, sel):
@@ -844,6 +880,8 @@ def execute(runtime, plan_id, oplog, confirmer):
                 {k:s[k] for k in ('effect','source','destination')} for s in remaining])
             if plan['payload'].get('scope_additions'):
                 review['scope_additions'] = plan['payload']['scope_additions']
+            if plan['payload'].get('overwrites'):
+                review['overwrites'] = plan['payload']['overwrites']
             trees = [s for s in remaining if s['effect'] == 'trash' and s['snapshot'] and s['snapshot']['kind'] == 'directory_tree'
                      and (s['snapshot']['metadata'] or s['snapshot']['hidden'])]
             if trees:

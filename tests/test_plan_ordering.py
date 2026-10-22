@@ -51,10 +51,16 @@ def test_vacate_a_name_then_fill_it(tmp_path):
 
 
 def test_recycle_the_occupant_then_take_its_name(tmp_path):
+    # An overwrite: refused until the user chose it (decision 2026-10-22).
     write(tmp_path, {'report.txt': 'draft', 'final.txt': 'final'})
     r = runtime(tmp_path)
-    run(r, [dict(effect='rename', source='final.txt', destination='report.txt'),
-            dict(effect='trash', source='report.txt')])
+    actions = [dict(effect='rename', source='final.txt', destination='report.txt'), dict(effect='trash', source='report.txt')]
+    with pytest.raises(ValueError, match='覆盖必须由用户选择'):
+        prepare(r, proposal(actions=actions))
+    assert (tmp_path/'report.txt').read_text() == 'draft'
+    r.overwrite_consent = {'report.txt': 'option'}
+    plan = run(r, actions)
+    assert plan['payload']['overwrites'] == [dict(target='report.txt', consent_source='option')]
     assert (tmp_path/'report.txt').read_text() == 'final' and not (tmp_path/'final.txt').exists()
     undo(r.sb, 'one')
     assert (tmp_path/'report.txt').read_text() == 'draft' and (tmp_path/'final.txt').read_text() == 'final'

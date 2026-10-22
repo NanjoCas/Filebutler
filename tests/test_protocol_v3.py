@@ -1311,3 +1311,100 @@ def test_a_reason_the_model_declared_is_stated_once_per_part_and_blockers_move_t
 def test_a_blocker_no_one_explained_stays_in_the_answer():
     main = build_report(report_task(declared=False), '', [], reply='已平铺。')['summary']
     assert '- 回收空文件夹：目录不为空：文献' in main and '阻塞原因：' + BLOCK + '。' in main
+
+
+# ============================================================================ same-name targets
+# User decision 2026-10-22: a same-name target is the user's call. Keep both
+# (local suggests the name), do not move, or overwrite (the old file goes to the
+# recycle area, undoable). An overwrite needs the user's choice; the option's
+# actions decide exactly which files it may overwrite.
+
+CLASH_MOVE = dict(description='移动', actions=[dict(effect='move', source='Inbox/a.txt', destination='Archive')])
+OVERWRITE_A = dict(description='覆盖', actions=[dict(effect='trash', source='Archive/a.txt'),
+                                              dict(effect='move', source='Inbox/a.txt', destination='Archive/a.txt')])
+ASK_CLASH = dict(question='Archive 里已有 a.txt，怎么处理？', reason='conflict', subject=['Archive/a.txt'], options=[
+    dict(label='保留两份', actions=[dict(effect='move', path='Inbox/a.txt', destination='Archive/a (1).txt')]),
+    dict(label='不移动', actions=[]),
+    dict(label='覆盖', actions=[dict(effect='trash', path='Archive/a.txt'),
+                              dict(effect='move', path='Inbox/a.txt', destination='Archive/a.txt')])])
+
+
+def clash_fixture(root):
+    files_fixture(root)
+    (root / 'Archive/a.txt').write_text('older archived a')
+
+
+def test_occupied_target_points_to_asking_with_a_free_name(tmp_path):
+    clash_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('把 Inbox/a.txt 移到 Archive', [step(start([dict(kind='organize', description='移动')]),
+                                                              call('prepare_file_plan', CLASH_MOVE))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert '目标已存在' in text and 'ask_user' in text and 'Archive/a (1).txt' in text
+    assert (tmp_path / 'Archive/a.txt').read_text() == 'older archived a'
+
+
+def test_overwrite_without_the_users_choice_is_refused(tmp_path):
+    clash_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('把 Inbox/a.txt 移到 Archive', [step(start([dict(kind='organize', description='移动')]),
+                                                              call('prepare_file_plan', OVERWRITE_A))])
+    assert '覆盖必须由用户选择' in client.calls('prepare_file_plan')[0]['text']
+    assert (tmp_path / 'Archive/a.txt').read_text() == 'older archived a' and not session.approvals
+
+
+def test_option_moving_onto_a_file_must_recycle_it_in_the_same_option(tmp_path):
+    clash_fixture(tmp_path)
+    session = Session(tmp_path)
+    bad = dict(ASK_CLASH, options=[dict(label='直接放进去', actions=[dict(effect='move', path='Inbox/a.txt', destination='Archive')]),
+                                   dict(label='不移动', actions=[])])
+    _, client = session.run('移动', [step(call('ask_user', bad))])
+    text = client.calls('ask_user')[0]['text']
+    assert 'Archive/a.txt 已有同名文件' in text and 'Archive/a (1).txt' in text
+
+
+def test_choosing_overwrite_replaces_the_file_and_undo_restores_both(tmp_path):
+    clash_fixture(tmp_path)
+    session = Session(tmp_path)
+    asked, _ = session.run('把 Inbox/a.txt 移到 Archive', [step(call('ask_user', ASK_CLASH))])
+    assert asked.report['choices'][2]['overwrite'] == ['Archive/a.txt'] and '⚠ 覆盖 Archive/a.txt' in asked.final
+    result, client = session.run('C', [step(start([dict(kind='organize', description='覆盖')]),
+                                            call('prepare_file_plan', OVERWRITE_A, alias=PLAN)), execute(), finish()])
+    assert errors(client) == [] and result.stop_reason == 'done'
+    assert (tmp_path / 'Archive/a.txt').read_text() == 'alpha' and not (tmp_path / 'Inbox/a.txt').exists()
+    [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
+    from web_confirm import build_confirmation
+    notes = build_confirmation(request, H.Sandbox(tmp_path))['notes']
+    assert any(n.startswith('⚠ 覆盖 Archive/a.txt（你已选择）') for n in notes)
+    from safety.oplog import undo
+    undo(H.Sandbox(tmp_path), f'v3_{session.turn}')
+    assert (tmp_path / 'Archive/a.txt').read_text() == 'older archived a' and (tmp_path / 'Inbox/a.txt').read_text() == 'alpha'
+
+
+def test_keep_both_choice_grants_no_overwrite(tmp_path):
+    clash_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('移动', [step(call('ask_user', ASK_CLASH))])
+    _, client = session.run('A', [step(start([dict(kind='organize', description='移动')]),
+                                       call('prepare_file_plan', OVERWRITE_A))])
+    assert '计划超出用户所选选项 A' in client.calls('prepare_file_plan')[0]['text']  # the option bounds it first
+    assert (tmp_path / 'Archive/a.txt').read_text() == 'older archived a'
+    session.run('移动', [step(call('ask_user', ASK_CLASH))])
+    result, client = session.run('A', [step(start([dict(kind='organize', description='保留两份')]),
+                                            call('prepare_file_plan', dict(description='保留两份', actions=[
+        dict(effect='move', source='Inbox/a.txt', destination='Archive/a (1).txt')]), alias=PLAN2)), execute(PLAN2), finish()])
+    assert errors(client) == [], errors(client)
+    assert (tmp_path / 'Archive/a (1).txt').read_text() == 'alpha' and (tmp_path / 'Archive/a.txt').read_text() == 'older archived a'
+
+
+def test_a_free_text_answer_to_overwrite_is_confirmed_on_the_card(tmp_path):
+    clash_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('移动', [step(call('ask_user', ASK_CLASH))])
+    result, client = session.run('覆盖吧', [step(start([dict(kind='organize', description='覆盖')]),
+                                              call('prepare_file_plan', OVERWRITE_A, alias=PLAN)), execute(), finish()])
+    assert errors(client) == [] and (tmp_path / 'Archive/a.txt').read_text() == 'alpha'
+    [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
+    from web_confirm import build_confirmation
+    notes = build_confirmation(request, H.Sandbox(tmp_path))['notes']
+    assert any(n.startswith('⚠ 你在对话中以文字回复，请在此确认：覆盖 Archive/a.txt') for n in notes)
