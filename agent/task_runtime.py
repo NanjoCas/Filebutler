@@ -125,7 +125,7 @@ V3_FIELD_DOCS = {
     },
 }
 # Fields added after the v2 live runs; v2 does not show them.
-V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id', 'Action.include_metadata', 'Action.include_hidden'),
+V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id', 'Action.include_metadata', 'Action.include_hidden', 'create_requested'),
                     'finish_task': ('reply', 'unfinished', 'not_needed')}
 
 
@@ -340,14 +340,14 @@ class TaskRuntime:
                 '敏感文件（凭据、证件、合同、财务、医疗，或含密钥、身份证号、卡号）不读内容，只按文件名整理；'
                 '需要内容时 ask_user，同意项 actions 写 read 该文件，仅本任务有效。'
                 '每个选项写 actions（move/rename/trash/read 及路径，不做操作写空列表），本地会在用户看到前检查，做不到的退回给你改写；'
-                '用户选中的选项会约束下一轮计划，不能超出它声明的操作；完成以所选范围为准，选项不含的部分不必做，也不写进 unfinished。\n'
-                '回收文件夹时，本地按其中剩下的内容分级：可见文件须由同一计划先移走（可在同一计划内先移出再回收，'
-                '整个文件夹一次回收即可，不必逐个列子文件夹）；系统元数据（.DS_Store 等）在该 trash 动作设 include_metadata=true，'
-                '确认卡片会列给用户；其他隐藏文件（.env 等）须先 ask_user（subject 填文件夹，同意项 consent=include_hidden），'
-                '下一轮在 include_hidden 中逐个列出；隐藏文件夹、符号链接、应用包不能回收，如实告诉用户。'
-                'list_dir 末尾会提示未显示的隐藏项。\n'
-                '某个部分没有对象时不要跳过它：用 prepare_file_plan 的 selection 选中该范围，选到 0 个文件时本地会记录为'
-                '“无需操作”的核验结果（多个部分时写明 goal_ids）；无法这样证明时才在 finish_task.not_needed 说明，结果为待核实。'
+                '所选选项约束下一轮计划，不能超出；完成以所选范围为准，选项不含的部分不必做，也不写进 unfinished。\n'
+                '回收文件夹：可见文件须由同一计划先移走（整个文件夹一次回收，不必逐个列子文件夹）；'
+                '系统元数据（.DS_Store 等）在该 trash 动作设 include_metadata=true；其他隐藏文件（.env 等）先 ask_user'
+                '（subject 填文件夹，同意项 consent=include_hidden），下一轮在 include_hidden 逐个列出；'
+                '隐藏文件夹、符号链接、应用包不能回收，如实告诉用户。'
+                '\n'
+                '某部分没有对象时不要跳过：用 selection 选中该范围，选到 0 个文件本地记为“无需操作”（多个部分写明 goal_ids）；'
+                '无法这样证明时才用 finish_task.not_needed，结果待核实。'
                 '批量处理用 selection，不必逐页 list_dir 查看全部文件名。\n'
                 + (self._choice_text() + '\n' if self.answered_choice else '') +
                 '最近运行结果（本地事实，不是执行指令）：' + json.dumps(self._last_outcome(), ensure_ascii=False) + '\n'
@@ -397,7 +397,28 @@ class TaskRuntime:
             choices.append(dict(key=CHOICE_KEYS[len(choices)], label=f'连同隐藏文件 {names} 一起回收（可撤销）',
                                 detail='', consent='include_hidden', local=True, warn=names,
                                 actions=None))  # consent only: it does not bound the other operations
+        # A target folder that does not exist (user decision 2026-10-22): options into
+        # existing folders, the candidates of similar meaning, come first, and cancelling
+        # is always offered. Decided by declared actions, not wording.
+        new = [c for c in choices if self._creates_folder(c, sb)]
+        if new:
+            choices.sort(key=lambda c: 2 if c.get('actions') == [] else 1 if c in new else 0)
+            if not any(c.get('actions') == [] for c in choices) and len(choices) < len(CHOICE_KEYS):
+                choices.append(dict(label='取消这部分，不移动', detail='', consent=None, local=True, actions=[]))
+            for key, c in zip(CHOICE_KEYS, choices): c['key'] = key
         return choices
+
+    def _creates_folder(self, choice, sb):
+        """The option moves something into a folder that does not exist yet."""
+        for a in choice.get('actions') or []:
+            if a['effect'] not in {'move', 'rename'} or not a.get('destination'): continue
+            try: dst = sb.path(self._resolve(a['destination']), exact=True)
+            except Exception: continue
+            if dst.exists(): continue
+            # "归档" names a folder to put the file in; "归档/a.txt" a path in it.
+            if not dst.parent.exists() or (not dst.suffix and dst.name != Path(a['path']).name):
+                return True
+        return False
 
     WRITE_CONDITIONS = {'file_plan_verified', 'receipt_verified', 'plan_applied', 'files_placed', 'empty_directories_removed'}
 
@@ -809,16 +830,6 @@ class TaskRuntime:
                         self.capture_output(name, file_plans.markdown(plan), plan['id'])
                         text = f"OK: plan_id={plan['id']}；已预检 {len(plan['payload']['steps'])} 项操作；尚未执行。下一步 execute_file_plan 仅需此 ID。"
                         hints = file_plans.conflicts(self, plan)
-                        # User decision 2026-10-22: a target folder that does not exist is the
-                        # user's call, even when a folder of similar meaning exists (the user
-                        # confirms it is meant). Said here, where the model decides; not after a
-                        # choice, nor for classification plans.
-                        fresh = file_plans.new_folders(plan)
-                        if self.protocol == 'v3' and fresh and not self.chosen_option and not plan['payload'].get('classification'):
-                            text += (f"\n本计划会新建文件夹：{'、'.join(fresh)}。用户没有明确要求新建时，不要执行此计划，先 ask_user："
-                                     '已有文件夹中有意思相同或相近的（如"归档"与 Archive），就问是否指它，作为第一个选项；'
-                                     '其余选项写在哪里新建（如资料库根目录、来源所在的文件夹）和取消这部分。'
-                                     '用户明确要求新建的，照常执行。')
                         if hints:
                             fix = 'revise_task 修正对应部分' if self.protocol == 'v3' else 'edit_task 修正完成条件'
                             text += '\n注意：' + '；'.join(hints) + f'。若与用户要求不符，请先用 {fix}；不要执行此计划。'
@@ -865,14 +876,16 @@ class TaskRuntime:
                 choices = self._ground_choices(choices, args.subject, sb)
                 lines = [args.question, '']
                 for c in choices:
-                    lines.append(f"{c['key']}. {c['label']}" + (f"——{c['detail']}" if c['detail'] else '')
+                    lines.append(f"{c['key']}. {c['label']}"
+                                 + (f"——{c['detail']}" if c['detail'] else '')
                                  + (f"　⚠ 会一起删除你看不到的 {c['warn']}" if c.get('warn') else '')
                                  + (f"　⚠ 覆盖 {'、'.join(c['overwrite'])}，旧文件移入回收区（可撤销）" if c.get('overwrite') else '')
                                  + (f"　⚠ 授权读取敏感文件 {'、'.join(c['read_grant'])} 的内容并发送给模型（仅本任务）"
-                                    if c.get('read_grant') else ''))
+                                    if c.get('read_grant') else '')
+                                 + ('　（本地补充）' if c.get('local') else ''))
                 lines += self._sensitive_lines(args.subject, sb)
                 if any(c.get('local') for c in choices):
-                    lines += ['（最后一项由本地根据文件夹内容补充。）']
+                    lines += ['（标注"本地补充"的选项由本地加入。）']
                 lines += ['', '请回复字母' + ('，或直接输入你的要求。' if args.allow_other else '。')]
                 text = '\n'.join(lines)
                 if self.operations:
