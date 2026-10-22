@@ -69,7 +69,9 @@ BLIND3_CASES = [
          expect=dict(turns=[_turn(['done'], ['rename', 'move'], ['项目'])])),
     dict(id='blind3_choice_keep_folder', fixture='blind3_locked', tags=TAGS + ['choice'],
          turns=['把「资料」里的文件都移到「归档」，然后删除「资料」文件夹。',
-                {'choose': ['保留', '不删', '只移', '先移'], 'avoid': ['不移', '不做', '什么都不']}],
+                # Round 21: '保留'/'只移' matched two options every time, so the choice was never pressed.
+                # Narrowed to the option that moves the files and keeps the folder; expectations unchanged.
+                {'choose': ['保留「资料」', '保留资料'], 'avoid': ['只移动', '不动', '什么都不', '先不']}],
          expect=dict(turns=[_turn(['waiting_input'], answer=dict(include_any=[['关闭', '打开', '锁', '占用', '正在使用']])),
                             _turn(['done'], ['move', 'create'], ['资料', '归档'])])),
     dict(id='blind3_plain_move_no_report', fixture='blind3_inbox', tags=TAGS + ['report'],
