@@ -227,3 +227,9 @@ body.resizing iframe { pointer-events: none; }
 .choice-button { border: 1px solid #c9d6cf; border-radius: 8px; padding: 6px 12px; background: #fff; color: #2f4a3d; font-size: 13px; text-align: left; }
 .choice-button:hover { border-color: #356851; color: #356851; }
 .choice-hint { color: #8b948e; font-size: 12px; }
+/* ask_user buttons: the option, then its detail and warnings on a second line. */
+.choice-button { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
+.choice-note { font-size: 11px; color: #8a7a5c; line-height: 1.5; white-space: normal; }
+.choice-local { font-size: 10px; color: #9aa69e; }
+/* Developer mode toggle in the top bar. */
+.dev-toggle[aria-pressed="true"] { background: #24392c; color: #fff; border-color: #24392c; }

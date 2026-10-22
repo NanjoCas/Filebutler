@@ -6,7 +6,9 @@ const CONDITION_NAMES = {path_exists:'路径存在', path_absent:'路径不存�
 function conditionValue(c) {
   return (CONDITION_NAMES[c.kind]||c.kind)+(c.path?' '+c.path:'')+(c.destination?' → '+c.destination:'')
     +(c.extensions?.length?'；后缀：'+c.extensions.join('、'):'')+(c.exclude_paths?.length?'；排除：'+c.exclude_paths.join('、'):'')
-    +(c.evaluation==='execution_fact'?'；仅证明历史执行，不声明当前位置':'')+(c.placement==='preserve_tree'?'；保留相对层级':'')+(c.placement==='mapping'?'；最终路径映射：'+JSON.stringify(c.placements):'')+(c.recursive===false?'；仅当前层':'')+(c.tool?' '+c.tool:'')+(c.reference?' '+c.reference:'');
+    +(c.evaluation==='execution_fact'?'；仅证明历史执行，不声明当前位置':'')+(c.placement==='preserve_tree'?'；保留相对层级':'')+(c.placement==='mapping'?'；按指定路径放置'+(devMode?'：'+JSON.stringify(c.placements):''):'')+(c.recursive===false?'；仅当前层':'')
+    // Tool names and plan/receipt IDs are internal; developer mode shows them.
+    +(devMode&&c.tool?' '+c.tool:'')+(devMode&&c.reference?' '+c.reference:'');
 }
 let taskViewEpoch = 0;
 function taskField(label, value = '') {
@@ -17,9 +19,10 @@ function taskField(label, value = '') {
 function taskValue(field, value) {
   if (field === 'cancelled') return value ? '已取消' : '可继续';
   if (field === 'goals') return value.map(g => g.description + (g.semantic_review ? '（需要复核）' : '')+'\n完成条件：'+g.conditions.map(conditionValue).join('、')).join('\n');
-  if (field === 'constraints') return value.map(c => c.description+'\n适用目标：'+(c.goal_ids?.join('、')||'全部目标')+'\n禁止操作：'+(c.forbidden_effects?.join('、')||'无')+'\n本地检查：'+JSON.stringify(c.rules||[])).join('\n');
+  if (field === 'constraints') return value.map(c => c.description+'\n禁止操作：'+(c.forbidden_effects?.map(e => EFFECT_NAMES[e] || e).join('、')||'无')
+    +(devMode?'\n适用目标：'+(c.goal_ids?.join('、')||'全部目标')+'\n本地检查：'+JSON.stringify(c.rules||[]):'')).join('\n');
   if (field === 'allowed_effects') return value.map(e => EFFECT_NAMES[e] || e).join('、') || '无';
-  if (field === 'policy') return value ? JSON.stringify(value, null, 2) : '默认策略';
+  if (field === 'policy') return !value ? '默认策略' : devMode ? JSON.stringify(value, null, 2) : '已按你的要求设置';
   return value.join('\n') || '无';
 }
 async function showTasks() {
@@ -34,19 +37,20 @@ async function showTasks() {
     if (!items.length) body.append(node('p', '', '此对话尚未登记任务。'));
     for (const task of items) {
       const card = node('section', 'task-card');
-      card.append(node('h3', '', `${TASK_STATES[task.status] || task.status} · 版本 ${task.revision}`));
-      if (task.status==='completed') card.append(node('p','task-hint',(task.checks||[]).some(c=>c.needs_review)?'任务已复核完成，无需重复确认。':'本地核验已通过，无需重复确认。'));
+      card.append(node('h3', '', (TASK_STATES[task.status] || task.status) + (devMode ? ` · 版本 ${task.revision} · ${task.id}` : '')));
+      if (task.status==='completed') card.append(node('p','task-hint',(task.checks||[]).some(c=>c.needs_review)?'任务已复核完成，无需重复确认。':'已完成并核对无误。'));
       for (const goal of task.goals) card.append(node('p', '', goal.description));
       for (const c of task.constraints) card.append(node('p','task-hint','约束：'+c.description));
       const edit = node('button', 'text-button', '编辑目标与约束'); edit.onclick = () => editTaskForm(task, cid);
-      const verify=node('button','text-button','本地重新核验');
+      const verify=node('button','text-button','重新核对');
       verify.onclick=async()=>{
         verify.disabled=true;
         try { await api(`/api/conversations/${cid}/tasks/${task.id}/verify`,{method:'POST',body:JSON.stringify({expected_revision:task.revision})}); await showTasks(); }
         catch(err){verify.disabled=false;card.append(node('p','task-hint',err.message));}
       };
       const resume = node('button', 'text-button', '在聊天中继续');
-      resume.onclick = () => { dialog.close(); $('message-input').value = `继续任务 ${task.id}，按版本 ${task.revision} 的目标和约束处理未完成部分。`; $('message-input').focus(); };
+      // The model finds the task in its recent-task list; the user need not see the ID.
+      resume.onclick = () => { dialog.close(); $('message-input').value = `继续之前的任务「${task.goals[0]?.description || ''}」，完成还没做完的部分。`; $('message-input').focus(); };
       card.append(edit, verify, resume);
       const accepted=(key,id)=>[...(task.reviews||[])].reverse().find(r=>r.revision===task.revision && r[key]?.includes(id))?.decision==='accept';
       const pendingGoals = (task.checks || []).filter(c => c.passed && c.needs_review && !accepted('goal_ids',c.goal_id)).map(c => c.goal_id);

@@ -4,6 +4,13 @@ let currentConversation = null, currentTurn = null, currentFilePath = ".";
 let currentMessages = [], pollTimer = null, viewEpoch = 0, submitting = false, latestActivity = null;
 let previewEpoch = 0, fileListEpoch = 0;
 let activeReview = null;
+// Developer mode shows cost, timing split, raw records and internal details; off by default.
+let devMode = false;
+try { devMode = localStorage.getItem("fb-dev") === "1"; } catch {}
+function applyDevMode() {
+  document.body.dataset.dev = devMode ? "1" : "";
+  $("toggle-dev")?.setAttribute("aria-pressed", String(devMode));
+}
 const api = async (url, options = {}) => {
   const response = await fetch(url, {headers: {"Content-Type": "application/json"}, ...options});
   const data = await response.json().catch(() => ({}));
@@ -52,10 +59,11 @@ function buildMessage(message) {
   if (message.role === "assistant" && typeof message.html === "string") body.innerHTML = message.html;
   else body.textContent = message.content;
   wrapTables(body); bindReferences(body); item.append(body);
-  if (message.report?.sections?.length) {
+  const sections = (message.report?.sections || []).filter(section => section.audience !== "dev" || devMode);
+  if (sections.length) {
     const details=node('details','result-details');
-    details.append(node('summary','','查看核验与过程详情'));
-    for (const section of message.report.sections) {
+    details.append(node('summary','','查看详情'));
+    for (const section of sections) {
       const part=node('section','result-detail-section'); part.append(node('h4','',section.title));
       const content=node('div','markdown-body');
       if (typeof section.html==='string') content.innerHTML=section.html; else content.textContent=section.markdown;
@@ -67,8 +75,11 @@ function buildMessage(message) {
     // ask_user options: a click sends the letter, which the server resolves to the option.
     const bar = node("div", "choice-buttons");
     for (const choice of message.report.choices) {
-      const button = node("button", "choice-button", `${choice.key}. ${choice.label}`); button.type = "button";
-      if (choice.detail) button.title = choice.detail;
+      const button = node("button", "choice-button"); button.type = "button";
+      button.append(node("span", "choice-label", `${choice.key}. ${choice.label}`));
+      const notes = [choice.detail, ...(choice.warnings || []).map(w => `⚠ ${w}`)].filter(Boolean);
+      if (notes.length) button.append(node("span", "choice-note", notes.join("　")));
+      if (choice.local) button.append(node("span", "choice-local", "系统补充"));
       button.onclick = () => { $("message-input").value = choice.key; sendMessage(); };
       bar.append(button);
     }
@@ -225,6 +236,8 @@ async function sendMessage() {
   if (!content || !currentConversation || currentTurn || submitting) return;
   const cid = currentConversation, epoch = viewEpoch;
   submitting = true; $("send-button").disabled = true; input.value = ""; autoGrow();
+  // The previous turn's status card and run bar belong above this message, not below it.
+  $("agent-activity")?.remove(); document.querySelectorAll("#messages > .run-actions, #messages > .raw-trace").forEach(el => el.remove());
   appendMessage({role: "user", content});
   updateActivity({id: "submitting", status: "queued", events: [], result: {}}); setStatus("提交中…", "running");
   try {
@@ -280,14 +293,14 @@ function eventSteps(events) {
     } else if (event.type === "llm_end") {
       const entry = steps[indexes.get(`llm:${event.step}`)]; if (entry) entry.state = "done";
     } else if (event.type === "llm_retry") {
-      steps.push({title: "模型请求暂时失败，正在重试", detail: `${event.error_type} · 第 ${event.attempt} 次请求 · 等待 ${event.backoff_seconds} 秒`, state: "done"});
+      steps.push({title: "模型请求暂时失败，正在重试", detail: `${devMode ? `${event.error_type} · ` : ""}第 ${event.attempt} 次请求 · 等待 ${event.backoff_seconds} 秒`, state: "done"});
     } else if (event.type === "tool_start") {
       const args = event.args || {}, key = event.call_id || `tool:${index}`;
       indexes.set(key, steps.length);
-      steps.push({title: TOOL_LABELS[event.tool] || "执行文件工具", detail: args.description || args.query || args.path || args.src || args.scan_id || "", state: "active"});
+      steps.push({title: TOOL_LABELS[event.tool] || "执行文件工具", detail: args.description || args.query || args.path || args.src || (devMode ? args.scan_id || "" : ""), state: "active"});
     } else if (event.type === "tool_end") {
       const entry = steps[indexes.get(event.call_id)];
-      if (entry) { entry.state = event.ok ? "done" : "error"; entry.note = event.ok ? "" : event.summary; }
+      if (entry) { entry.state = event.ok ? "done" : "error"; entry.note = event.ok ? "" : devMode ? event.summary : "这一步没有成功，已换一种方式继续"; }
     } else if (event.type === "local_step") {
       steps.push({title: event.message, detail: "本地执行", state: "done"});
     } else if (event.type === "confirmation_required") {
@@ -302,6 +315,8 @@ const stepKeys = new WeakMap();
 let expandedTurn = null;
 function updateActivity(turn) {
   let card = $("agent-activity");
+  // A card left from another turn (not the "submitting" placeholder of this one) is not reused.
+  if (card && card.turn && card.turn.id !== turn.id && card.turn.id !== "submitting") { card.remove(); card = null; }
   if (!card) {
     card = node("section", "agent-activity"); card.id = "agent-activity";
     const heading = node("button", "activity-heading"); heading.type = "button"; heading.setAttribute("aria-expanded", "false");
@@ -320,7 +335,7 @@ function updateActivity(turn) {
   card.className = `agent-activity ${working ? turn.status === "waiting_confirmation" ? "waiting" : "working" : turn.status === "failed" ? "failed" : "finished"}`;
   const activeStep = [...steps].reverse().find(step => step.state === "active" || step.state === "waiting");
   const toolCount = events.filter(event => event.type === "tool_end").length;
-  const title = working ? turn.status === "waiting_confirmation" ? "等待你的确认" : activeStep?.title || (turn.id === "submitting" ? "正在提交请求" : "Agent 正在准备") : turn.status === "failed" ? "本轮处理已中断" : turn.result?.stop_reason === "done" ? `处理完成 · ${toolCount || turn.result?.tool_calls || 0} 次工具调用` : outcomeLabel(turn.result);
+  const title = working ? turn.status === "waiting_confirmation" ? "等待你的确认" : activeStep?.title || (turn.id === "submitting" ? "正在提交请求" : "Agent 正在准备") : turn.status === "failed" ? "本轮处理已中断" : turn.result?.stop_reason === "done" ? (devMode ? `处理完成 · ${toolCount || turn.result?.tool_calls || 0} 次工具调用` : "已完成") : outcomeLabel(turn.result);
   const heading = card.querySelector(".activity-title"); if (heading.textContent !== title) heading.textContent = title;
   const localStep = [...events].reverse().find(event => event.type === "local_step");
   const detail = working ? ["本地查重与清理", "本地批量执行分类计划"].includes(activeStep?.title) && localStep ? localStep.message : activeStep?.detail || "" : turn.error || "展开查看执行步骤";
@@ -362,7 +377,7 @@ function updateClock() {
     const ticking = ACTIVE.has(turn.status) && turn.status !== "waiting_confirmation";
     const extra = ticking ? (performance.now() - (turn.clockReceivedAt || performance.now())) / 1000 : 0;
     clock.textContent = `运行 ${Math.round(metrics.active_seconds + extra)} 秒`;
-    clock.title = `确认等待 ${Number(metrics.wait_seconds || 0).toFixed(1)} 秒（单独统计）`;
+    clock.title = devMode ? `确认等待 ${Number(metrics.wait_seconds || 0).toFixed(1)} 秒（单独统计）` : "";
   } else {
     clock.textContent = turn.result?.seconds ? `总计 ${Math.round(turn.result.seconds)} 秒（含确认等待）` : "";
   }
@@ -375,18 +390,37 @@ function updateConfirmation(turn) {
   if (box.dataset.question === key) return;
   resetConfirmation();
   box.dataset.question = key; box.replaceChildren(); box.classList.remove("hidden");
-  const action = pending.action || {title: "确认文件操作", summary: pending.question, confirm_label: "确认执行", groups: [], notes: []};
-  const state = {turnId: turn.id, id: pending.id, action, allowAll: false, submitted: false, viewed: new Set(), previewEpoch: 0};
+  const action = pending.action || {title: "确认文件操作", headline: pending.question, summary: pending.question, groups: [], notes: []};
+  const state = {turnId: turn.id, id: pending.id, action, submitted: false, viewed: new Set(), previewEpoch: 0};
   activeReview = state;
+  // Like a permission prompt: what will happen, what needs attention, the rest folded.
   const header = node("div", "confirmation-card-header");
-  header.append(node("span", `confirmation-badge ${action.tone || "neutral"}`, "等待确认"), node("strong", "confirmation-title", action.title));
-  const review = node("button", "confirmation-expand", "展开核对 ↗"); review.type = "button"; review.onclick = () => openConfirmationReview(state); header.append(review);
-  const body = node("div", "confirmation-body"); body.append(node("p", "confirmation-summary", action.summary));
-  renderConfirmationGroups(body, state, true);
+  header.append(node("span", `confirmation-badge ${action.tone || "neutral"}`, "需要你的确认"));
+  const body = node("div", "confirmation-body");
+  body.append(node("p", "confirmation-headline", action.headline || action.summary));
+  if (action.warnings?.length) {
+    const list = node("ul", "confirmation-warnings");
+    for (const warning of action.warnings) list.append(node("li", "", warning.replace(/^⚠+\s*/, "")));
+    body.append(list);
+  }
+  const files = (action.groups || []).reduce((n, group) => n + group.items.length, 0);
+  const details = node("details", "confirmation-details");
+  details.append(node("summary", "", files ? `查看详情（${files} 项）` : "查看详情"));
+  renderConfirmationGroups(details, state, true, false);
+  for (const note of action.details || []) details.append(node("p", "confirmation-note", note));
+  const review = node("button", "confirmation-expand", "在大窗口中核对 ↗"); review.type = "button"; review.onclick = () => openConfirmationReview(state);
+  details.append(review); body.append(details);
   const status = node("div", "confirmation-feedback"); status.setAttribute("role", "status");
   box.append(header, body, status, confirmationActions(state));
 }
-function renderConfirmationGroups(container, state, compact = false) {
+// 1 / 2 / 3 answer the card when the cursor is not in a text field.
+document.addEventListener("keydown", (event) => {
+  const state = activeReview, field = event.target.closest?.("input, textarea, select, [contenteditable]");
+  if (!state || state.submitted || field || event.metaKey || event.ctrlKey || event.altKey) return;
+  const answer = {"1": "y", "2": "a", "3": "n"}[event.key];
+  if (answer) { event.preventDefault(); submitConfirmation(state, answer); }
+});
+function renderConfirmationGroups(container, state, compact = false, withNotes = true) {
   for (const group of state.action.groups || []) {
     if (!group.items.length) continue;
     const section = node("section", `confirmation-group ${group.tone}`);
@@ -415,42 +449,42 @@ function renderConfirmationGroups(container, state, compact = false) {
     }
     container.append(section);
   }
-  for (const note of state.action.notes || []) container.append(node("p", "confirmation-note", note));
+  if (withNotes) for (const note of state.action.notes || []) container.append(node("p", "confirmation-note", note));
 }
 function confirmationActions(state) {
   const footer = node("div", "confirmation-actions");
-  const option = node("label", "confirmation-allow-all");
-  const checkbox = node("input"); checkbox.type = "checkbox"; checkbox.checked = state.allowAll; checkbox.disabled = state.submitted;
-  checkbox.onchange = () => { state.allowAll = checkbox.checked; document.querySelectorAll(".confirmation-allow-all input").forEach(input => input.checked = state.allowAll); };
-  option.title = "勾选后，本轮后续文件操作将不再逐次询问"; option.append(checkbox, node("span", "", "本轮后续操作免确认"));
-  const buttons = node("div", "confirmation-action-buttons");
-  const reject = node("button", "confirmation-reject", "拒绝此次操作"); reject.type = "button";
-  const allow = node("button", `confirmation-approve ${state.action.tone || "neutral"}`, state.action.confirm_label || "确认执行"); allow.type = "button";
-  reject.onclick = () => submitConfirmation(state, "n"); allow.onclick = () => submitConfirmation(state, state.allowAll ? "a" : "y");
-  buttons.append(reject, allow); footer.append(option, buttons); return footer;
+  const choices = [["1", "允许", "y", `confirmation-approve ${state.action.tone || "neutral"}`],
+                   ["2", "本轮都允许", "a", "confirmation-approve-all"], ["3", "拒绝", "n", "confirmation-reject"]];
+  for (const [key, label, answer, className] of choices) {
+    const button = node("button", `confirmation-choice ${className}`); button.type = "button"; button.disabled = state.submitted;
+    button.append(node("kbd", "", key), node("span", "", label));
+    if (answer === "a") button.title = "本轮后续的文件操作不再逐次询问";
+    button.onclick = () => submitConfirmation(state, answer); footer.append(button);
+  }
+  return footer;
 }
 async function submitConfirmation(state, answer) {
   if (state !== activeReview || state.submitted) return;
   state.submitted = true;
-  document.querySelectorAll(".confirmation-actions button, .confirmation-allow-all input").forEach(button => button.disabled = true);
+  document.querySelectorAll(".confirmation-actions button").forEach(button => button.disabled = true);
   const feedback = text => document.querySelectorAll(".confirmation-feedback").forEach(el => el.textContent = text);
   feedback("正在提交你的选择…");
   try {
     await api(`/api/turns/${state.turnId}/confirm`, {method: "POST", body: JSON.stringify({answer, confirmation_id: state.id})});
     if (state !== activeReview) return;
-    feedback(answer === "n" ? "已拒绝，等待 Agent 继续。" : "已确认，等待 Agent 执行。");
+    feedback(answer === "n" ? "已拒绝，不会执行这些操作。" : answer === "a" ? "已允许，本轮后续操作不再询问。" : "已允许，正在执行。");
     if ($("confirmation-review").open) $("confirmation-review").close();
   } catch (err) {
     if (state !== activeReview) return;
     state.submitted = false; feedback(err.message);
-    document.querySelectorAll(".confirmation-actions button, .confirmation-allow-all input").forEach(button => button.disabled = false);
+    document.querySelectorAll(".confirmation-actions button").forEach(button => button.disabled = false);
   }
 }
 function openConfirmationReview(state, selected = null) {
   if (state !== activeReview || state.submitted) return;
   const dialog = $("confirmation-review");
   $("review-title").textContent = state.action.title;
-  const plan = $("review-plan"); plan.replaceChildren(node("p", "confirmation-summary", state.action.summary));
+  const plan = $("review-plan"); plan.replaceChildren(node("p", "confirmation-headline", state.action.headline || state.action.summary));
   renderConfirmationGroups(plan, state);
   const feedback = node("div", "confirmation-feedback"); feedback.setAttribute("role", "status");
   $("review-footer").replaceChildren(feedback, confirmationActions(state));
@@ -499,8 +533,9 @@ function addRunActions(turn, epoch) {
   if (!turn.result?.seconds && turn.status !== "failed") return;
   const card = node("div", "run-actions");
   const result = turn.result || {};
-  const timing = result.active_seconds != null ? `运行 ${Number(result.active_seconds).toFixed(1)} 秒 · 确认等待 ${Number(result.wait_seconds || 0).toFixed(1)} 秒 · 模型 ${Number(result.llm_seconds || 0).toFixed(1)} 秒 · 本地工具 ${Number(result.tool_seconds || 0).toFixed(1)} 秒` : result.seconds ? `总计 ${Number(result.seconds).toFixed(1)} 秒（含确认等待）` : "";
-  const metrics = node("span", "run-metrics", `${timing} · ¥${Number(result.cost || 0).toFixed(4)}`);
+  const timing = !devMode ? (result.active_seconds != null || result.seconds ? `用时 ${Math.round(result.active_seconds ?? result.seconds)} 秒` : "")
+    : result.active_seconds != null ? `运行 ${Number(result.active_seconds).toFixed(1)} 秒 · 确认等待 ${Number(result.wait_seconds || 0).toFixed(1)} 秒 · 模型 ${Number(result.llm_seconds || 0).toFixed(1)} 秒 · 本地工具 ${Number(result.tool_seconds || 0).toFixed(1)} 秒` : result.seconds ? `总计 ${Number(result.seconds).toFixed(1)} 秒（含确认等待）` : "";
+  const metrics = node("span", "run-metrics", devMode ? `${timing} · ¥${Number(result.cost || 0).toFixed(4)}` : timing);
   const trace = node("button", "text-button", "详细记录"); trace.type = "button";
   trace.onclick = async () => {
     trace.disabled = true;
@@ -518,7 +553,11 @@ function addRunActions(turn, epoch) {
       await openConversation(currentConversation); loadFiles();
     } catch (err) { undoButton.disabled = false; showError(err.message); }
   };
-  card.append(metrics, trace, undoButton); $("messages").append(card); scrollIfNearBottom();
+  // Undo only for a run that wrote something (older runs, without the flag, keep the button).
+  card.append(metrics);
+  if (devMode) card.append(trace);
+  if (result.changed !== false || result.undo) card.append(undoButton);
+  $("messages").append(card); scrollIfNearBottom();
 }
 async function loadFiles(path = currentFilePath) {
   const epoch = ++fileListEpoch;
@@ -592,6 +631,13 @@ $("message-input").oninput = autoGrow;
 $("message-input").onkeydown = (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage(); } };
 $("refresh-files").onclick = () => loadFiles();
 $("toggle-files").onclick = () => { closeSidebar(); $("file-panel").classList.toggle("closed"); };
+applyDevMode();
+$("toggle-dev").onclick = () => {
+  devMode = !devMode; applyDevMode();
+  try { localStorage.setItem("fb-dev", devMode ? "1" : "0"); } catch {}
+  // Rebuild the open conversation so details, timings and records follow the mode.
+  if (currentConversation && !currentTurn) { renderedConversation = null; openConversation(currentConversation).catch(err => showError(err.message)); }
+};
 $("review-close").onclick = () => $("confirmation-review").close();
 $("confirmation-review").addEventListener("close", () => { if (activeReview) activeReview.previewEpoch++; $("review-preview").replaceChildren(); });
 if (matchMedia("(max-width: 1050px)").matches) $("file-panel").classList.add("closed");

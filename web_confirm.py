@@ -87,7 +87,60 @@ def _hidden_label(sb, folder, rel, note=''):
 
 
 def build_confirmation(request: dict, sb: Sandbox) -> dict:
-    return _mark_names(_build_confirmation(request, sb), sb)
+    """The card the user decides on. Like a permission prompt: one line of what will
+    happen (headline), the few things that need attention (warnings), and the rest
+    folded into details. title/summary/groups/notes stay for the terminal and the
+    full review dialog."""
+    card = _mark_names(_build_confirmation(request, sb), sb)
+    limits = card.pop("limit_notes")
+    severity = lambda n: 0 if n.startswith("⚠ 以下名称") else 1 if n.startswith("⚠⚠") else 2
+    card["warnings"] = sorted((n for n in card["notes"] if n.startswith("⚠")), key=severity) + limits
+    card["details"] = [n for n in card["notes"] if not n.startswith("⚠") and n not in limits]
+    return card
+
+
+def _place(path):
+    parent = Path(path).parent.as_posix()
+    return "根目录" if parent in ("", ".") else parent
+
+
+def _headline(tool, args):
+    """What will happen, in one line, without internal identifiers."""
+    if tool == "file_plan":
+        steps = [s for s in args["steps"] if s["effect"] != "create"]
+        folders = {f["source"] for f in args.get("folders") or []}
+        unit = lambda rows: "项" if any(r["source"] in folders for r in rows) else "个文件"
+        moves = [s for s in steps if s["effect"] == "move"]
+        renames = [s for s in steps if s["effect"] == "rename"]
+        trashes = [s for s in steps if s["effect"] == "trash"]
+        parts = []
+        if len(moves) == 1:
+            parts.append(f"把「{Path(moves[0]['source']).name}」移到「{_place(moves[0]['destination'])}」")
+        elif moves:
+            places = {_place(s["destination"]) for s in moves}
+            parts.append(f"移动 {len(moves)} {unit(moves)}" + (f"到「{places.pop()}」" if len(places) == 1 else ""))
+        if len(renames) == 1:
+            parts.append(f"把「{Path(renames[0]['source']).name}」改名为「{Path(renames[0]['destination']).name}」")
+        elif renames:
+            parts.append(f"改名 {len(renames)} {unit(renames)}")
+        if trashes:
+            parts.append(f"把 {len(trashes)} {unit(trashes)}移入回收区")
+        return "，".join(parts) + "（可撤销）" if parts else "新建文件夹"
+    if tool == "task_edit":
+        return f"修改任务要求（{len(args['changes'])} 处）"
+    if tool == "trash_many":
+        return f"清理重复文件：{len(args.get('移入回收区', []))} 项移入回收区，保留 {len(args.get('保留', []))} 项（可撤销）"
+    if tool == "trash":
+        return f"把「{Path(args['path']).name}」移入回收区（可撤销）"
+    if tool == "move_many":
+        return f"按分类移动 {len(args['moves'])} 篇到 {len({m['dst_dir'] for m in args['moves']})} 个文件夹（可撤销）"
+    if tool == "move":
+        return f"把「{Path(args['src']).name}」移到「{args['dst_dir']}」（可撤销）"
+    if tool == "rename":
+        return f"把「{Path(args['path']).name}」改名为「{args['new_name'].strip()}」（可撤销）"
+    if tool == "make_dir":
+        return f"新建文件夹「{args['path']}」"
+    return "执行一项文件操作"
 
 
 def _mark_names(card: dict, sb: Sandbox) -> dict:
@@ -117,8 +170,10 @@ def _mark_names(card: dict, sb: Sandbox) -> dict:
         g["title"] = shown(g["title"])
         if g.get("description"):
             g["description"] = shown(g["description"])
-    flagged |= {n for n in raw if any(n in text for text in card["notes"] + [card["summary"]])}
+    flagged |= {n for n in raw if any(n in text for text in card["notes"] + [card["summary"], card["headline"]])}
     card["summary"] = shown(card["summary"])
+    card["headline"] = shown(card["headline"])
+    card["limit_notes"] = [shown(n, multiline=True) for n in card["limit_notes"]]
     card["notes"] = [shown(n, multiline=True) for n in card["notes"]]
     if flagged:
         card["notes"].insert(0, "⚠ 以下名称含不可见字符或会改变显示顺序的字符，已用 ⟦⟧ 标出，请核对后再确认："
@@ -140,14 +195,14 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
     if tool == 'task_edit':
         changed=[]
         title,label,tone='确认修改任务','应用此版本','warning'
-        summary=f"任务 {args['task_id']} · 当前版本 {args['revision']}，将修改 {len(args['changes'])} 项设置。"
+        summary=f"将修改任务的 {len(args['changes'])} 项要求。"
         names={'goals':'目标与完成条件','constraints':'约束','read_roots':'读取范围',
                'write_roots':'写入范围','allowed_effects':'允许操作','unresolved_questions':'待确认问题'}
         for change in args['changes']:
             notes.append(names.get(change['field'],change['field'])+'：\n修改前：'+
                          describe_task_value(change['field'],change['before'])+'\n修改后：'+
                          describe_task_value(change['field'],change['after']))
-        notes += ['原因：'+args['reason'], '本次仅修改任务；不会直接操作文件，旧版本的复核结果将失效。']
+        notes += ['原因：'+args['reason'], '只修改任务要求，不会操作文件。']
     elif tool == 'file_plan':
         changed=[]
         names={'create':'创建目录','move':'移动','rename':'改名','trash':'移入回收区'}
@@ -159,7 +214,7 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
             groups.append(dict(key=f'action_{index}',title=names[step['effect']],tone='neutral',items=[item]))
             changed.append(item)
         title,label,tone='确认执行文件计划','确认执行此计划','neutral'
-        summary=f"计划 {args['plan_id']}：将执行 {len(changed)} 项操作。"
+        summary=f"将执行 {len(changed)} 项操作。"
         for row in args.get('hidden_contents') or []:
             if row['metadata']:
                 notes.append(f"回收 {row['folder']} 时，将连同系统生成的文件一起移入回收区："
@@ -190,9 +245,7 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
                 notes.append(f"⚠ 覆盖 {row['target']}（你已选择）：原有文件移入回收区，再放入新文件（可撤销）。")
         extra = args.get('scope_additions') or {}
         if extra.get('write_roots'):
-            notes.append('本计划超出任务原先登记的写入范围，确认后新增：'+'、'.join(extra['write_roots']))
-        notes += ['本次确认绑定此操作清单；来源或目标变化会停止执行。',
-                  '计划摘要：'+args['digest'], '已完成操作有日志，可按运行撤销；执行中断时请先查看具体原因。']
+            notes.append('这些位置不在你最初说的范围内：'+'、'.join(extra['write_roots']))
     elif tool == "trash_many":
         affected, retained = args.get("移入回收区", []), args.get("保留", [])
         changed = [describe_path(sb, p) for p in affected]
@@ -210,17 +263,16 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
                 items = [describe_path(sb, p) for p in ordered_members]
                 for item, source in zip(items, ordered_members):
                     item["disposition"] = "retain" if source == g["keeper"] else "trash"
-                groups.append({"key": g["id"], "title": f"重复组 {index} · {g['id']}", "tone": "neutral",
+                groups.append({"key": g["id"], "title": f"重复组 {index}", "tone": "neutral",
                                "description": kinds.get(g.get("kind"), ""), "items": items})
         else:
             # Do not guess family membership by list order when handling an older request.
             items = [dict(describe_path(sb, p), disposition="retain") for p in retained]
             items += [dict(describe_path(sb, p), disposition="trash") for p in affected]
             groups.append({"key": "unmatched", "title": "本次操作涉及的文件", "tone": "neutral", "items": items})
-            notes.append("此请求未提供完整重复组关系，请逐项核对。")
+            notes.append("无法按重复组归类，请逐项核对。")
         title, label, tone = "确认清理重复文件", "确认移入回收区", "warning"
         summary = f"将 {len(changed)} 项移入回收区，保留 {len(retained)} 项；请按重复组核对。"
-        notes.append("移入回收区后可通过本轮撤销恢复。")
     elif tool == "trash":
         changed = group("affected", "将移入回收区", [args["path"]], "warning")
         changed[0]["disposition"] = "trash"
@@ -241,7 +293,6 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
             groups.append({'key':f'category_{index}','title':destination,'tone':'neutral','items':items})
         title,label,tone='确认执行分类计划','确认批量移动','neutral'
         summary=f'按 {len(groups)} 个目标分类移动 {len(changed)} 篇，保留原文件名；确认后统一创建缺少的目录。'
-        notes.append('请逐类查看来源和目标；待核实项仍会标注。每个已完成操作都有日志，本轮结束后可撤销。')
     elif tool == "move":
         changed = group("affected", "将移动", [args["src"]])
         destination = group("destination", "目标文件夹", [args["dst_dir"]])
@@ -267,9 +318,10 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
         changed = []
         title, label, tone = "确认文件操作", "确认执行", "neutral"
         summary = "请检查操作详情后再确认。"
-        notes.append(f"操作类型：{tool}")
 
-    notes += request.get("notes") or []
+    # Limits the user stated that no local check can verify: shown with the warnings.
+    limit_notes = list(request.get("notes") or [])
     return {"operation": tool, "title": title, "summary": summary, "confirm_label": label, "tone": tone,
+            "headline": _headline(tool, args),
             "counts": {"affected": len(changed), "retained": len(args.get("保留", []))},
-            "groups": groups, "notes": notes}
+            "groups": groups, "notes": notes + limit_notes, "limit_notes": limit_notes}

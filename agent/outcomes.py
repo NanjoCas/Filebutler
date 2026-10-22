@@ -20,9 +20,10 @@ def stop_reason_text(reason, cfg, llm, error=None):
            'PermissionDeniedError':'模型服务拒绝访问，请检查账号权限',
            'BadRequestError':'模型服务拒绝了请求参数',
            'InternalServerError':'模型服务内部错误，重试后仍未成功'}
-    if kind in known:return known[kind]+'（'+kind+'）'
-    if isinstance(error,OSError) and error.errno:return f'本地文件操作失败：{os.strerror(error.errno)}（{kind}）'
-    if error:return f'本地执行发生异常（{kind}），后续步骤已停止'
+    # The exception class is developer detail (stop_report puts it in a dev section).
+    if kind in known:return known[kind]
+    if isinstance(error,OSError) and error.errno:return f'本地文件操作失败：{os.strerror(error.errno)}'
+    if error:return '程序内部出错，后续步骤已停止'
     return {'unverified_answer':'未形成可核验的任务记录','operation_error':'文件操作未成功，请核对执行记录'}.get(reason,reason)
 
 
@@ -48,11 +49,16 @@ def stop_report(reason, cfg, llm, runtime=None, oplog=None, error=None, stage=No
                     if o['status']=='ok' for r in o.get('references',[])) and not records:
         effects='已保存分类方案，尚未执行文件移动。'+effects
     summary=('任务失败。原因：' if error and not isinstance(error,KeyboardInterrupt) else '任务已中止。原因：')+cause+'。\n\n'+effects
-    if reason=='repair_limit' and getattr(runtime,'last_failure',None):
-        summary += '\n\n最近失败原因：'+runtime.last_failure
     sections=[]
     if runtime:
         sections=[dict(title='已取得的结果',markdown=r['text']) for r in getattr(runtime,'output_records',[])]
+    if error and not isinstance(error,KeyboardInterrupt):
+        # Class name only: an exception's text can carry credentials (e.g. a request URL with a key).
+        sections.append(dict(title='错误类型',markdown=type(error).__name__,audience='dev'))
+    if reason=='repair_limit' and getattr(runtime,'last_failure',None):
+        from agent.reporting import plain
+        summary += '\n\n最近失败原因：'+plain(runtime.last_failure)
+        sections.append(dict(title='最近失败原因',markdown=runtime.last_failure,audience='dev'))
     return dict(version=1,state='failed' if error and not isinstance(error,KeyboardInterrupt) else 'interrupted',
                 reason=reason,summary=summary,sections=sections)
 

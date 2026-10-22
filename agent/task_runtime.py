@@ -882,22 +882,23 @@ class TaskRuntime:
                                 actions=None if o.actions is None else [a.model_dump() for a in o.actions])
                            for i, o in enumerate(args.options)]
                 choices = self._ground_choices(choices, args.subject, sb)
+                for c in choices:
+                    # What the button says under its label: the detail, then each warning.
+                    c['warnings'] = ([f"会一起删除你看不到的 {c['warn']}"] if c.get('warn') else []) \
+                        + ([f"覆盖 {'、'.join(c['overwrite'])}，旧文件移入回收区（可撤销）"] if c.get('overwrite') else []) \
+                        + ([f"授权读取敏感文件 {'、'.join(c['read_grant'])} 的内容（仅本任务）"] if c.get('read_grant') else [])
+                checked = [line for line in self._sensitive_lines(args.subject, sb) if line]
+                prefix = [f'本轮已执行 {len(self.operations)} 项文件操作，可撤销。', ''] if self.operations else []
+                # The page shows the question and buttons; the terminal (and evaluation) read
+                # the full text with lettered options.
+                question = '\n'.join(prefix + [args.question] + ([''] + checked if checked else []))
                 lines = [args.question, '']
                 for c in choices:
-                    lines.append(f"{c['key']}. {c['label']}"
-                                 + (f"——{c['detail']}" if c['detail'] else '')
-                                 + (f"　⚠ 会一起删除你看不到的 {c['warn']}" if c.get('warn') else '')
-                                 + (f"　⚠ 覆盖 {'、'.join(c['overwrite'])}，旧文件移入回收区（可撤销）" if c.get('overwrite') else '')
-                                 + (f"　⚠ 授权读取敏感文件 {'、'.join(c['read_grant'])} 的内容并发送给模型（仅本任务）"
-                                    if c.get('read_grant') else '')
-                                 + ('　（本地补充）' if c.get('local') else ''))
+                    lines.append(f"{c['key']}. {c['label']}" + (f"——{c['detail']}" if c['detail'] else '')
+                                 + ''.join(f'　⚠ {w}' for w in c['warnings']) + ('　（系统补充）' if c.get('local') else ''))
                 lines += self._sensitive_lines(args.subject, sb)
-                if any(c.get('local') for c in choices):
-                    lines += ['（标注"本地补充"的选项由本地加入。）']
                 lines += ['', '请回复字母' + ('，或直接输入你的要求。' if args.allow_other else '。')]
-                text = '\n'.join(lines)
-                if self.operations:
-                    text = f'本轮已执行 {len(self.operations)} 项文件操作，有日志可撤销。\n\n' + text
+                text = '\n'.join(prefix + lines)
                 subject = [self._resolve(p) for p in args.subject]
                 for path in subject: sb.path(path, exact=True)
                 self.pending_choice = dict(question=args.question, reason=args.reason, choices=choices,
@@ -906,7 +907,7 @@ class TaskRuntime:
                     self.current.update(status='waiting_input', pending_choice=self.pending_choice)
                     self.store.checkpoint(self.current)
                 self.final_answer, self.stop_reason, self.finished = text, 'waiting_input', True
-                self.report = dict(version=1, state='waiting_input', summary=text, sections=[],
+                self.report = dict(version=1, state='waiting_input', summary=text, question=question, sections=[],
                                    choices=choices, allow_other=args.allow_other)
                 outcome = registry.ToolResult(status='ok', text='OK: 已向用户提问，本轮结束，等待用户回答')
             elif name == 'start_task':
