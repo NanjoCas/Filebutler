@@ -242,6 +242,10 @@ def read_file(a: ReadArgs, sb: Sandbox) -> str:
             raise ToolError("无法识别编码（试过 UTF-8 和 GBK）")
     else:
         raise ToolError(f"不支持读取 {ext or '无后缀'} 文件的内容，请用 file_info 查看基本信息")
+    from agent.sensitive import reasons, granted, refusal
+    why = reasons(sb.rel(p), text)
+    if why and not granted(sb, sb.rel(p)):
+        raise ToolError(refusal(sb.rel(p), why))
     if a.offset > len(text):
         raise ToolError(f"offset 超出文字长度 {len(text)}")
     end = a.offset + min(a.max_chars, 1600 if artifacts else 1800)

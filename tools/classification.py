@@ -133,12 +133,21 @@ def paper_profiles(a, sb):
     if a.page > pages:
         raise ToolError(f'共 {pages} 页')
     cards, cached = [], 0
+    from agent.sensitive import file_reasons, granted
+    policy = EvidencePolicy.model_validate(catalog.get('evidence', {}))
     for fid in catalog['members'][(a.page-1)*PAGE_SIZE:a.page*PAGE_SIZE]:
-        _, row = store.resolve(fid, allow_trash=False)
+        path, row = store.resolve(fid, allow_trash=False)
         if row['version'] != catalog['versions'][fid]:
             raise ToolError('目录快照中的文件已变更，请重新获取卡片')
-        profile, hit = _profile(sb, fid, EvidencePolicy.model_validate(catalog.get('evidence', {}))); cached += int(hit)
+        profile, hit = _profile(sb, fid, policy); cached += int(hit)
         catalog.setdefault('profiles', {})[fid] = profile
+        rel = sb.rel(path)
+        why = file_reasons(sb, rel, policy.pdf_pages)
+        if why and not granted(sb, rel):
+            name = json.dumps(row['name'][:90], ensure_ascii=False)[:160]
+            cards.append(f"file:{fid} 名称={name}\n[敏感文件：{'；'.join(why)}；未显示内容，分类时 uncertain=true，读取需用户授权]")
+            if fid not in catalog['delivered']: catalog['delivered'].append(fid)
+            continue
         excerpt=profile['text']
         text = html.escape(excerpt, quote=False)
         while len(text)>700:
