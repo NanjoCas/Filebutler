@@ -181,15 +181,32 @@ def labels(store):
 NO_MATCH = '（评测：上一轮的选项中没有唯一符合的项）'
 
 
+def _declares(option, want):
+    """The option declares an action of this effect (on this path, when one is given)."""
+    norm = lambda p: (p or '').strip().strip('/').removeprefix('./')
+    return any(a['effect'] == want['effect'] and ('path' not in want or norm(a['path']) == norm(want['path']))
+               for a in option.get('actions') or [])
+
+
 def choose(turn, report):
-    """A turn written as {"choose": [words]} stands for the user pressing the one option
-    whose label contains one of the words; option order is the model's, so a fixed
-    letter cannot be frozen. No unique match sends a fixed text and is recorded."""
+    """A turn written as a choice stands for the user pressing the one matching option;
+    option order is the model's, so a fixed letter cannot be frozen.
+
+    {"choose_actions": {"has": [...], "lacks": [...]}} matches by the actions an option
+    declares (round 22: labels are worded differently on every run, actions are not);
+    {"choose": [words], "avoid": [...]} matches by label. No unique match sends a fixed
+    text and is recorded."""
     if not isinstance(turn, dict):
         return turn, None
     options = (report or {}).get('choices') or []
-    hits = [c for c in options if any(w in c['label'] for w in turn['choose'])
-            and not any(w in c['label'] for w in turn.get('avoid', []))]
+    if 'choose_actions' in turn:
+        rule = turn['choose_actions']
+        hits = [c for c in options if all(_declares(c, w) for w in rule.get('has', []))
+                and not any(_declares(c, w) for w in rule.get('lacks', []))]
+        turn = dict(turn, choose=rule)
+    else:
+        hits = [c for c in options if any(w in c['label'] for w in turn['choose'])
+                and not any(w in c['label'] for w in turn.get('avoid', []))]
     if len(hits) == 1:
         return hits[0]['key'], dict(words=turn['choose'], key=hits[0]['key'], label=hits[0]['label'])
     return NO_MATCH, dict(words=turn['choose'], key=None, matched=[c['label'] for c in hits],
