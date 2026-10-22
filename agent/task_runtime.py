@@ -87,7 +87,7 @@ V3_FIELD_DOCS = {
         'selection': '按目录规则选一批文件，由本地展开成清单',
         'Action.effect': 'create 建目录；move 移动（可跨目录）；rename 在原目录改名；trash 移入回收区（可撤销）',
         'Action.source': '执行前已有的文件或文件夹的相对路径，也可写 file:F 标识；文件夹整体移动（含隐藏文件或锁文件时不行）；create 不填',
-        'Action.destination': '完整目标路径；move 也可写已有或本计划创建的目录，表示按原名放入；trash 不填',
+        'Action.destination': '完整目标路径；move 也可写已有或本计划创建的目录，表示按原名放入，新目录以 / 结尾；trash 不填',
         'Selection.path': '在哪个目录里选文件',
         'Selection.extensions': '只选这些后缀，如 ["txt"]；空列表表示全部可见文件',
         'Selection.exclude_paths': '不选的子目录或文件',

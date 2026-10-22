@@ -455,9 +455,12 @@ def prepare(runtime, args):
 def _normalize(runtime, actions):
     """`mv` semantics for a move whose destination is a directory.
 
-    A destination names a directory when it exists as one, when this plan
-    creates it, or when several moves share it (one file path cannot receive
-    them all). The file keeps its name; the manifest shows the full target.
+    A destination names a directory when it ends with "/", exists as one, is
+    created by this plan, or is shared by several moves (one file path cannot
+    receive them all). The file keeps its name; the manifest shows the full target.
+    Round 28: "照片/2024" for a single c.jpg became a file named 2024. A move that
+    would drop a file's extension onto a path that does not exist is ambiguous
+    (folder or new name), so it is refused with both spellings.
     """
     from collections import Counter
     sb = runtime.sb
@@ -477,9 +480,17 @@ def _normalize(runtime, actions):
             if is_dir:
                 try: is_dir = not os.path.samefile(sb.path(runtime._resolve(action['source']), exact=True), sb.path(dst, exact=True))
                 except OSError: pass
-            if is_dir or dst in creates or shared[action['destination']] > 1:
-                name = Path(runtime._resolve(action['source'])).name
+            name = Path(runtime._resolve(action['source'])).name
+            if action['destination'].endswith('/') or is_dir or dst in creates or shared[action['destination']] > 1:
                 action['destination'] = (Path(dst) / name).as_posix()
+            else:
+                try: source_file = sb.path(runtime._resolve(action['source']), exact=True).is_file()
+                except Exception: source_file = False
+                try: missing = not sb.path(dst, exact=True).exists()
+                except Exception: missing = False
+                if source_file and missing and Path(name).suffix and not Path(dst).suffix:
+                    raise ValueError(f"目标 {dst} 不存在且没有扩展名，{name} 会变成没有扩展名的文件 {Path(dst).name}。"
+                                     f"要放进文件夹请写 {dst}/{name}（或 {dst}/）；要改名请写带扩展名的完整文件名")
         result.append(action)
     return result
 

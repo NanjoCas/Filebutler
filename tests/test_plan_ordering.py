@@ -272,3 +272,30 @@ def test_the_card_states_the_whole_folder_and_its_files(tmp_path):
     seen = []
     execute(r, plan['id'], OpLog(r.sb, 'one'), Confirmer('always', ask_action=lambda req: seen.append(build_confirmation(req, r.sb)) or 'y'))
     assert any(n.startswith('整体移动文件夹 照片 → Photos：含 2 个文件（a.jpg、b.jpg）') for n in seen[0]['notes'])
+
+
+# ---------------------------------------------------------------- folder or new name?
+# Live round 28: "照片/2024" for a single c.jpg became a file named 2024, and verified.
+
+def test_a_move_that_would_drop_the_extension_onto_a_missing_path_is_refused(tmp_path):
+    write(tmp_path, {'照片/c.jpg': 'c'})
+    r = runtime(tmp_path)
+    with pytest.raises(ValueError, match='照片/2024/c.jpg'):
+        prepare(r, proposal(actions=[dict(effect='move', source='照片/c.jpg', destination='照片/2024')]))
+    assert names(tmp_path/'照片') == ['c.jpg']
+
+
+@pytest.mark.parametrize('destination', ['照片/2024/', '照片/2024/c.jpg'])
+def test_either_spelling_puts_the_file_in_a_new_folder(tmp_path, destination):
+    write(tmp_path, {'照片/c.jpg': 'c'})
+    r = runtime(tmp_path)
+    run(r, [dict(effect='move', source='照片/c.jpg', destination=destination)])
+    assert (tmp_path/'照片/2024/c.jpg').read_text() == 'c'
+
+
+def test_a_rename_with_a_new_extension_or_an_existing_target_folder_still_works(tmp_path):
+    write(tmp_path, {'a.txt': 'a', 'notes': 'n', 'Archive/x.md': 'x'})
+    r = runtime(tmp_path)
+    run(r, [dict(effect='move', source='a.txt', destination='Archive'),     # existing folder: into it
+            dict(effect='move', source='notes', destination='Archive/notes2')])  # no extension to lose
+    assert names(tmp_path/'Archive') == ['a.txt', 'notes2', 'x.md']
