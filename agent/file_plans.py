@@ -333,8 +333,6 @@ def prepare(runtime, args):
         if effect == 'create':
             if target.exists() and not target.is_dir():
                 raise ValueError('创建目标已被文件占用：'+dst)
-        elif target and target.exists():
-            raise ValueError('目标已存在，不会覆盖：'+dst)
         if source and source.is_file():
             from agent.system_files import match
             entry = match(source.name, is_dir=False)
@@ -348,9 +346,11 @@ def prepare(runtime, args):
                 consent_sources = getattr(runtime, 'consent_source', {})
                 snap['consent_source'] = next((v for f, v in consent_sources.items()
                                                if Path(src) == Path(f) or Path(src).is_relative_to(f)), None)
+        elif effect in {'move', 'rename'} and source.is_dir() and not source.is_symlink():
+            snap = folder_snapshot(source, src, moved_out)
         else:
             snap = fingerprint(source, src) if source else None
-        if snap and snap['kind'] != 'file' and effect != 'trash':
+        if snap and snap['kind'] not in {'file', 'directory_tree'} and effect != 'trash':
             raise ValueError('移动/改名计划只接收普通文件；目录请先展开为明确文件清单')
         if target:
             parent = target if effect == 'create' else target.parent
@@ -364,9 +364,6 @@ def prepare(runtime, args):
         if effect != 'create':
             if effect == 'trash': dst = f'.trash/{pid}_{len(steps)}_{source.name}'
             steps.append(dict(effect=effect, source=src, destination=dst, snapshot=snap))
-    if sources & destinations:
-        raise ValueError('计划包含互相依赖的来源与目标；请分为多个明确阶段，不能覆盖或循环移动')
-
     # A folder recycled whole carries its nested folders: a separate trash of one
     # of them is the same effect, merged. Recycled folders go last, after the
     # moves that empty them.
@@ -374,12 +371,17 @@ def prepare(runtime, args):
     steps = [s for s in steps if not (s['effect'] == 'trash' and any(
         Path(s['source']) != f and Path(s['source']).is_relative_to(f) for f in folders))]
     steps.sort(key=lambda s: s['effect'] == 'trash' and s['snapshot']['kind'] == 'directory_tree')
-    # A source directory cannot contain another action or target.
+    # A folder moved or recycled cannot hold another target, at either end.
     for row in steps:
-        if row['snapshot']['kind'] in {'empty_directory', 'directory_tree'}:
-            p = sb.path(row['source'], exact=True)
-            if any(sb.path(s['destination'], exact=True).is_relative_to(p) for s in [*dirs.values(), *steps] if s['destination'] and s is not row):
-                raise ValueError('回收目录包含计划目标，请拆分阶段')
+        if row['snapshot']['kind'] in FOLDER_KINDS:
+            ends = [sb.path(row['source'], exact=True)]
+            if row['effect'] != 'trash': ends.append(sb.path(row['destination'], exact=True))
+            inside = [s['destination'] for s in [*dirs.values(), *steps] if s['destination'] and s is not row
+                      and any(sb.path(s['destination'], exact=True).is_relative_to(p) for p in ends)]
+            if inside:
+                raise ValueError(f"本计划移动或回收的文件夹 {row['source']} 内还有计划目标（如 {_names(inside)}），"
+                                 '请拆分阶段：先执行这一个计划，再为后续操作准备新计划')
+    steps = _order(sb, steps)
     steps = list(dirs.values()) + steps
     for i, row in enumerate(steps): row['id'] = f'{pid}:{i}'
     producers = ['file_plans'] + (['classification_plans'] if classification else [])
@@ -446,6 +448,9 @@ def _normalize(runtime, actions):
             dst = action['destination'].rstrip('/')
             try: is_dir = sb.path(dst, exact=True).is_dir()
             except Exception: is_dir = False
+            if is_dir:
+                try: is_dir = not os.path.samefile(sb.path(runtime._resolve(action['source']), exact=True), sb.path(dst, exact=True))
+                except OSError: pass
             if is_dir or dst in creates or shared[action['destination']] > 1:
                 name = Path(runtime._resolve(action['source'])).name
                 action['destination'] = (Path(dst) / name).as_posix()
@@ -500,6 +505,78 @@ def _within_choice(runtime, chosen, steps):
     if extra:
         raise ValueError(f"计划超出用户所选选项 {chosen['key']}（{chosen['label']}）的范围：{'、'.join(extra[:3])}。"
                          '请只执行该选项声明的操作；需要更多操作时先向用户说明')
+
+
+def folder_snapshot(folder, src, moved_out):
+    """A folder moved or renamed after this plan has moved its files out.
+
+    Only what travels harmlessly may stay: empty subfolders and verified system
+    metadata. A folder still holding files is not moved whole, so every file
+    keeps its own snapshot and line on the confirmation card.
+    """
+    t = scan_tree(folder)
+    if t['busy'] or t['special']:
+        raise ValueError(f"{src} 含锁文件或特殊对象 {_names(t['busy'] + t['special'])}（正被打开的文档、隐藏文件夹、符号链接或应用包），"
+                         '工具不移动此文件夹。请如实告诉用户由用户处理；其余操作可以照常进行')
+    moving = sorted(p for p in t['visible'] if f'{src}/{p}' in moved_out)
+    left = [p for p in t['visible'] if p not in moving]
+    if left:
+        raise ValueError(f"{src} 还有 {len(left)} 个可见文件不在本计划的移动中（如 {_names(left)}）。"
+                         '移动或改名文件夹前，须在同一计划中先把其中的文件逐个移出；不想动这些文件时，请改为只移动需要的文件')
+    if t['hidden']:
+        raise ValueError(f"{src} 含非系统隐藏文件 {_names(t['hidden'])}，移动文件夹会把它们一并带走，而确认卡片不会列出；"
+                         '请如实告诉用户，由用户决定，不要换路径重试')
+    return dict(kind='directory_tree', stat=signature(folder), sha256=None, moved_out=moving,
+                dirs=t['dirs'], files=dict(t['metadata']), metadata=sorted(t['metadata']), hidden=[],
+                notes=t['notes'], sensitive={})
+
+
+def _same_object(a, b):
+    try: return a.exists() and b.exists() and os.path.samefile(a, b)
+    except OSError: return False
+
+
+def _present(path):
+    """The exact name is on disk; a case-insensitive volume also "finds" a.jpg as a.JPG."""
+    try: return path.name in os.listdir(path.parent)
+    except OSError: return False
+
+
+def _case_only(sb, step):
+    """A rename that changes only letter case (or another folding) of the same object."""
+    if not step['source'] or step['effect'] == 'trash': return False
+    source, target = sb.path(step['source'], exact=True), sb.path(step['destination'], exact=True)
+    return source != target and _same_object(source, target)
+
+
+def _order(sb, steps):
+    """Steps in an order that runs. Each source names an object as it is now.
+
+    A target still occupied must be vacated by an earlier step of this plan
+    (B→C before A→B; a case-only rename vacates its own target), and a folder
+    moved or recycled goes after the moves that empty it. A cycle (two names
+    swapped) has no such order and is refused, not routed via a temporary name.
+    """
+    paths = [sb.path(s['source'], exact=True) for s in steps]
+    after = [set() for _ in steps]
+    for i, s in enumerate(steps):
+        if s['effect'] != 'trash':
+            target = sb.path(s['destination'], exact=True)
+            if target.exists() or target.is_symlink():
+                vacating = [j for j, p in enumerate(paths) if _same_object(p, target)]
+                if not vacating: raise ValueError('目标已存在，不会覆盖：'+s['destination'])
+                after[i].update(j for j in vacating if j != i)
+        if s['snapshot']['kind'] in FOLDER_KINDS:
+            after[i].update(j for j, p in enumerate(paths) if j != i and p.is_relative_to(paths[i]))
+    order, done = [], set()
+    while len(order) < len(steps):
+        ready = next((i for i in range(len(steps)) if i not in done and after[i] <= done), None)
+        if ready is None:
+            stuck = [steps[i]['source'] for i in range(len(steps)) if i not in done]
+            raise ValueError(f"计划中的动作互相依赖，没有可执行的顺序（如两个文件互换名字）：{_names(stuck)}。"
+                             '请分两次：先只把其中一个改成临时名并执行，再准备下一个计划')
+        order.append(ready); done.add(ready)
+    return [steps[i] for i in order]
 
 
 def _selection_count(sb, sel):
@@ -632,8 +709,8 @@ def _validate(runtime, plan, pending=None):
 
 def _check_remaining(runtime, plan):
     sb = runtime.sb
-    for s in plan['payload']['steps']:
-        if s['id'] in plan['progress']: continue
+    remaining = [s for s in plan['payload']['steps'] if s['id'] not in plan['progress']]
+    for i, s in enumerate(remaining):
         if s['source']:
             if not _same(_visible(sb, s['source'], write=True), s['snapshot'], pending=True):
                 raise ValueError('源文件版本变化或不存在：'+s['source'])
@@ -641,7 +718,9 @@ def _check_remaining(runtime, plan):
             raise ValueError('回收区不能是符号链接')
         target = sb.path(s['destination'], exact=True)
         if s['effect'] != 'trash': _visible(sb, s['destination'], write=True)
-        if target.exists():
+        # Vacated by an earlier step of this plan, or by this case-only rename itself.
+        if target.exists() and not any(_same_object(sb.path(r['source'], exact=True), target)
+                                       for r in remaining[:i + 1] if r['source']):
             raise ValueError('计划目标已存在或计划过期：'+s['destination'])
 
 
@@ -676,7 +755,12 @@ def _recover_inflight(runtime, plan):
         raise ValueError('回收区不能是符号链接')
     target = runtime.sb.path(step['destination'], exact=True)
     source = _visible(runtime.sb, step['source']) if step['source'] else None
-    if not target.exists() and (source is None or _same(source, step['snapshot'])):
+    if source is not None and _same_object(source, target):
+        # Case-only rename: both names "exist"; only the exact listing tells.
+        target_there, source_there = _present(target), _present(source)
+    else:
+        target_there, source_there = target.exists(), source is not None and source.exists()
+    if not target_there and (source is None or _same(source, step['snapshot'])):
         # An intent was saved, but no physical mutation is visible. Resume only
         # after the ordinary preflight and fresh confirmation below.
         plan.pop('inflight'); runtime.store.save_file_plan(plan)
@@ -688,7 +772,7 @@ def _recover_inflight(runtime, plan):
     op = 'make_dir' if step['effect']=='create' else step['effect']
     recorded = any(r.get('action_id') == sid and r['op'] == op and
                    r['src'] == step['source'] and r['dst'] == step['destination'] for r in records)
-    if source and not source.exists() and recorded and _same(target, step['snapshot'], moved=True):
+    if source and not source_there and recorded and _same(target, step['snapshot'], moved=True):
         progress = dict(run_id=plan['inflight_run'], log_path=str(log), stat=signature(target))
         plan['progress'][sid] = progress
         plan.pop('inflight'); runtime.store.save_file_plan(plan)
@@ -760,7 +844,7 @@ def execute(runtime, plan_id, oplog, confirmer):
                 {k:s[k] for k in ('effect','source','destination')} for s in remaining])
             if plan['payload'].get('scope_additions'):
                 review['scope_additions'] = plan['payload']['scope_additions']
-            trees = [s for s in remaining if s['snapshot'] and s['snapshot']['kind'] == 'directory_tree'
+            trees = [s for s in remaining if s['effect'] == 'trash' and s['snapshot'] and s['snapshot']['kind'] == 'directory_tree'
                      and (s['snapshot']['metadata'] or s['snapshot']['hidden'])]
             if trees:
                 review['hidden_contents'] = [dict(folder=s['source'], metadata=s['snapshot']['metadata'],
@@ -788,7 +872,8 @@ def execute(runtime, plan_id, oplog, confirmer):
                     raise ValueError('回收区不能是符号链接')
                 target = runtime.sb.path(s['destination'], exact=True)
                 if s['effect'] != 'trash': _visible(runtime.sb, s['destination'], write=True)
-                if target.exists(): raise ValueError('目标被其他操作占用：'+s['destination'])
+                if target.exists() and not _case_only(runtime.sb, s):
+                    raise ValueError('目标被其他操作占用：'+s['destination'])
                 plan['inflight'] = s['id']
                 plan['inflight_log'] = str(oplog.path)
                 plan['inflight_run'] = runtime.run_id
@@ -892,8 +977,9 @@ def verify_plan(plan, sb, partial=False):
                (False, f"选择集 {sel['path']} 现在有 {count} 个文件，此前“无需操作”的结论不再成立")
     if not partial and (plan['status'] not in {'completed','executing'} or len(plan['progress']) != len(plan['payload']['steps'])):
         return False, '计划尚未全部执行：'+plan['id']
-    for s in plan['payload']['steps']:
-        if s['id'] not in plan['progress']: continue
+    done = [s for s in plan['payload']['steps'] if s['id'] in plan['progress']]
+    refilled = [sb.path(s['destination'], exact=True) for s in done if s['effect'] != 'trash']
+    for s in done:
         if s['effect'] == 'trash' and (sb.root/'.trash').is_symlink():
             raise ValueError('回收区不能是符号链接')
         target = sb.path(s['destination'], exact=True)
@@ -904,7 +990,12 @@ def verify_plan(plan, sb, partial=False):
             # Internal trash destinations are compiler-generated, never model inputs.
             if s['effect'] != 'trash': _visible(sb, s['destination'])
             if not _same(target, s['snapshot'], moved=True): return False, '目标内容或身份不符：'+s['destination']
-            if _visible(sb, s['source']).exists(): return False, '原位置仍存在：'+s['source']
+            source = _visible(sb, s['source'])
+            if _same_object(source, target) and not _present(target):
+                return False, '改名未生效（仅大小写不同）：'+s['destination']
+            # The old place may hold what a later step of this plan put there (A→B after B→C).
+            if source.exists() and not any(_same_object(source, d) for d in refilled):
+                return False, '原位置仍存在：'+s['source']
     return True, '操作清单的位置与内容核验通过'
 
 
