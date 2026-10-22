@@ -289,3 +289,16 @@ def test_choose_presses_the_one_matching_option_or_records_none():
     text, record = choose({'choose': ['覆盖']}, report)  # two labels match: never guess
     assert text == NO_MATCH and record['key'] is None and len(record['matched']) == 2
     assert choose('保留', report) == ('保留', None)
+
+
+def test_choose_by_declared_actions_ignores_wording():
+    from eval.live_policy import choose, NO_MATCH
+    keep = dict(key='A', label='暂不删除「资料」', actions=[dict(effect='move', path='资料/a.pdf', destination='归档'),
+                                                         dict(effect='move', path='./资料/计划.docx', destination='归档')])
+    two = dict(key='B', label='只移 a', actions=[dict(effect='move', path='资料/a.pdf', destination='归档')])
+    wait = dict(key='C', label='先等等', actions=[])
+    turn = {'choose_actions': {'has': [dict(effect='move', path='资料/a.pdf'), dict(effect='move', path='资料/计划.docx')],
+                               'lacks': [dict(effect='trash')]}}
+    assert choose(turn, dict(choices=[wait, two, keep]))[0] == 'A'
+    trash = dict(keep, key='D', actions=keep['actions'] + [dict(effect='trash', path='资料')])
+    assert choose(turn, dict(choices=[trash, two]))[0] == NO_MATCH
