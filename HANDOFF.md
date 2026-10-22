@@ -1,43 +1,44 @@
 # FileButler 项目交接（HANDOFF）
 
-更新时间：2026-10-21 晚（Asia/Shanghai）。供新对话或下一位维护者直接接续。上午版本的交接内容已按下午的进展更新。
+更新时间：2026-10-22 下午（Asia/Shanghai）。供新对话或下一位维护者直接接续。第 1、2、4、5、11 节已按 10-22 的状态重写；第 7、8 节是逐条累积的事实和待办。
 
 ## 1. 接手先看这几句话
 
-**当前状态：核心问题已修复并通过离线验证，最后一轮真实模型复验接近通过，但整体仍未通过。**
+**当前状态：协议 v3 是默认配置，已多轮真实复验通过；但每组只跑过 1 次，还没有成功率和波动的数字。**
 
-- **2026-10-21 深夜：P1-4 协议 v3 已实现，只经过离线验证，尚未提交**。设计、授权边界和数字见 [docs/protocol-v3-2026-10-21.md](docs/protocol-v3-2026-10-21.md)。`config.yaml` 的默认值已改为 `protocol: v3`、`prompt: v9_intent`。
-- 最新离线结果：529 passed，约 45 秒。新增 v3 测试 31 项，归因脚本测试 4 项；另有 7 项旧测试按用户确认的新授权边界改写了断言。
-- **用户运行修复与选择题策略**（提交 eaba390 及之后）：非空目录的报错写明隐藏文件和拆分方法；新增 finish_task.unfinished；新增 ask_user，提供字母选项和网页按钮。离线测试 565 passed，尚未真实复验，也还没做 E4 实验。
-- **第 10 轮第二套盲测 8/8，第 11 轮第一套重跑 8/8**（提交 7d2bc53，finish_task.reply 修复了主答复缺少回答的问题），两轮约 ¥0.19。副作用：模型常在 reply 里复述已执行的操作，主答复变长。最新离线结果：556 passed。
-- **第 09 轮新盲测（8 组，提交 1c51936 冻结）**：7/8 通过，文件结果 8/8 正确，被拒绝调用 0，费用约 ¥0.09。未通过的一组原因在产品：任务完成时，主答复不显示模型的说明，所以用户在写任务里顺带问的问题（"告诉我是哪些重名"）看不到回答。待修复，修复后需要另一套新盲测确认。
-- **第 08 轮（v3，提交 26af924）整体验收通过**：13/13 组通过，文件结果全部正确；请求 81，被拒绝调用 0，费用约 ¥0.23。第 07 轮的两处修复在真实运行中生效。holdout 已经参与调试，下一步要用新的盲测场景，v2 和 v3 各跑 3 次。
-- **第 07 轮（v3，提交 9f7f772）**：整组通过 11/13，文件结果 13/13 正确；请求 78，纯协议纠错请求 1.3%，费用约 ¥0.22。剩下 2 组是误报 partial，原因是修订时部分没写 id、登记前读到的证据没有保留。已在提交 434762c 中离线修复，尚未真实复验。最新离线结果：536 passed。
-- **第 06 轮真实复验（v3，13 组）**：整组通过 9/13，文件结果 13/13 正确；请求 116→91，纯协议纠错请求 22.4%→3.3%，费用 ¥0.52→¥0.26。没通过的 4 组只差状态：模型把已能表达的要求写进了 notes，导致 needs_review；还有一组用文件计划代替 deduplicate，导致误报 partial。详见 docs/live-acceptance-2026-10-21-rounds.md 第 06 轮。
-- 提示词精确性归因：`eval/protocol_errors.py <结果目录...>`，结论见设计文档"提示词是否不够精确"一节。v2 提示冻结为对照基线。
-- 最后一轮真实模型（第 05 轮，DeepSeek `deepseek-flash`）：holdout 5/5 通过；回归套件 6/8 通过，所有组的文件结果、内容保护和撤销都正确，没通过的两组只差状态口径。共 116 次请求，约 ¥0.52。
-- 没通过的两组：target_conflict 的“写任务未执行任何操作”已离线修复为 waiting_input，**未经真实模型复验**；real_classification 第 1 轮是 waiting_input，用户认可这一状态，但冻结的场景期望尚未修改。
-- 回归套件请求数 78 → 87 → 72 → 62，净耗时 177 → 137 秒；每组只采样一次，波动很大，不声称稳定提速。
-- holdout 5 组已在第 02、04 轮参与定位和修复，**不再是盲测**。下一次真实复验前要准备新的盲测场景。
-- 用户 2026-10-21 晚说“今天先到这里”。不要把本交接当作授权：继续改代码、推送、合并或调用付费模型前，先确认用户在新对话中的具体要求。
-
-下一轮最重要的方向：**用新的盲测场景真实复验 v3**，每组跑 3 次，并和 v2 配对对比（`eval.live_policy --protocol v2|v3`）。v3 的模型可见提示和 schema 已从 39.3k 字符降到 26.1k 字符（−34%，其中包括给所有 v3 字段补的说明）；脚本回放中每个场景都能在 2–5 次请求内无协议错误地完成，但这只是下限，不是真实模型的结论。不要针对某个中文词、目录名或论文做专项补丁。
+- 默认 `protocol: v3`、`prompt: v9_intent`。v2 + `v8_tasks` 冻结为对照基线（`tests/fixtures/v2_tool_schemas_20261021.json`，v2 不显示 `V2_HIDDEN_FIELDS`），不要改。
+- 离线测试 643 passed（2026-10-22）。
+- 真实复验（DeepSeek `deepseek-flash`，每组 1 次）：
+  - 第 08 轮：回归 + holdout 13/13，¥0.23。同一套场景的 v2（第 05 轮）是 11/13、¥0.52。
+  - 第 09–11 轮：两套盲测 7/8 → 8/8、8/8。
+  - 第 12–14 轮：隐藏文件分级、选项检查、文字同意：5/5、6/6、7/7。
+  - 第 15–16 轮：文件名注入、翻页平铺、锁文件、提问后发新请求：4/4。
+  - 第 17–18 轮：计划按依赖排序（平铺重名、只改大小写、清空后改名文件夹、互换名字）：4/4。
+- 2026-10-22 用户在浏览器里验收了：文件名注入的确认卡片、锁文件提问、最终回复去重（见第 8 节 P4）。
+- 用户 2026-10-22 决定：**单个计划超过 500 项不做自动分批**。
+- 下一步建议（详见第 8 节）：
+  - 每组跑 3 次的新盲测，加上 v2 对照，约 ¥1.2，需授权；
+  - E4 反问实验；
+  - P2 文件系统边界情况；
+  - 浏览器验收发现的两个回复格式问题。
+- 不要把本交接当作授权：改代码、推送、合并或调用付费模型前，先确认用户在新对话中的具体要求。付费复验前先报估算。
 
 ## 2. 项目位置与 Git 状态
 
 | 项目 | 当前值 |
 | --- | --- |
 | 仓库根目录 | `/Users/nanjo/Desktop/projects/DocAgent/filebutler` |
-| 当前分支 | `optimize/completion-binding`（从 `master` 的 `a489b21` 分出） |
-| 分支提交 | `7312f61` 任务运行时 V2 与 P0；`aee0270` 真实复验修复、多维判定、前端优化与删除对话；`f11b990` 可拖动分栏、删除按钮修复、标题截断；之后还有一次文档更新提交 |
-| GitHub | https://github.com/NanjoCas/Filebutler，本分支已于 2026-10-21 推送到 origin（`optimize/completion-binding`），**未合并回 `master`** |
+| 当前分支 | `optimize/completion-binding`（从 `master` 的 `a489b21` 分出），**未合并回 `master`** |
+| GitHub | https://github.com/NanjoCas/Filebutler；推送前先确认本地是否有未推送的提交（`git status -sb`） |
 | origin fetch / push | `https://github.com/NanjoCas/Filebutler.git` / `git@github.com:NanjoCas/Filebutler.git` |
 
-交接时工作区是干净的。被 `.gitignore` 排除的内容不在提交里：`eval/results/`、`logs/`、`data/real/`、`sandbox/`、`.filebutler-ui/`、`.env`。真实验收的原始证据只在本机，需要时另外保存。
+被 `.gitignore` 排除的内容不在提交里：`eval/results/`、`logs/`、`data/real/`、`sandbox/`、`.filebutler-ui/`、`.env`。真实验收的原始证据只在本机。
 
-当天按用户要求删除了 8 份过时文档，备份在仓库外的 `/Users/nanjo/Desktop/projects/DocAgent/docs-archive-2026-10-21.tar.gz`，其中 4 份原本未进 git，只能从这个备份找回。
+文档清理记录：
+- 2026-10-21 删除 8 份过时文档，备份在仓库外的 `/Users/nanjo/Desktop/projects/DocAgent/docs-archive-2026-10-21.tar.gz`。其中 4 份原本没进 git，只能从这个备份找回。
+- 2026-10-22 删除 6 份过程文档（10-20 到 10-21 的验收和优化记录、Agent 架构 V2）和 5 个旧评测脚本（`eval/acceptance*.py`、`acceptance_browser.mjs`、`compare_runtime.py`、`classification.py`）。它们都在 git 里，可以从提交 `d0c7bbc` 找回；结论摘要保留在 `docs/experiments.md`。
 
-本机 Git 不支持 `git branch --show-current`，使用 `git rev-parse --abbrev-ref HEAD`。调用付费 API 的命令要用 `zsh -ic '...'` 运行，否则工具 shell 可能读不到 `~/.zshrc` 里的 `DEEPSEEK_API_KEY`。
+本机 Git 不支持 `git branch --show-current`，用 `git rev-parse --abbrev-ref HEAD`。调用付费 API 的命令要用 `zsh -ic '...'` 运行，否则工具 shell 可能读不到 `~/.zshrc` 里的 `DEEPSEEK_API_KEY`。
 
 ## 3. 用户目标与长期偏好
 
@@ -57,14 +58,14 @@
 
 ## 4. 优先阅读的材料
 
-按这个顺序读；历史方案与最新结果矛盾时，以最新复验事实为准：
+按这个顺序读；历史描述与最新结果矛盾时，以最新复验事实为准：
 
-1. [2026-10-21 下午复验轮次](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/live-acceptance-2026-10-21-rounds.md)：新判定口径、逐轮数据、每轮暴露的问题和修复、证据位置。
-2. [完成条件本地绑定与动作归属](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/completion-binding-2026-10-21.md)：P0-1、P0-2、P1-3 的设计及后续补充修复。
-3. [2026-10-21 上午真实模型复验](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/live-acceptance-2026-10-21.md)：修复前的失败基线。
-4. [本地计划执行优化 V1](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/local-execution-optimization-2026-10-21.md)、[策略重构](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/policy-redesign-2026-10-20.md)、[Agent 架构 V2](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/agent-architecture-v2.md)。
-5. [工程笔记](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/engineering-notes.md)、[实验记录](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/experiments.md)：末尾有当天的取舍、踩坑和数据。
-6. [README](/Users/nanjo/Desktop/projects/DocAgent/filebutler/README.md)：启动、评测命令与功能概览；后半部分仍有历史 V7 描述，当前默认以 config 和运行时代码为准。
+1. 本文件第 7、8 节：验收结果目录和待办清单。
+2. [真实复验轮次](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/live-acceptance-2026-10-21-rounds.md)：第 02–18 轮的判定口径、逐轮数据、暴露的问题和修复。
+3. [协议 v3](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/protocol-v3-2026-10-21.md)：设计、授权边界、字符数对比。
+4. [系统文件名单](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/system-files-candidates-2026-10-22.md)：回收文件夹时的分级依据。
+5. [实验记录](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/experiments.md)、[工程笔记](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/engineering-notes.md)：早期实验和技术取舍的时间线。
+6. [README](/Users/nanjo/Desktop/projects/DocAgent/filebutler/README.md)：对外介绍、启动和评测命令、设计决策表。
 
 ## 5. 启动、配置和数据
 
@@ -85,16 +86,16 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 
 | 配置 | 值 |
 | --- | --- |
-| model / prompt | `deepseek-flash` / `v8_tasks` |
+| model / protocol / prompt | `deepseek-flash` / `v3` / `v9_intent`（对照：`v2` / `v8_tasks`） |
 | local_runtime / task_runtime | `true` / `true` |
-| local_dispatch | `true`，仅旧控制器有效；默认 V2 不走关键词捷径 |
+| local_dispatch | `true`，仅旧控制器有效；任务控制器不走关键词捷径 |
 | max_steps | 25 |
 | task_query_limit / task_read_limit | 12 / 40，跨续做累计 |
 | task_repair_limit | 6；0 关闭无进展修复保护 |
 | repeat_detection / retrieval | `true` / `true` |
 | llm_timeout / llm_retries | 60 秒 / 1；真实验收覆盖为 0 次重试 |
 | cost_budget | 每轮 ¥0.30 软预算，非硬账单上限 |
-| confirm | `risky`；V2 强制展示写入确认，调用方显式 `never` 除外 |
+| confirm | `risky`；文件计划强制展示确认卡片，调用方显式 `never` 除外 |
 | context_compress / reflect | `false` / `false` |
 | sandbox | 仓库下 `./sandbox` |
 
@@ -114,8 +115,10 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | 文件/模块 | 作用与重要边界 |
 | --- | --- |
 | `agent/loop.py` | 模型循环、工具分发、预算、事件与收尾；默认接入 TaskRuntime。 |
-| `agent/task.py` | Pydantic 任务/条件/规则、TaskStore SQLite、修订/CAS、任务编辑与人工复核、blocker 记录与 task_state；完成条件的引用已由本地绑定，但条件本身仍由模型编写，这是 P1-4 要解决的。 |
-| `agent/task_runtime.py` | set_task、begin_step、finish_task、编辑/查询、新计划控制工具；权限和约束检查；控制工具与普通工具的观察处理不同。 |
+| `agent/task.py` | Pydantic 任务/条件/规则、TaskStore SQLite、修订/CAS、任务编辑与人工复核、blocker 记录与 task_state；完成条件的引用由本地绑定；v2 下条件由模型编写，v3 下由 `agent/intent.py` 本地生成。 |
+| `agent/task_runtime.py` | 两套协议的控制工具（v3：start_task、revise_task、ask_user、finish_task；v2：set_task、begin_step 等）、工具可见性、权限和约束检查、选项检查与用户选择约束。 |
+| `agent/intent.py` | v3：把模型给的部分和限制编译成完成条件、写入范围和效果。 |
+| `agent/system_files.py`、`agent/secrets_scan.py` | 回收文件夹时的系统文件名单与内容核验；隐藏文件的密钥扫描（只加强警告）。 |
 | `agent/file_plans.py` | prepare_file_plan / execute_file_plan / inspect_file_plan。模型选择对象，本地生成目录、范围需求、清单、源快照、摘要、执行与核验；已有任务不自动扩权限。 |
 | `agent/completion.py` | files_placed / empty_directories_removed 的执行前快照及核验；无效快照前置拒绝，旧任务写入前也检查。 |
 | `agent/constraints.py` | 本地操作谓词、祖先/后代范围、数量/内容等检查；不按自然语言关键词授权。 |
@@ -133,9 +136,10 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | `tools/retrieval.py`、`tools/fs_read.py` | BM25、文本/PDF 读取；页范围可配置，默认前两页，不保证穷尽，不含 OCR。 |
 | `tools/fs_write.py` | 旧单项创建/移动/改名/回收，继续保留。 |
 | `safety/atomic.py` | 新执行器的原子禁止覆盖移动：macOS renamex_np、Linux renameat2；缺接口拒绝，不退回覆盖型 rename。 |
+| `safety/names.py` | 文件名隔离：工具结果中含换行、控制符、双向控制符、尖括号的名字统一转义并附 F 标识；确认卡片上的可见标记。 |
 | `safety/oplog.py`、`safety/confirm.py` | 写入日志/undo、确认策略；日志逐项 flush/fsync，新计划带 action_id。 |
 | `webapp.py`、`web_confirm.py`、`web/` | FastAPI、结构化确认预览、多会话与删除对话、文件预览、Markdown、事件动画、任务复核、可拖动分栏；会话渲染有缓存，静态文件 no-cache。 |
-| `eval/live_policy.py`、`eval/judge.py`、`eval/rejudge.py`、`eval/holdout_cases.py`、`eval/dryrun.py` | 生产 Agent 验收入口、多维判定、离线重判、holdout 场景和脚本模型干跑。 |
+| `eval/live_policy.py`、`eval/judge.py`、`eval/rejudge.py`、`eval/*_cases.py`、`eval/dryrun.py` | 生产 Agent 验收入口、多维判定、离线重判、各套场景（holdout、blind、blind2、hidden、p0、p1）和脚本模型干跑。 |
 
 ### 新计划链路
 
@@ -146,7 +150,9 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 - SQLite 保存计划、执行前意图和逐项进度；完整日志与对象身份/哈希一致才恢复已完成动作。结果不明的崩溃窗口停止核查，不自动重放。
 - 已完成计划重复执行只核验、不重复修改。部分续做保留前轮账本和日志；撤销依然按各 run 进行。
 
-限制：新执行器的资料库锁尚未覆盖全部旧写入路径，并且确认期间持锁；不等于全应用统一事务。非空目录移动、覆盖、互换/循环依赖暂需拆成明确阶段。PDF 缓存不是完整文档库、OCR 或向量索引。
+- 计划内按依赖排序（2026-10-22）：每个 source 指执行前的对象；先腾名再放入、连续改名、只改大小写、先移出文件再移动或改名文件夹，都可以在一个计划里完成。同一任务的后续计划接着移动前一计划的结果时，前一步由后者接续核验。
+
+限制：新执行器的资料库锁尚未覆盖全部旧写入路径，并且确认期间持锁；不等于全应用统一事务。不支持覆盖；互换名字等循环依赖须分两个计划；还有未移出文件的文件夹不能整体移动。PDF 缓存不是完整文档库、OCR 或向量索引。
 
 ## 7. 最近的真实验收：必须保留的事实
 
@@ -334,12 +340,15 @@ git diff --check
 
 修复流程：先把真实失败做成离线回放，在修复前的代码上确认测试失败，再改实现，并补反向测试。
 
-真实复验会收费，输出目录必须是新的。正式入口（只写不跑，跑前先报估算，上一轮两套合计约 ¥0.52）：
+真实复验会收费，输出目录必须是新的。正式入口（只写不跑，跑前先报估算；参考：13 组约 ¥0.23，4 组约 ¥0.06–0.09）：
 
 ```bash
-zsh -ic '.venv/bin/python -m eval.live_policy --live --suite regression --out eval/results/policy_live_NEXT_regression --total-cap 0.8'
-zsh -ic '.venv/bin/python -m eval.live_policy --live --suite holdout --out eval/results/policy_live_NEXT_holdout --total-cap 0.6'
+zsh -ic '.venv/bin/python -m eval.live_policy --live --suite all --protocol v3 --out eval/results/policy_live_NEXT_v3_all --total-cap 0.5'
+zsh -ic '.venv/bin/python -m eval.live_policy --live --suite blind2 --protocol v2 --out eval/results/policy_live_NEXT_v2_blind2 --total-cap 0.3'
+zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --protocol v3 --cases p1_swap --out eval/results/policy_live_NEXT_p1_swap --total-cap 0.05'
 ```
+
+套件：regression 8、holdout 5、all 13、blind 8、blind2 8、hidden 7、p0 4、p1 4。新场景要在跑真实模型前提交冻结，之后不改期望；检查写错时，在提交说明里写明原因，期望保持不变。
 
 评测设置了关闭自动重试，遇到网络中断整套会中止，只能用新目录重跑。总 cap 是按轮检查的软上限。复验期间冻结产品代码。
 
@@ -355,4 +364,4 @@ zsh -ic '.venv/bin/python -m eval.live_policy --live --suite holdout --out eval/
 
 ## 11. 新对话可直接使用的接手提示
 
-> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md` 和 `docs/live-acceptance-2026-10-21-rounds.md`，用 `git status --short` 确认工作区。当前在分支 `optimize/completion-binding`，494 项离线测试通过；最后一轮真实复验 holdout 5/5、回归 6/8，整体未通过，holdout 已不是盲测。下一步候选是 P1-4（简化模型可见协议）和准备新的盲测场景。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录；推送、合并和调用付费模型前先确认我的具体要求。
+> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `optimize/completion-binding`，默认协议 v3，643 项离线测试通过；第 08–18 轮真实复验都已通过，但每组只跑过 1 次。下一步候选：每组 3 次的新盲测加 v2 对照、E4 反问实验、P2 文件系统边界。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
