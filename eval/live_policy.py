@@ -113,8 +113,9 @@ from eval.hidden_cases import HIDDEN_CASES, hidden_checks, hidden_fixture  # noq
 from eval.p0_cases import P0_CASES, p0_checks, p0_fixture  # noqa: E402
 from eval.p1_cases import P1_CASES, p1_checks, p1_fixture  # noqa: E402
 from eval.product_cases import PRODUCT_CASES, product_checks, product_fixture  # noqa: E402
+from eval.blind3_cases import BLIND3_CASES, blind3_checks, blind3_fixture  # noqa: E402
 
-SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES}
+SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES, 'blind3': BLIND3_CASES}
 CASE_SPECS = {case['id']: case for case in CASES + HOLDOUT_CASES}
 
 
@@ -161,6 +162,8 @@ def fixture(root, kind):
         p1_fixture(root, kind)
     elif kind.startswith('prod_'):
         product_fixture(root, kind)
+    elif kind.startswith('blind3_'):
+        blind3_fixture(root, kind)
     else:
         holdout_fixture(root, kind)
 
@@ -173,6 +176,24 @@ def labels(store):
         result.append(dict(plan_id=pid, dimension=plan.get('dimension'), base_dir=plan['base_dir'],
                            numbered=plan.get('numbered'), status=plan['status'], assignments=rows))
     return result
+
+
+NO_MATCH = '（评测：上一轮的选项中没有唯一符合的项）'
+
+
+def choose(turn, report):
+    """A turn written as {"choose": [words]} stands for the user pressing the one option
+    whose label contains one of the words; option order is the model's, so a fixed
+    letter cannot be frozen. No unique match sends a fixed text and is recorded."""
+    if not isinstance(turn, dict):
+        return turn, None
+    options = (report or {}).get('choices') or []
+    hits = [c for c in options if any(w in c['label'] for w in turn['choose'])
+            and not any(w in c['label'] for w in turn.get('avoid', []))]
+    if len(hits) == 1:
+        return hits[0]['key'], dict(words=turn['choose'], key=hits[0]['key'], label=hits[0]['label'])
+    return NO_MATCH, dict(words=turn['choose'], key=None, matched=[c['label'] for c in hits],
+                          offered=[c['label'] for c in options])
 
 
 def checks(case_id, turn, root, before, store, runtime, first_task):
@@ -190,6 +211,8 @@ def checks(case_id, turn, root, before, store, runtime, first_task):
         return p1_checks(case_id, turn, root, before, runtime, first_task)
     if case_id.startswith('prod_'):
         return product_checks(case_id, turn, root, before, runtime, first_task)
+    if case_id.startswith('blind3_'):
+        return blind3_checks(case_id, turn, root, before, runtime, first_task)
     after = snapshot(root, True)
     result = dict(contents_preserved=files_preserved(before, after))
     if case_id in {'root_only', 'cross_turn_correction'}:
@@ -284,8 +307,9 @@ def run_suite(cases, out, cfg, total_cap, llm_for, mode):
             library = Path(tmp)/'library' if case.get('isolate_parent') else Path(tmp)
             library.mkdir(exist_ok=True)
             sb = Sandbox(library); fixture(sb.root, case['fixture']); before = snapshot(sb.root, True)
-            store = ArtifactStore(sb); history = []; first_task = None
-            for index, instruction in enumerate(case['turns']):
+            store = ArtifactStore(sb); history = []; first_task = None; last_report = None
+            for index, turn in enumerate(case['turns']):
+                instruction, chosen = choose(turn, last_report)
                 if report['cost'] >= total_cap: report['budget_stopped'] = True; break
                 turn_cfg = {**cfg, 'cost_budget': min(cfg['cost_budget'], total_cap - report['cost'])}
                 llm = llm_for(case['id'], index, turn_cfg)
@@ -305,7 +329,8 @@ def run_suite(cases, out, cfg, total_cap, llm_for, mode):
                     result = run_agent(instruction, llm, sb, turn_cfg, Console(file=io.StringIO()), artifacts=store, history=history,
                                        oplog=OpLog(sb, f"{case['id']}_{index+1}"), confirmer=Confirmer('always', ask_action=approve),
                                        trace_path=case_dir/f'turn_{index+1}.trace.jsonl', on_event=observe)
-                    data = asdict(result); history = data.pop('messages')
+                    data = asdict(result); history = data.pop('messages'); last_report = data.get('report')
+                    if chosen: data['chosen_by_eval'] = chosen
                     safe_history = [{k: v for k, v in m.items() if k != 'reasoning_content'} for m in history]
                     (case_dir/f'turn_{index+1}.history.json').write_text(json.dumps(safe_history, ensure_ascii=False, indent=2))
                     (case_dir/f'turn_{index+1}.events.json').write_text(json.dumps(events, ensure_ascii=False, indent=2))
