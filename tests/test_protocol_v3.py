@@ -1265,3 +1265,49 @@ def test_no_source_file_hides_invisible_or_bidi_characters():
            for i, line in enumerate(p.read_text(encoding='utf-8', errors='replace').splitlines(), 1)
            if any(unicodedata.category(c) in ('Cf', 'Cc', 'Zl', 'Zp') and c != '\t' for c in line)]
     assert bad == [], bad
+
+
+# ============================================================================ paging (HANDOFF P0)
+# logs/20261021-230636: 126 files listed page by page before a selection plan.
+
+def test_a_paged_listing_points_to_selection(tmp_path):
+    (tmp_path / 'Docs').mkdir()
+    for i in range(130):
+        (tmp_path / 'Docs' / f'paper_{i:03d}_with_a_reasonably_long_title.pdf').write_text('x')
+    session = Session(tmp_path)
+    _, client = session.run('看看', [step(call('list_dir', {'path': 'Docs'}), call('list_dir', {'path': '.'}))], final='好')
+    paged, single = [c['text'] for c in client.calls('list_dir')]
+    assert '下一页用 page=2' in paged and 'selection 由本地展开全部文件' in paged
+    assert 'selection 由本地展开' not in single
+
+
+# ============================================================================ one reason, once (HANDOFF P0)
+# logs/20261021-230636: the .DS_Store reason appeared four times and ended in "。。".
+
+from agent.reporting import build_report
+
+REASON = '「文献」清空后仍含隐藏文件 .DS_Store，工具不处理隐藏文件，无法将文件夹移入回收区。'
+BLOCK = '文献 不是空目录：只含隐藏文件 .DS_Store'
+
+
+def report_task(declared=True):
+    unmet = [dict(kind='declared_unfinished', passed=False, needs_review=False, detail='模型声明未完成：' + REASON)] if declared \
+        else [dict(kind='directory_empty', passed=False, needs_review=False, detail='目录不为空：文献')]
+    return dict(status='partial', operations=[dict(op='move', kind='文件')] * 126, observations=[], unresolved_questions=[],
+                blockers=[dict(source='prepare_file_plan', object='', message=BLOCK, status='open')],
+                checks=[dict(goal_id='g1', description='平铺', passed=True, needs_review=False, conditions=[]),
+                        dict(goal_id='g2', description='回收空文件夹', passed=False, needs_review=False, conditions=unmet)])
+
+
+def test_a_reason_the_model_declared_is_stated_once_per_part_and_blockers_move_to_details():
+    report = build_report(report_task(), '摘要：空文件夹清理因 .DS_Store 未完成。', [], reply='126 个 PDF 已平铺；「文献」因 .DS_Store 无法回收。')
+    main = report['summary']
+    assert main.startswith('已移动 126 个文件。\n\n尚未全部完成。原因：\n- 回收空文件夹：模型说明：「文献」清空后')
+    assert '。。' not in main and '补充原因' not in main and '阻塞原因' not in main and '摘要：' not in main
+    assert main.endswith('126 个 PDF 已平铺；「文献」因 .DS_Store 无法回收。')
+    assert any(s['title'] == '阻塞原因' and BLOCK in s['markdown'] for s in report['sections'])
+
+
+def test_a_blocker_no_one_explained_stays_in_the_answer():
+    main = build_report(report_task(declared=False), '', [], reply='已平铺。')['summary']
+    assert '- 回收空文件夹：目录不为空：文献' in main and '阻塞原因：' + BLOCK + '。' in main
