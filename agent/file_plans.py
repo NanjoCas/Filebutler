@@ -647,6 +647,12 @@ def overwrites(sb, steps):
             and any(_same_object(sb.path(s['destination'], exact=True), t) for t in trashed)]
 
 
+def new_folders(plan):
+    """The outermost folders this plan creates (a new folder's own subfolders are left out)."""
+    created = [s['destination'] for s in plan['payload']['steps'] if s['effect'] == 'create']
+    return [d for d in created if not any(d != o and Path(d).is_relative_to(o) for o in created)]
+
+
 def _selection_count(sb, sel):
     """Visible files a selection picks now; a folder that no longer exists picks none."""
     if not sb.path(sel['path'], exact=True).exists(): return 0

@@ -809,6 +809,15 @@ class TaskRuntime:
                         self.capture_output(name, file_plans.markdown(plan), plan['id'])
                         text = f"OK: plan_id={plan['id']}；已预检 {len(plan['payload']['steps'])} 项操作；尚未执行。下一步 execute_file_plan 仅需此 ID。"
                         hints = file_plans.conflicts(self, plan)
+                        # User decision 2026-10-22: a target folder that does not exist is the
+                        # user's call unless a folder of the same meaning exists. Said here, where
+                        # the model decides; not after a choice, nor for classification plans.
+                        fresh = file_plans.new_folders(plan)
+                        if self.protocol == 'v3' and fresh and not self.chosen_option and not plan['payload'].get('classification'):
+                            text += (f"\n本计划会新建文件夹：{'、'.join(fresh)}。用户没有明确要求新建时：先在已有文件夹中找意思相同或相近的"
+                                     '（如"归档"与 Archive），有就改用它重新准备计划，并在 reply 说明；没有就 ask_user，'
+                                     '选项写在哪里新建（如资料库根目录、来源所在的文件夹）和取消这部分，不要直接执行此计划。'
+                                     '用户明确要求新建的，照常执行。')
                         if hints:
                             fix = 'revise_task 修正对应部分' if self.protocol == 'v3' else 'edit_task 修正完成条件'
                             text += '\n注意：' + '；'.join(hints) + f'。若与用户要求不符，请先用 {fix}；不要执行此计划。'
