@@ -24,6 +24,7 @@ from agent.prompts import SYSTEM_PROMPTS
 from agent.outcomes import stop_report, close_messages, save_outcome
 from agent.repetition import RepeatDetector, NoProgressGuard
 from agent.reflect import PASS_PREFIX, file_write_count, reflection_prompt, successful_writes
+from safety import names
 from safety.confirm import Confirmer
 from safety.oplog import OpLog
 from safety.sandbox import Sandbox
@@ -111,7 +112,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
     if cfg.get('task_runtime'):
         from agent.task_runtime import TaskRuntime
         runtime = TaskRuntime(instruction, cfg, sandbox, artifacts.run_id)
-        messages.append({'role': 'system', 'content': runtime.guidance()})
+        messages.append({'role': 'system', 'content': names.shield(runtime.guidance(), sandbox)})
     else:
         runtime = LocalRuntime(instruction,cfg) if cfg.get('local_runtime') else None
     if runtime:
@@ -270,6 +271,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 tool_elapsed = time.perf_counter() - t1
                 tool_seconds += max(0, tool_elapsed - tool_wait)
                 n_calls += 1
+                result = names.shield(result, sandbox)  # file names reach the model as data only
                 model_result = result
                 outcome = getattr(runtime, '_outcome', None)
                 if runtime and runtime.task == 'structured':
