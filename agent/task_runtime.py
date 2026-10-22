@@ -86,7 +86,7 @@ V3_FIELD_DOCS = {
         'actions': '逐项列出的操作；可与 selection 同时使用',
         'selection': '按目录规则选一批文件，由本地展开成清单',
         'Action.effect': 'create 建目录；move 移动（可跨目录）；rename 在原目录改名；trash 移入回收区（可撤销）',
-        'Action.source': '执行前已有的文件或文件夹的相对路径，也可写 file:F 标识；文件夹须由本计划先移出其中的文件；create 不填',
+        'Action.source': '执行前已有的文件或文件夹的相对路径，也可写 file:F 标识；文件夹整体移动（含隐藏文件或锁文件时不行）；create 不填',
         'Action.destination': '完整目标路径；move 也可写已有或本计划创建的目录，表示按原名放入；trash 不填',
         'Selection.path': '在哪个目录里选文件',
         'Selection.extensions': '只选这些后缀，如 ["txt"]；空列表表示全部可见文件',
@@ -318,7 +318,7 @@ class TaskRuntime:
                 '完成条件、写入范围和目标归属由本地生成，你不需要填写。\n'
                 '文件移动、改名、建目录、回收一律用 prepare_file_plan 列出对象（actions 或 selection），'
                 'destination 可写目标目录，表示按原名放入；父目录由本地创建。'
-                'source 指执行前的对象，本地按依赖排序：可先腾名再放入（A→B、B→C）、只改大小写、先移出文件再改名文件夹；互换名字须分两个计划。'
+                'source 指执行前的对象，本地按依赖排序：可先腾名再放入（A→B、B→C）、只改大小写；文件夹可整体移动或改名，里面的文件可在同一计划先改；互换名字须分两个计划。'
                 '取得 plan_id 后 execute_file_plan 一次完成确认、执行和核验；超出原范围的对象会列在确认卡片上。'
                 '同一响应中可依次调用 start_task 和 prepare_file_plan；task_id 只在续做以前的任务时填。\n'
                 'dedup 部分只能由 deduplicate 或 apply_dedup 完成（本地比对字节并生成回执），不要在文件计划里回收副本；'
@@ -486,7 +486,11 @@ class TaskRuntime:
         if effect in {'move', 'rename'}:
             if hidden: return '工具不能移动隐藏文件或隐藏文件夹：' + path, []
             if locked: return f'{path} 是锁文件，不能移动', []
-            if p.is_dir(): return f'计划只移动文件，{path} 需展开为其中的文件', []
+            if p.is_dir():
+                t = scan_tree(p)
+                if t['busy']: return f"{path} 中有正被打开的文档（{'、'.join(t['busy'][:3])}），不能整体移动", []
+                if t['special'] or t['hidden']:
+                    return f"{path} 含 {'、'.join((t['special'] + list(t['hidden']))[:3])}（隐藏项、链接或应用包），不能整体移动", []
             return None, []
         if hidden: return '隐藏对象只能随所在文件夹一起回收：' + path, []
         if locked: return f'{path} 是锁文件，不能回收', []
