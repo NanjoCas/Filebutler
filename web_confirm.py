@@ -177,8 +177,8 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
                 from agent.secrets_scan import describe
                 notes.append('⚠⚠ 本地检查发现疑似密钥，建议保留：'
                              + '；'.join(describe(f"{row['folder']}/{rel}", r, masked=True) for rel, r in row['sensitive'].items()) + '。')
-        if args.get('create_requested'):
-            notes.append('按你的要求新建文件夹：' + '、'.join(args['create_requested']) + '。如果你没有这样要求，请拒绝。')
+        if args.get('new_folders'):
+            notes.insert(0, '⚠ 将新建文件夹：' + '、'.join(args['new_folders']) + '。不是你想要的位置就拒绝，拒绝后不执行任何操作。')
         for row in args.get('folders') or []:
             sample = '、'.join(row['files'][:5]) + ('等' if len(row['files']) > 5 else '')
             notes.append(f"整体移动文件夹 {row['source']} → {row['destination']}：含 {len(row['files'])} 个文件"

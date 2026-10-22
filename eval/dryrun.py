@@ -83,7 +83,6 @@ SCRIPTS = {
          ('read_file', dict(path='Notes/note_03.txt')), ('read_file', dict(path='Notes/note_04.txt'))],
         [('prepare_file_plan', dict(
             description='回收字节相同副本 note_01_copy.txt，并把两篇光合作用笔记移到 Topics/光合作用', semantic_review=True,
-            create_requested=True,  # the request says "目录不存在就新建"
             actions=[dict(effect='trash', source='Notes/note_01_copy.txt'), dict(effect='create', destination=TOPIC)]
             + _moves([('Notes/note_01.txt', f'{TOPIC}/note_01.txt'), ('Notes/note_02.txt', f'{TOPIC}/note_02.txt')])))],
         _execute(),

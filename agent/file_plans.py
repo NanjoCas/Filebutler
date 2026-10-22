@@ -60,7 +60,6 @@ class PrepareFilePlan(StrictModel):
         description='已有任务中此计划服务的目标；可省略，本地按完成条件逐项归属，无法确定时才要求提供')
     task_id: str | None = Field(None, description='仅在续做以前的任务时填写，复制完整 ID，沿用原限制；本轮已调用 start_task 时不要填')
     semantic_review: bool = Field(False, description='分类或相关性等语义结论须为 true，本地只能证明文件操作')
-    create_requested: bool = Field(False, description='用户原话要求新建这些文件夹时为 true')
 
 
 class ExecuteFilePlan(StrictModel):
@@ -396,15 +395,9 @@ def prepare(runtime, args):
         raise ValueError(f"{exc}。同名文件的处理由用户决定：用户没交代时先 ask_user，给三个选项——"
                          f"保留两份（新文件改名为 {free_name(sb, dst, [s['destination'] for s in steps if s['destination']])}）、"
                          '不移动、覆盖（选项 actions 同时写 trash 旧文件和 move 新文件到原名；旧文件移入回收区，可撤销）') from exc
-    # User decision 2026-10-22: a target folder that does not exist is the user's call.
-    # Round 25: a hint after the plan was ignored once, so the plan is refused instead.
-    # The model's claim that the user asked for it is shown on the confirmation card.
+    # New folders are reversible and listed on the confirmation card; whether the user
+    # meant one is the model's judgement (asked to ask), not a local refusal.
     fresh = [d for d in dirs if not any(d != o and Path(d).is_relative_to(o) for o in dirs)]
-    if (fresh and getattr(runtime, 'protocol', 'v2') == 'v3' and not classification
-            and getattr(runtime, 'chosen_option', None) is None and not args.create_requested):
-        raise ValueError(f"目标文件夹 {_names(fresh)} 不存在。用户没有明确要求新建时，先 ask_user："
-                         '已有文件夹中有意思相同或相近的，就问是否指它，作为第一个选项；其余选项写在哪里新建和取消这部分。'
-                         '用户原话明确要求新建的，设 create_requested=true 重新准备')
     replaced = overwrites(sb, steps)
     agreed = getattr(runtime, 'overwrite_consent', {})
     refused = [d for d in replaced if not any(_key(d) == _key(runtime._resolve(c)) for c in agreed)]
@@ -438,7 +431,7 @@ def prepare(runtime, args):
     payload = dict(task_id=task['id'], revision=task['revision'], goal_ids=goal_ids,
                    description=args.description, steps=steps, classification=classification)
     if additions: payload['scope_additions'] = additions
-    if fresh and args.create_requested: payload['create_requested'] = fresh
+    if fresh: payload['new_folders'] = fresh
     if replaced:
         payload['overwrites'] = [dict(target=d, consent_source=next(v for c, v in agreed.items()
                                       if _key(d) == _key(runtime._resolve(c)))) for d in replaced]
@@ -931,8 +924,8 @@ def execute(runtime, plan_id, oplog, confirmer):
                 review['scope_additions'] = plan['payload']['scope_additions']
             if plan['payload'].get('overwrites'):
                 review['overwrites'] = plan['payload']['overwrites']
-            if plan['payload'].get('create_requested'):
-                review['create_requested'] = plan['payload']['create_requested']
+            if plan['payload'].get('new_folders'):
+                review['new_folders'] = plan['payload']['new_folders']
             whole = [dict(source=s['source'], destination=s['destination'], files=sorted(s['snapshot']['after']))
                      for s in remaining if s['snapshot'] and s['snapshot']['kind'] == 'folder']
             if whole:

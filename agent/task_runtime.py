@@ -125,7 +125,7 @@ V3_FIELD_DOCS = {
     },
 }
 # Fields added after the v2 live runs; v2 does not show them.
-V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id', 'Action.include_metadata', 'Action.include_hidden', 'create_requested'),
+V2_HIDDEN_FIELDS = {'prepare_file_plan': ('task_id', 'Action.include_metadata', 'Action.include_hidden'),
                     'finish_task': ('reply', 'unfinished', 'not_needed')}
 
 
@@ -830,6 +830,13 @@ class TaskRuntime:
                         self.capture_output(name, file_plans.markdown(plan), plan['id'])
                         text = f"OK: plan_id={plan['id']}；已预检 {len(plan['payload']['steps'])} 项操作；尚未执行。下一步 execute_file_plan 仅需此 ID。"
                         hints = file_plans.conflicts(self, plan)
+                        # User decision 2026-10-22: ask before creating a target folder the user
+                        # did not ask for. A judgement for the model, so a reminder at the point
+                        # of decision, not a refusal; the card lists new folders (reversible).
+                        fresh = plan['payload'].get('new_folders')
+                        if self.protocol == 'v3' and fresh and not self.chosen_option and not plan['payload'].get('classification'):
+                            text += (f"\n本计划会新建文件夹：{'、'.join(fresh)}。用户没有要求新建时，不要执行，先 ask_user："
+                                     '有意思相近的已有文件夹就作为第一个选项问是否指它，其余写在哪里新建和取消。')
                         if hints:
                             fix = 'revise_task 修正对应部分' if self.protocol == 'v3' else 'edit_task 修正完成条件'
                             text += '\n注意：' + '；'.join(hints) + f'。若与用户要求不符，请先用 {fix}；不要执行此计划。'
