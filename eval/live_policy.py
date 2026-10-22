@@ -353,6 +353,7 @@ def main(argv=None):
     mode.add_argument('--dry-run', action='store_true', help='scripted fake model, no API; pipeline check only')
     ap.add_argument('--suite', choices=sorted(SUITES), default='regression')
     ap.add_argument('--out', type=Path, required=True)
+    ap.add_argument('--cases', nargs='+', help='run only these case IDs of the suite')
     ap.add_argument('--total-cap', type=float, default=1.2)
     ap.add_argument('--protocol', choices=['v2', 'v3'], default=None,
                     help='model-visible task protocol; default from config.yaml (v2 = pre-P1-4 baseline)')
@@ -362,6 +363,10 @@ def main(argv=None):
     if args.protocol:
         cfg.update(protocol=args.protocol, prompt={'v2': 'v8_tasks', 'v3': 'v9_intent'}[args.protocol])
     cases = SUITES[args.suite]
+    if args.cases:
+        unknown = set(args.cases) - {c['id'] for c in cases}
+        if unknown: ap.error('不在此套件中：' + '、'.join(sorted(unknown)))
+        cases = [c for c in cases if c['id'] in args.cases]
     if args.dry_run:
         from eval.dryrun import SCRIPTS, scripted_llm_factory
         cfg.update(model='scripted-dry-run')
