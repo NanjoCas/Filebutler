@@ -918,13 +918,14 @@ def test_a_letter_reply_is_resolved_to_the_option_for_the_model(tmp_path):
     assert '选择 B. Projects/beta/report.txt（beta 项目的报告）' in guidance_of(result)
 
 
-def test_a_free_text_reply_is_marked_as_the_answer(tmp_path):
+def test_free_text_after_a_question_is_not_asserted_to_be_the_answer(tmp_path):
+    # Typed text may be a new request (HANDOFF P0); the model decides, not a local label.
     holdout_fixture(tmp_path, 'ambiguous')
     session = Session(tmp_path)
     session.run('把 report.txt 移到 Archive', [step(call('ask_user', ASK))])
-    result, _ = session.run('两个都移，alpha 的改名为 alpha_report.txt', [], final='好的')
+    result, _ = session.run('先帮我看看 Inbox 里有什么', [], final='好的')
     text = guidance_of(result)
-    assert '作出了补充回答' in text and '选择 ' not in text
+    assert '可能是对它的回答，也可能是新的请求' in text and '补充回答' not in text and '选择 ' not in text
 
 
 def test_ask_user_needs_at_least_two_options_and_a_reason(tmp_path):

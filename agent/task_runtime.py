@@ -422,7 +422,9 @@ class TaskRuntime:
         if a['chosen']:
             c = a['chosen']
             return f"用户回答了你上一轮的提问“{a['question']}”：选择 {c['key']}. {c['label']}" + (f"（{c['detail']}）" if c['detail'] else '') + '。按此执行。'
-        return f"用户对你上一轮的提问“{a['question']}”作出了补充回答，见本轮消息。"
+        # Typed text may answer the question or start something else; nothing local tells them apart.
+        return (f"你上一轮提问了“{a['question']}”，用户没有选择选项。本轮消息可能是对它的回答，也可能是新的请求："
+                '是回答就据此继续；是新请求就按新请求处理，不要沿用上一问的选项。')
 
     V3_HIDDEN = {'set_task', 'begin_step', 'edit_task', 'apply_task_edit',
                  'move', 'rename', 'trash', 'make_dir', 'apply_classification'}
