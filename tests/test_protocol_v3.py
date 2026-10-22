@@ -1308,7 +1308,7 @@ def test_a_reason_the_model_declared_is_stated_once_per_part_and_blockers_move_t
     assert '。。' not in main and '补充原因' not in main and '阻塞原因' not in main and '摘要：' not in main
     assert main.endswith('126 个 PDF 已平铺；「文献」因 .DS_Store 无法回收。')
     assert any(s['title'] == '阻塞原因' and BLOCK in s['markdown'] for s in report['sections'])
-    assert any(s['title'] == '未完成原因（模型说明）' and REASON.rstrip('。') in s['markdown'] for s in report['sections'])
+    assert any(s['title'] == '未完成原因' and REASON.rstrip('。') in s['markdown'] for s in report['sections'])
 
 
 def test_without_a_reply_the_declared_reason_stays_and_is_marked_once():
@@ -1325,7 +1325,8 @@ def test_a_long_part_name_and_a_model_reason_do_not_read_as_two_colons():
 
 def test_a_blocker_no_one_explained_stays_in_the_answer():
     main = build_report(report_task(declared=False), '', [], reply='已平铺。')['summary']
-    assert '- 回收空文件夹：目录不为空：文献' in main and '阻塞原因：' + BLOCK + '。' in main
+    # The reason stays in the answer, in the user's words; the raw message is developer detail.
+    assert '- 回收空文件夹：目录不为空：文献' in main and '没能完成：' + BLOCK + '。' in main and '阻塞原因' not in main
 
 
 # ============================================================================ same-name targets
@@ -1551,7 +1552,9 @@ def test_options_into_an_existing_folder_come_first_and_cancel_is_added(tmp_path
     asked, _ = session.run('把 a.txt 移到归档', [step(ask_archive([NEW_GUIDANG, USE_ARCHIVE]))])
     labels = [(c['key'], c['label'], c.get('local', False)) for c in asked.report['choices']]
     assert labels == [('A', '放进已有的 Archive', False), ('B', '新建「归档」并移入', False), ('C', '取消这部分，不移动', True)]
-    assert 'C. 取消这部分，不移动　（本地补充）' in asked.final
+    assert 'C. 取消这部分，不移动　（系统补充）' in asked.final
+    # The page shows the question and buttons only; the lettered list is the terminal form.
+    assert asked.report['question'] == '没有「归档」，要放到哪里？' and '请回复字母' not in asked.report['question']
 
 
 def test_a_cancel_the_model_offered_is_not_doubled(tmp_path):

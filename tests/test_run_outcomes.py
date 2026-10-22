@@ -193,7 +193,10 @@ def test_web_failure_is_a_saved_chat_reply_with_accurate_status(ui,files,monkeyp
     assert finished.wait(5)
     conv=ui.get(f'/api/conversations/{cid}').json();turn=ui.get(f'/api/turns/{tid}').json()
     assert turn['status']=='failed' and turn['result']['stop_reason']=='exception'
-    assert '原因：' in conv['messages'][-1]['content'] and 'RuntimeError' in conv['messages'][-1]['content']
+    message = conv['messages'][-1]
+    # The exception class is developer detail, not part of the user's reply (2026-10-22).
+    assert '原因：' in message['content'] and 'RuntimeError' not in message['content']
+    assert any(s.get('audience') == 'dev' and 'RuntimeError' in s['markdown'] for s in message['report']['sections'])
     assert 'SECRET' not in json.dumps(turn,ensure_ascii=False)
     assert turn['events'][-1]['message']!='本轮已完成'
 

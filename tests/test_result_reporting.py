@@ -35,7 +35,7 @@ def test_flatten_and_cleanup_verified_locally_with_one_compact_report(tmp_path):
     assert result.stop_reason=='done' and result.runtime['task_status']=='completed'
     assert all(c['passed'] and not c['needs_review'] for c in result.runtime['checks'])
     assert '已移动 2 个文件' in result.final and '回收区 2 个文件夹' in result.final
-    assert len(result.final)<120 and '本地核验通过' in result.final
+    assert len(result.final)<120 and '已完成并核对无误' in result.final
     assert '|' not in result.final and 'ERROR' not in result.final and '重复' not in result.final
     statistics=[s for s in result.report['sections'] if s['title'].startswith('最终统计')]
     assert len(statistics)==1 and '3 次' in statistics[0]['title']
@@ -82,7 +82,7 @@ def test_cleanup_condition_blocks_nonempty_folder_and_file_without_extra_rules(t
 def test_already_satisfied_task_requires_no_token_spending_for_fake_operations(tmp_path):
     (tmp_path/'papers').mkdir(); (tmp_path/'papers/a.pdf').write_bytes(b'original')
     result, _, _ = execute(tmp_path, '归集和清理', [[('set_task',flatten_task()),('finish_task',{})]])
-    assert result.stop_reason=='done' and '1 个文件' in result.final
+    assert result.stop_reason=='done' and '已经符合要求' in result.final
     assert '已移动' not in result.final
 
 
@@ -177,3 +177,33 @@ def test_legacy_goal_can_resume_with_new_default_fields_without_false_edit_confl
     submission.task_id=old['id'];submission.expected_revision=1
     resumed=store.submit(submission,'继续核对','r2')
     assert resumed['revision']==2 and resumed['goals'][0]['conditions'][0]['recursive'] is True
+
+
+# ---------------------------------------------------------------- what the user reads (2026-10-22)
+# The main answer is in the user's words; tool names, plan/task IDs and instructions
+# meant for the model stay in details shown only in developer mode.
+
+from agent.reporting import build_report, plain
+
+
+def test_plain_keeps_the_reason_and_drops_internals():
+    assert plain('本目标尚无已执行的文件计划') == '还没有执行'
+    assert plain('计划 Xabc123def456 部分执行后未完成：a.txt；请用 revise_task 修正') == '只执行了一部分：a.txt'
+    assert plain('本轮已登记任务 Tabcdef123456；更正或补充请用revise_task，不能另建任务') == '本轮已登记任务'
+    assert plain('prepare_file_plan 失败：目标已存在') == '准备文件操作 失败：目标已存在'
+
+
+def test_main_answer_has_no_tool_names_or_ids_and_the_raw_text_is_developer_detail():
+    message = '计划 Xabc123def456 部分执行后未完成：b.txt；请用 inspect_file_plan 查看已完成项，不要重复'
+    task = dict(status='partial', operations=[dict(op='move', kind='文件')], unresolved_questions=[],
+                observations=[dict(tool='execute_file_plan', status='error', summary=message)],
+                blockers=[dict(source='execute_file_plan', object='', message=message, status='open')],
+                checks=[dict(goal_id='g1', description='移动 a 和 b', passed=False, needs_review=False,
+                             conditions=[dict(kind='file_plan_verified', passed=False, needs_review=False, detail=message)])])
+    report = build_report(task, '', [])
+    main = report['summary']
+    assert '尚未全部完成' in main and '只执行了一部分：b.txt' in main
+    for internal in ('Xabc123def456', 'execute_file_plan', 'inspect_file_plan', 'file_plan_verified', '阻塞原因', '最近一次失败的调用'):
+        assert internal not in main
+    dev = [s for s in report['sections'] if s.get('audience') == 'dev']
+    assert any(message.split('；')[0] in s['markdown'] for s in dev)

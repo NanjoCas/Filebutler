@@ -19,7 +19,7 @@ def test_batch_review_keeps_duplicates_together_with_per_file_disposition(files)
     action = build_confirmation({"tool": "trash_many", "args": {"保留": ["notes.md"], "移入回收区": ["copy.md"]}, "file_count": 1,
                                  "groups": [{"id": "G001", "kind": "bytes", "keeper": "notes.md", "members": ["copy.md", "notes.md"]}]}, files)
     assert action["counts"] == {"affected": 1, "retained": 1}
-    assert len(action["groups"]) == 1 and "G001" in action["groups"][0]["title"]
+    assert len(action["groups"]) == 1 and action["groups"][0]["key"] == "G001" and "G001" not in action["groups"][0]["title"]
     items = action["groups"][0]["items"]
     assert [(i["path"], i["disposition"]) for i in items] == [("notes.md", "retain"), ("copy.md", "trash")]
     assert all(i["previewable"] for i in items)
@@ -41,7 +41,7 @@ def test_family_pairing_survives_plan_registry_and_confirmation(files):
     action = build_confirmation(requests[0], files)
     assert len(action["groups"]) == 2
     assert {frozenset(item["path"] for item in g["items"]) for g in action["groups"]} == {frozenset(g["members"]) for g in scan["groups"]}
-    assert next(g for g in action["groups"] if original["id"] in g["title"])["items"][0]["path"] == chosen
+    assert next(g for g in action["groups"] if g["key"] == original["id"])["items"][0]["path"] == chosen
     for group in action["groups"]:
         assert [item["disposition"] for item in group["items"]].count("retain") == 1
         assert all((files.root / item["path"]).exists() for item in group["items"])
@@ -53,7 +53,7 @@ def test_incomplete_family_metadata_never_hides_files(files):
     action = build_confirmation(request, files)
     assert len(action["groups"]) == 1
     assert {i["path"] for i in action["groups"][0]["items"]} == {"notes.md", "copy.md", "other.md"}
-    assert "未提供完整重复组关系" in action["notes"][0]
+    assert "无法按重复组归类" in action["notes"][0]
 
 
 def test_move_review_uses_real_source_name_and_computed_destination(files):
@@ -129,3 +129,40 @@ def test_review_allows_preview_before_approval_and_can_undo_after(ui, monkeypatc
     assert not (files.root / "notes.md").exists()
     ui.post(f"/api/turns/{tid}/undo")
     assert (files.root / "notes.md").read_text(encoding="utf-8") == "测试内容"
+
+
+# ---------------------------------------------------------------- the card as a permission prompt
+# User request 2026-10-22: one line of what happens, warnings that need a decision,
+# everything else folded; no plan IDs, digests or tool names.
+
+def plan_request(**extra):
+    steps = [dict(effect='create', source=None, destination='归档'),
+             dict(effect='move', source='notes.md', destination='归档/notes.md')]
+    return {"tool": "file_plan", "args": dict(plan_id='Xabc123def456', digest='d' * 64, steps=steps, **extra),
+            "file_count": 2}
+
+
+def test_plan_card_has_a_headline_and_no_internal_identifiers(files):
+    card = build_confirmation(plan_request(new_folders=['归档']), files)
+    assert card["headline"] == "把「notes.md」移到「归档」（可撤销）"
+    assert card["warnings"] == ['⚠ 将新建文件夹：归档。不是你想要的位置就拒绝，拒绝后不执行任何操作。']
+    shown = " ".join([card["headline"], card["summary"], *card["notes"], *card["details"]])
+    for internal in ("Xabc123def456", "d" * 64, "计划摘要", "绑定此操作清单", "file_plan", "写入范围"):
+        assert internal not in shown
+
+
+def test_warnings_lead_with_names_then_secrets_and_include_the_users_limits(files):
+    (files.root / "inv\u202etxt.exe").write_text("x")
+    request = plan_request(hidden_contents=[dict(folder='文献', metadata=[], hidden=['.env'],
+                                                 sensitive={'.env': dict(name_rule='环境变量文件', findings=[])})])
+    request["args"]["steps"].append(dict(effect='move', source='inv\u202etxt.exe', destination='归档/inv\u202etxt.exe'))
+    request["notes"] = ['待你确认的限制（本地无法自动检查）：只动今年的文件']
+    card = build_confirmation(request, files)
+    assert card["warnings"][0].startswith("⚠ 以下名称") and card["warnings"][1].startswith("⚠⚠")
+    assert card["warnings"][-1].startswith("待你确认的限制") and not any(n.startswith("待你确认") for n in card["details"])
+
+
+def test_task_edit_card_names_no_task_id(files):
+    card = build_confirmation({"tool": "task_edit", "args": dict(task_id='Tabcdef123456', revision=3, reason='用户更正',
+        changes=[dict(field='allowed_effects', before=['move'], after=['move', 'trash'])])}, files)
+    assert card["headline"] == "修改任务要求（1 处）" and "Tabcdef123456" not in card["summary"]

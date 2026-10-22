@@ -239,11 +239,12 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
             artifacts = _artifacts(state.conversation_id, sb, persist=True) if (cfg.get('local_runtime') or cfg.get('task_runtime')) else None
             working_history, context_stats = prepare_history(history, cfg, artifacts)
             _event(state.id, {"type": "context_prepared", **context_stats})
+            oplog = OpLog(Sandbox(cfg["sandbox"]), state.run_id)
             result = run_agent(
                 instruction, LLM(cfg), sb, cfg,
                 console=Console(file=io.StringIO()),
                 trace_path=LOG_DIR / f"{state.run_id}.trace.jsonl",
-                oplog=OpLog(Sandbox(cfg["sandbox"]), state.run_id), confirmer=confirmer,
+                oplog=oplog, confirmer=confirmer,
                 history=working_history, artifacts=artifacts,
                 on_event=lambda event: _event(state.id, event),
             )
@@ -255,6 +256,7 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
                             "active_seconds": result.active_seconds, "wait_seconds": result.wait_seconds,
                             "llm_seconds": result.llm_seconds, "tool_seconds": result.tool_seconds,
                             "context": context_stats, "runtime": result.runtime,
+                            "changed": oplog.path.exists(),  # this run wrote something it can undo
                             "report": getattr(result,'report',{})}
             # Save the complete tool-call history for the next turn, while the UI gets a filtered view.
             with _db() as db:
@@ -526,8 +528,9 @@ def get_conversation(conversation_id: str):
             if report:
                 content=report['summary']
                 report={**report,'sections':[{**s,'html':render(s['markdown'])} for s in report['sections']]}
+            # A question shows its text and buttons; its lettered terminal form stays the content.
             display.append({"role": "assistant", "content": content,
-                            "html": render(content), 'report':report})
+                            "html": render((report or {}).get('question') or content), 'report':report})
     with _db() as db:
         latest = db.execute("SELECT id,status,run_id,final,error,result_json,events_json FROM turns WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
                             (conversation_id,)).fetchone()

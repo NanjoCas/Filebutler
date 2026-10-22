@@ -86,3 +86,17 @@
   .review-layout { grid-template-columns: 1fr; grid-template-rows: minmax(100px, 34%) minmax(0, 1fr); }
   .review-plan { border-right: 0; border-bottom: 1px solid #e5ece7; padding: 0 12px; }
 }
+/* Permission-prompt layout (2026-10-22): one line, warnings, folded details, three numbered choices. */
+.confirmation-headline { margin: 12px 0 8px; color: #24392c; font-size: 14px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
+.confirmation-warnings { margin: 0 0 10px; padding: 0; list-style: none; display: grid; gap: 5px; }
+.confirmation-warnings li { position: relative; padding: 6px 9px 6px 26px; border-radius: 6px; background: #fff6ea; color: #8a5a26; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.confirmation-warnings li::before { content: "⚠"; position: absolute; left: 9px; top: 6px; }
+.confirmation-details { margin: 4px 0 12px; }
+.confirmation-details > summary { cursor: pointer; color: #5f7a69; font-size: 12px; padding: 4px 0; }
+.confirmation-details[open] > summary { margin-bottom: 4px; }
+.confirmation-details .confirmation-expand { margin: 2px 0 0; padding: 4px 0; }
+.confirmation-actions { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
+.confirmation-choice { display: inline-flex; align-items: center; gap: 7px; padding: 8px 13px; font-size: 12px; border-radius: 7px; white-space: nowrap; cursor: pointer; }
+.confirmation-choice kbd { font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3px 5px; border-radius: 4px; background: #ffffff33; border: 1px solid currentColor; opacity: .75; }
+.confirmation-approve-all { color: #216e52; border: 1px solid #b9d6c5; background: #f3faf6; }
+.confirmation-choice:disabled { opacity: .5; cursor: wait; }

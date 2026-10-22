@@ -1,12 +1,13 @@
 """One user-facing answer; audit, statistics and verification stay in details."""
 from collections import Counter
 import json
+import re
 
 from agent.artifacts import label
 from agent.task import open_blockers
 
 
-STATE_TEXT = {'completed':'本地核验通过', 'partial':'尚未全部完成', 'needs_review':'部分结果待核实',
+STATE_TEXT = {'completed':'已完成', 'partial':'尚未全部完成', 'needs_review':'部分结果待核实',
               'waiting_input':'等待补充信息', 'cancelled':'任务已取消'}
 
 
@@ -14,6 +15,38 @@ def _clause(text, limit=180):
     """One clause without trailing punctuation, so joining never yields "。。"."""
     text = text.strip().rstrip('。.；;，, ')
     return text if len(text) <= limit else text[:limit].rstrip() + '…'
+
+
+# Tool names as the user should read them (the page has the same list, web/app.js TOOL_LABELS).
+TOOL_NAMES = {
+    'prepare_file_plan': '准备文件操作', 'execute_file_plan': '执行文件操作', 'inspect_file_plan': '查看文件操作',
+    'ask_user': '向你提问', 'start_task': '登记任务', 'revise_task': '修改任务', 'set_task': '登记任务',
+    'finish_task': '核验任务', 'inspect_run': '查询运行记录', 'inventory_files': '统计文件', 'list_dir': '查看文件夹',
+    'search_files': '查找文件', 'search_content': '检索论文内容', 'read_file': '阅读文件', 'file_info': '查看文件信息',
+    'find_duplicates': '查找重复文件', 'apply_dedup': '处理重复文件', 'deduplicate': '查重与清理',
+    'report_findings': '整理查找结果', 'paper_profiles': '读取论文片段', 'submit_classification': '保存分类方案',
+    'apply_classification': '执行分类方案', 'begin_step': '准备步骤', 'make_dir': '新建文件夹', 'move': '移动文件',
+    'rename': '重命名', 'trash': '移入回收区'}
+# Internal identifiers: plans, tasks, catalogs, receipts, scans, file and evidence handles.
+# ASCII look-arounds, not \b: next to a Chinese character \b does not separate words.
+_A = r'(?<![A-Za-z0-9_])'
+_Z = r'(?![A-Za-z0-9_])'
+_IDS = re.compile(rf'(?:file:F|evidence:E)[A-Za-z0-9_]+|{_A}[XTPCR][0-9a-f]{{10,12}}{_Z}|{_A}scan_id=[A-Za-z0-9_]+|{_A}[0-9a-f]{{12}}{_Z}')
+_PLAIN = [('本目标尚无已执行的文件计划', '还没有执行'), ('已准备的计划尚未执行完成', '准备好的操作还没有执行完'),
+          ('完成条件未满足', '没有完成'), ('计划 部分执行后未完成', '只执行了一部分'), ('部分执行后未完成', '只执行了一部分')]
+
+
+def plain(text):
+    """A local reason as the user reads it: the first sentence (the rest tells the model
+    what to do next), tool names in words, internal identifiers left out. The original
+    text stays in the details for developers."""
+    text = re.split(r'(?<=[。；;])', text.strip(), maxsplit=1)[0]
+    text = re.sub(r'[ 　]+', ' ', _IDS.sub('', text))
+    for name, words in TOOL_NAMES.items():
+        text = re.sub(_A + name + _Z, words, text)
+    for before, after in _PLAIN:
+        text = text.replace(before, after)
+    return text.strip().rstrip('。；;：:，,、 ')
 
 
 DECLARED = '模型声明未完成：'
@@ -40,16 +73,13 @@ def incomplete_reason(task, reply=False):
             local, model = _unmet(g)
             name = _clause(g['description'], 70)
             if local:
-                lines.append(f"- {name}：{'；'.join(local)}")
+                lines.append(f"- {name}：{'；'.join(_clause(plain(x), 120) for x in local)}")
             elif model and not reply:
-                lines.append(f"- {name}（模型说明）：{'；'.join(model)}")
+                lines.append(f"- {name}（模型说明）：{'；'.join(plain(m) for m in model)}")
             else:
-                lines.append(f"- {name}" + ('' if model else '：完成条件未满足'))
-    lines += ['- '+_clause(f) for f in task.get('constraint_failures', [])]
-    errors=[o for o in task.get('observations',[]) if o['status']!='ok']
-    if errors and lines:
-        lines.append('- 最近一次失败的调用 '+errors[-1]['tool']+'：'+_clause(errors[-1].get('summary') or errors[-1].get('error_code') or '调用未完成'))
-    return '尚未全部完成。原因：\n'+'\n'.join(lines[:5]) if lines else '尚未全部完成。原因：尚缺少可核验的完成依据。'
+                lines.append(f"- {name}" + ('' if model else '：没有完成'))
+    lines += ['- '+_clause(plain(f)) for f in task.get('constraint_failures', [])]
+    return '尚未全部完成。原因：\n'+'\n'.join(lines[:5]) if lines else '尚未全部完成。'
 
 
 def _all_explained(task):
@@ -74,7 +104,8 @@ def build_report(task, model_summary, records, reply=''):
         lines.append(f"| {label(check['description'])} | {result} |")
         for c in check['conditions']:
             if c['detail']: lines.append(f"| 核验依据 | {label(c['detail'])} |")
-    sections.append(dict(title='目标与核验依据', markdown='\n'.join(lines)))
+    # audience 'dev': internal detail, shown on the page only in developer mode.
+    sections.append(dict(title='目标与核验依据', markdown='\n'.join(lines), audience='dev'))
     for record in records:
         title = '最终统计' if record['tool']=='inventory_files' else '文件与证据'
         if record['tool']=='inventory_files' and record.get('samples',1)>1: title += f"（同一请求 {record['samples']} 次，展示最后一次）"
@@ -82,24 +113,24 @@ def build_report(task, model_summary, records, reply=''):
     errors = [o for o in task['observations'] if o['status']!='ok']
     if errors:
         sections.append(dict(title=f'过程提示（{len(errors)} 次失败或拦截）', markdown='\n\n'.join(
-            f"{label(o['tool'])}：{label(o.get('summary') or o.get('error_code') or '调用未完成')}" for o in errors)))
+            f"{label(o['tool'])}：{label(o.get('summary') or o.get('error_code') or '调用未完成')}" for o in errors), audience='dev'))
     # Recovered blockers are process history: kept in details, never in the answer.
     recovered = [b for b in task.get('blockers', []) if b.get('status', 'open') != 'open']
     if recovered:
         sections.append(dict(title=f'已恢复的阻塞（{len(recovered)} 项）', markdown='\n\n'.join(
             f"{label(b.get('source') or b.get('tool') or '计划')}：{label(b['message'])}（{label(b.get('resolved_by') or '已恢复')}）"
-            for b in recovered)))
+            for b in recovered), audience='dev'))
     declared = [(g['description'], m) for g in task['checks'] if not g['passed'] for m in _unmet(g)[1]]
     if declared:
-        sections.append(dict(title='未完成原因（模型说明）', markdown='\n'.join(
-            f"- {label(_clause(d, 70))}：{label(m)}" for d, m in declared)))
+        sections.append(dict(title='未完成原因', markdown='\n'.join(
+            f"- {label(_clause(d, 70))}：{label(plain(m))}" for d, m in declared)))
     if model_summary:
-        sections.append(dict(title='模型补充说明', markdown=model_summary))
+        sections.append(dict(title='补充说明', markdown=model_summary))
     if operations:
         summary = '；'.join(actions)+'。'
-        if state=='completed': summary += '\n\n本地核验通过，可撤销本轮文件操作。'
+        if state=='completed': summary += '\n\n已完成并核对无误，可撤销本轮操作。'
         elif state=='partial': summary += '\n\n'+incomplete_reason(task, bool(reply.strip()))
-        elif state=='needs_review': summary += '\n\n文件操作已执行，部分结果待核实；请查看核验详情。'
+        elif state=='needs_review': summary += '\n\n文件操作已执行，部分结果需要你看一下。'
         else: summary += '\n\n'+STATE_TEXT.get(state,state)+'。'
     else:
         # Preserve actual requested data, once. Do not append a second model
@@ -108,8 +139,8 @@ def build_report(task, model_summary, records, reply=''):
             summary = '\n\n'.join(r['text'] for r in records)
             if state=='partial': summary = incomplete_reason(task, bool(reply.strip()))
         elif state=='completed':
-            facts = [c['detail'] for g in task['checks'] for c in g['conditions'] if c['detail']]
-            summary = '本地核验通过。'+(' '.join(facts) if facts else '')
+            # Nothing to change: say so; the checks behind it are in the developer details.
+            summary = '已完成：文件已经符合要求，没有改动。' if task.get('allowed_effects') else '已完成。'
         elif state=='partial': summary = incomplete_reason(task, bool(reply.strip()))
         else: summary = model_summary or STATE_TEXT.get(state,state)+'。'
         if state=='needs_review': summary += '\n\n结果待核实，可在“任务与复核”中查看依据。'
@@ -121,7 +152,7 @@ def build_report(task, model_summary, records, reply=''):
     if reply and reply not in summary:
         summary += '\n\n' + (reply if len(reply) <= 1500 else reply[:1500] + '…')
     if state in {'partial', 'waiting_input'} and model_summary and not reply and model_summary[:1200] not in summary:
-        summary += '\n\n补充原因（模型说明）：'+_clause(model_summary, 1200)+'。'
+        summary += '\n\n说明：'+_clause(model_summary, 1200)+'。'
     # Unresolved blockers (control rejections, plan failures and failed writes)
     # are current reasons. A failed write stays visible even when the task is
     # otherwise complete, until the same call or object later succeeds. When the
@@ -131,14 +162,16 @@ def build_report(task, model_summary, records, reply=''):
     shown = [b for b in current if state != 'completed']
     if shown:
         text = '；'.join(_clause(b['message'], 300) for b in shown[-3:]) + '。'
-        if _all_explained(task):
-            sections.append(dict(title='阻塞原因', markdown=text))
-        else:
-            summary += '\n\n阻塞原因：' + text
+        sections.append(dict(title='阻塞原因', markdown=text, audience='dev'))
+        if not _all_explained(task):
+            reasons = list(dict.fromkeys(plain(b['message']) for b in shown[-3:]))
+            summary += '\n\n没能完成：' + '；'.join(r for r in reasons if r) + '。'
     failed = [b for b in current if b not in shown and TOOLS.get(b.get('source')) and TOOLS[b['source']].writes]
     if failed:
-        reasons='；'.join(b['source']+'：'+_clause(b['message']) for b in failed[:2])
-        if reasons not in summary:summary+='\n\n文件操作未成功。原因：'+reasons+'。'  # always in the answer
+        sections.append(dict(title='未成功的文件操作', markdown='；'.join(
+            label(b['source']+'：'+_clause(b['message'])) for b in failed[:2]) + '。', audience='dev'))
+        reasons='；'.join(dict.fromkeys(plain(b['message']) for b in failed[:2]))
+        summary+='\n\n有文件操作没有成功：'+reasons+'。'  # always in the answer
     if task['unresolved_questions']:
         summary += '\n\n待确认：'+'；'.join(task['unresolved_questions'])
     report = dict(version=1, state=state, summary=summary, sections=sections)
