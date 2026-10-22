@@ -177,6 +177,10 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
                 from agent.secrets_scan import describe
                 notes.append('⚠⚠ 本地检查发现疑似密钥，建议保留：'
                              + '；'.join(describe(f"{row['folder']}/{rel}", r, masked=True) for rel, r in row['sensitive'].items()) + '。')
+        for row in args.get('folders') or []:
+            sample = '、'.join(row['files'][:5]) + ('等' if len(row['files']) > 5 else '')
+            notes.append(f"整体移动文件夹 {row['source']} → {row['destination']}：含 {len(row['files'])} 个文件"
+                         + (f"（{sample}）" if row['files'] else '') + "，执行后逐个核对内容。")
         for row in args.get('overwrites') or []:
             if row.get('consent_source') == 'text':
                 notes.append(f"⚠ 你在对话中以文字回复，请在此确认：覆盖 {row['target']}，原有文件移入回收区，再放入新文件（可撤销）。")

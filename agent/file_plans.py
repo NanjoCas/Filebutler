@@ -124,7 +124,7 @@ def fingerprint(path, label=None):
 #   hidden    other dot-files (.env, ...): only after the user agreed via ask_user, listed exactly
 #   busy      lock files of open documents: refused until the program is closed
 #   special   hidden folders, symlinks, packages, volume system folders: never recycled
-FOLDER_KINDS = {'empty_directory', 'directory_tree'}
+FOLDER_KINDS = {'empty_directory', 'directory_tree', 'folder'}
 PACKAGES = ('.app', '.bundle', '.framework', '.photoslibrary', '.pages', '.numbers', '.key', '.rtfd')
 
 
@@ -251,6 +251,9 @@ def _tree_same(path, expected, pending):
 
 
 def _same(path, expected, *, moved=False, pending=False):
+    if expected['kind'] == 'folder':
+        try: return _folder_same(path, expected, pending)
+        except OSError: return False
     if expected['kind'] == 'directory_tree':
         try: return _tree_same(path, expected, pending)
         except OSError: return False
@@ -347,10 +350,10 @@ def prepare(runtime, args):
                 snap['consent_source'] = next((v for f, v in consent_sources.items()
                                                if Path(src) == Path(f) or Path(src).is_relative_to(f)), None)
         elif effect in {'move', 'rename'} and source.is_dir() and not source.is_symlink():
-            snap = folder_snapshot(source, src, moved_out)
+            snap = dict(kind='folder')  # filled in below, once every step of the plan is known
         else:
             snap = fingerprint(source, src) if source else None
-        if snap and snap['kind'] not in {'file', 'directory_tree'} and effect != 'trash':
+        if snap and snap['kind'] not in {'file', 'folder'} and effect != 'trash':
             raise ValueError('移动/改名计划只接收普通文件；目录请先展开为明确文件清单')
         if target:
             parent = target if effect == 'create' else target.parent
@@ -371,11 +374,14 @@ def prepare(runtime, args):
     steps = [s for s in steps if not (s['effect'] == 'trash' and any(
         Path(s['source']) != f and Path(s['source']).is_relative_to(f) for f in folders))]
     steps.sort(key=lambda s: s['effect'] == 'trash' and s['snapshot']['kind'] == 'directory_tree')
-    # A folder moved or recycled cannot hold another target, at either end.
+    for row in steps:
+        if row['snapshot']['kind'] == 'folder':
+            row['snapshot'] = folder_snapshot(sb, row['source'], steps)
+    # A recycled folder holds no target. A folder moved whole may receive files
+    # before it moves (they travel with it), but nothing at its new place.
     for row in steps:
         if row['snapshot']['kind'] in FOLDER_KINDS:
-            ends = [sb.path(row['source'], exact=True)]
-            if row['effect'] != 'trash': ends.append(sb.path(row['destination'], exact=True))
+            ends = [sb.path(row['source' if row['effect'] == 'trash' else 'destination'], exact=True)]
             inside = [s['destination'] for s in [*dirs.values(), *steps] if s['destination'] and s is not row
                       and any(sb.path(s['destination'], exact=True).is_relative_to(p) for p in ends)]
             if inside:
@@ -523,28 +529,51 @@ def _within_choice(runtime, chosen, steps):
                          '请只执行该选项声明的操作；需要更多操作时先向用户说明')
 
 
-def folder_snapshot(folder, src, moved_out):
-    """A folder moved or renamed after this plan has moved its files out.
+def folder_snapshot(sb, src, steps):
+    """A folder moved or renamed whole, with what it holds before and after this plan.
 
-    Only what travels harmlessly may stay: empty subfolders and verified system
-    metadata. A folder still holding files is not moved whole, so every file
-    keeps its own snapshot and line on the confirmation card.
+    Every visible file is recorded by relative path and SHA-256: "before" as it is
+    now, "after" once this plan's steps inside it have run (files renamed, moved
+    out, recycled or moved in). The folder must match "after" at its new place.
+    Hidden files, open documents and special objects would travel unseen: refused.
     """
+    folder = sb.path(src, exact=True)
     t = scan_tree(folder)
     if t['busy'] or t['special']:
         raise ValueError(f"{src} 含锁文件或特殊对象 {_names(t['busy'] + t['special'])}（正被打开的文档、隐藏文件夹、符号链接或应用包），"
                          '工具不移动此文件夹。请如实告诉用户由用户处理；其余操作可以照常进行')
-    moving = sorted(p for p in t['visible'] if f'{src}/{p}' in moved_out)
-    left = [p for p in t['visible'] if p not in moving]
-    if left:
-        raise ValueError(f"{src} 还有 {len(left)} 个可见文件不在本计划的移动中（如 {_names(left)}）。"
-                         '移动或改名文件夹前，须在同一计划中先把其中的文件逐个移出；不想动这些文件时，请改为只移动需要的文件')
     if t['hidden']:
-        raise ValueError(f"{src} 含非系统隐藏文件 {_names(t['hidden'])}，移动文件夹会把它们一并带走，而确认卡片不会列出；"
+        raise ValueError(f"{src} 含非系统隐藏文件 {_names(t['hidden'])}，整体移动会把它们一并带走，而确认卡片不会列出；"
                          '请如实告诉用户，由用户决定，不要换路径重试')
-    return dict(kind='directory_tree', stat=signature(folder), sha256=None, moved_out=moving,
-                dirs=t['dirs'], files=dict(t['metadata']), metadata=sorted(t['metadata']), hidden=[],
-                notes=t['notes'], sensitive={})
+    root = Path(src)
+    inner = lambda p: p is not None and Path(p) != root and Path(p).is_relative_to(root)
+    leaving = [Path(s['source']).relative_to(root) for s in steps if s['source'] != src and inner(s['source'])]
+    arriving = {}
+    for s in steps:
+        if s['effect'] in {'move', 'rename'} and s['source'] != src and inner(s['destination']):
+            if s['snapshot']['kind'] != 'file':
+                raise ValueError(f"本计划把文件夹 {s['source']} 放进同时整体移动的 {src}，请拆分阶段：先执行这一个计划，再为后续操作准备新计划")
+            arriving[Path(s['destination']).relative_to(root).as_posix()] = s['snapshot']['sha256']
+    before = {rel: digest(folder / rel) for rel in t['visible']}
+    after = {rel: sha for rel, sha in before.items() if not any(Path(rel) == l or Path(rel).is_relative_to(l) for l in leaving)}
+    after.update(arriving)
+    return dict(kind='folder', stat=signature(folder), sha256=None, before=before, after=after,
+                arriving=sorted(arriving), dirs=t['dirs'], metadata=sorted(t['metadata']), notes=t['notes'])
+
+
+def _folder_same(path, expected, pending):
+    """The folder holds exactly "after" (pending: any mix of "before" and "after",
+    since a resumed plan may have run some of its inner steps). Finder metadata may
+    come and go; any other difference stops the plan."""
+    if not path.is_dir() or path.is_symlink(): return False
+    t = scan_tree(path)
+    if t['special'] or t['busy'] or t['hidden']: return False
+    before, after = expected['before'], expected['after']
+    if not pending:
+        return set(t['visible']) == set(after) and all(digest(path / rel) == sha for rel, sha in after.items())
+    stays = [rel for rel in after if rel not in expected['arriving']]
+    if not set(stays) <= set(t['visible']) or not set(t['visible']) <= set(before) | set(after): return False
+    return all(digest(path / rel) in {before.get(rel), after.get(rel)} for rel in t['visible'])
 
 
 def _same_object(a, b):
@@ -574,6 +603,7 @@ def _order(sb, steps):
     swapped) has no such order and is refused, not routed via a temporary name.
     """
     paths = [sb.path(s['source'], exact=True) for s in steps]
+    targets = [sb.path(s['destination'], exact=True) if s['effect'] != 'trash' else None for s in steps]
     after = [set() for _ in steps]
     for i, s in enumerate(steps):
         if s['effect'] != 'trash':
@@ -584,6 +614,8 @@ def _order(sb, steps):
                 after[i].update(j for j in vacating if j != i)
         if s['snapshot']['kind'] in FOLDER_KINDS:
             after[i].update(j for j, p in enumerate(paths) if j != i and p.is_relative_to(paths[i]))
+            if s['snapshot']['kind'] == 'folder':
+                after[i].update(j for j, t in enumerate(targets) if j != i and t is not None and t.is_relative_to(paths[i]))
     order, done = [], set()
     while len(order) < len(steps):
         ready = next((i for i in range(len(steps)) if i not in done and after[i] <= done), None)
@@ -882,6 +914,10 @@ def execute(runtime, plan_id, oplog, confirmer):
                 review['scope_additions'] = plan['payload']['scope_additions']
             if plan['payload'].get('overwrites'):
                 review['overwrites'] = plan['payload']['overwrites']
+            whole = [dict(source=s['source'], destination=s['destination'], files=sorted(s['snapshot']['after']))
+                     for s in remaining if s['snapshot'] and s['snapshot']['kind'] == 'folder']
+            if whole:
+                review['folders'] = whole
             trees = [s for s in remaining if s['effect'] == 'trash' and s['snapshot'] and s['snapshot']['kind'] == 'directory_tree'
                      and (s['snapshot']['metadata'] or s['snapshot']['hidden'])]
             if trees:
@@ -1032,6 +1068,13 @@ def verify_plan(plan, sb, partial=False, later=()):
     if not partial and (plan['status'] not in {'completed','executing'} or len(plan['progress']) != len(plan['payload']['steps'])):
         return False, '计划尚未全部执行：'+plan['id']
     done = [s for s in plan['payload']['steps'] if s['id'] in plan['progress']]
+    moved_folders = [(Path(s['source']), Path(s['destination'])) for s in done if s['snapshot'] and s['snapshot']['kind'] == 'folder']
+    def place(rel):
+        """Where a result ended up once a folder of this plan moved whole after it."""
+        p = Path(rel)
+        for src, dst in moved_folders:
+            if p != src and p.is_relative_to(src): return (dst / p.relative_to(src)).as_posix()
+        return rel
     refilled = [sb.path(x['destination'], exact=True) for x in [*done, *later] if x['effect'] != 'trash']
     for s in done:
         if s['effect'] == 'trash' and (sb.root/'.trash').is_symlink():
@@ -1041,14 +1084,14 @@ def verify_plan(plan, sb, partial=False, later=()):
                     _same_object(_visible(sb, s['source']), d) for d in refilled):
                 return False, '原位置仍存在：'+s['source']
             continue
-        target = sb.path(s['destination'], exact=True)
+        target = sb.path(place(s['destination']), exact=True)
         if s['effect'] == 'create':
-            if not _visible(sb, s['destination']).is_dir() or signature(target)[:2] != plan['progress'][s['id']]['stat'][:2]:
+            if not _visible(sb, place(s['destination'])).is_dir() or signature(target)[:2] != plan['progress'][s['id']]['stat'][:2]:
                 return False, '计划目录缺失或已替换：'+s['destination']
         else:
             # Internal trash destinations are compiler-generated, never model inputs.
-            if s['effect'] != 'trash': _visible(sb, s['destination'])
-            if not _same(target, s['snapshot'], moved=True): return False, '目标内容或身份不符：'+s['destination']
+            if s['effect'] != 'trash': _visible(sb, place(s['destination']))
+            if not _same(target, s['snapshot'], moved=True): return False, '目标内容或身份不符：'+place(s['destination'])
             source = _visible(sb, s['source'])
             if _same_object(source, target) and not _present(target):
                 return False, '改名未生效（仅大小写不同）：'+s['destination']

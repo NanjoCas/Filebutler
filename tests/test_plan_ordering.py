@@ -102,11 +102,10 @@ def test_empty_a_folder_then_rename_it(tmp_path):
 
 
 @pytest.mark.parametrize('extra,why', [
-    ({'旧/keep.pdf': 'k'}, '不在本计划的移动中'),
     ({'旧/.env': 'TOKEN=1'}, '隐藏文件'),
     ({'旧/~$doc.docx': 'lock'}, '锁文件'),
 ])
-def test_folder_move_refused_while_it_still_holds_files(tmp_path, extra, why):
+def test_folder_move_refused_with_hidden_or_open_contents(tmp_path, extra, why):
     write(tmp_path, {'旧/a.pdf': 'a', **extra})
     r = runtime(tmp_path)
     with pytest.raises(ValueError, match=why):
@@ -205,3 +204,71 @@ def test_handoff_does_not_excuse_a_move_outside_the_plans(tmp_path):
     r = _two_plan_swap(tmp_path)
     (tmp_path/'b.txt').rename(tmp_path/'elsewhere.txt')
     assert not verify_task(r.current, r.sb)[0]['passed']
+
+
+# ---------------------------------------------------------------- whole folders
+# Live round 21: "rename the folder" had no direct form; the model rebuilt it by hand.
+
+def test_a_folder_with_files_is_renamed_whole_and_undone(tmp_path):
+    write(tmp_path, {'照片/a.jpg': 'a', '照片/2024/b.jpg': 'b'})
+    (tmp_path/'照片/.DS_Store').write_bytes(DS_STORE)
+    r = runtime(tmp_path)
+    plan = run(r, [dict(effect='rename', source='照片', destination='Photos')])
+    [step] = plan['payload']['steps']
+    assert step['snapshot']['kind'] == 'folder' and sorted(step['snapshot']['after']) == ['2024/b.jpg', 'a.jpg']
+    assert (tmp_path/'Photos/2024/b.jpg').read_text() == 'b' and not (tmp_path/'照片').exists()
+    assert all(c['passed'] for c in verify_task(r.current, r.sb))
+    undo(r.sb, 'one')
+    assert (tmp_path/'照片/2024/b.jpg').read_text() == 'b' and not (tmp_path/'Photos').exists()
+
+
+def test_files_inside_are_renamed_first_then_the_folder_in_one_plan(tmp_path):
+    write(tmp_path, {'照片/IMG_01.JPEG': '1', '照片/IMG_02.JPEG': '2', '照片/说明.txt': 'n'})
+    r = runtime(tmp_path)
+    plan = run(r, [dict(effect='rename', source='照片', destination='Photos'),
+                   dict(effect='rename', source='照片/IMG_01.JPEG', destination='照片/IMG_01.jpg'),
+                   dict(effect='rename', source='照片/IMG_02.JPEG', destination='照片/IMG_02.jpg')])
+    assert plan['payload']['steps'][-1]['source'] == '照片'
+    assert names(tmp_path/'Photos') == ['IMG_01.jpg', 'IMG_02.jpg', '说明.txt']
+    assert verify_plan(plan, r.sb)[0] and all(c['passed'] for c in verify_task(r.current, r.sb))
+    undo(r.sb, 'one')
+    assert names(tmp_path/'照片') == ['IMG_01.JPEG', 'IMG_02.JPEG', '说明.txt']
+
+
+def test_a_file_moved_in_travels_with_the_folder(tmp_path):
+    write(tmp_path, {'项目/a.txt': 'a', 'b.txt': 'b'})
+    r = runtime(tmp_path)
+    run(r, [dict(effect='move', source='项目', destination='归档/项目'), dict(effect='move', source='b.txt', destination='项目/b.txt')])
+    assert names(tmp_path/'归档/项目') == ['a.txt', 'b.txt']
+
+
+def test_a_target_at_the_folders_new_place_needs_a_second_plan(tmp_path):
+    write(tmp_path, {'项目/a.txt': 'a', 'b.txt': 'b'})
+    r = runtime(tmp_path)
+    with pytest.raises(ValueError, match='拆分阶段'):
+        prepare(r, proposal(actions=[dict(effect='rename', source='项目', destination='新项目'),
+                                     dict(effect='move', source='b.txt', destination='新项目/b.txt')]))
+
+
+@pytest.mark.parametrize('change', ['add', 'edit'])
+def test_a_folder_changed_while_waiting_for_confirmation_is_not_moved(tmp_path, change):
+    write(tmp_path, {'照片/a.jpg': 'a'})
+    r = runtime(tmp_path)
+    plan = prepare(r, proposal(actions=[dict(effect='rename', source='照片', destination='Photos')]))
+    def confirm(_):
+        if change == 'add': (tmp_path/'照片/new.jpg').write_text('new')
+        else: (tmp_path/'照片/a.jpg').write_text('edited')
+        return 'y'
+    with pytest.raises(ValueError):
+        execute(r, plan['id'], OpLog(r.sb, 'one'), Confirmer('always', ask_action=confirm))
+    assert (tmp_path/'照片').is_dir() and not (tmp_path/'Photos').exists()
+
+
+def test_the_card_states_the_whole_folder_and_its_files(tmp_path):
+    from web_confirm import build_confirmation
+    write(tmp_path, {'照片/a.jpg': 'a', '照片/b.jpg': 'b'})
+    r = runtime(tmp_path)
+    plan = prepare(r, proposal(actions=[dict(effect='rename', source='照片', destination='Photos')]))
+    seen = []
+    execute(r, plan['id'], OpLog(r.sb, 'one'), Confirmer('always', ask_action=lambda req: seen.append(build_confirmation(req, r.sb)) or 'y'))
+    assert any(n.startswith('整体移动文件夹 照片 → Photos：含 2 个文件（a.jpg、b.jpg）') for n in seen[0]['notes'])
