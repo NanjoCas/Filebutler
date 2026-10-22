@@ -17,6 +17,13 @@ const api = async (url, options = {}) => {
   if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `请求失败 (${response.status})`);
   return data;
 };
+// Names are shown with invisible and direction-changing characters made visible, as the
+// confirmation card does (safety/names.py VISIBLE): otherwise "invoice" + U+202E + "txt.exe"
+// displays as "invoiceexe.txt". Only the text changes; paths used to open files stay raw.
+const HIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+function shownName(text) {
+  return String(text ?? "").replace(HIDDEN_CHARS, ch => `⟦${{"\n": "换行", "\r": "回车", "\t": "制表"}[ch] || "U+" + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}⟧`);
+}
 function node(tag, className, text) {
   const el = document.createElement(tag);
   if (className) el.className = className;
@@ -32,7 +39,7 @@ function scrollIfNearBottom() {
 }
 function bindReferences(container) {
   container.querySelectorAll('.file-reference[data-file-name]').forEach(ref => {
-    if (!ref.dataset.evidence) ref.textContent = ref.dataset.fileName;
+    if (!ref.dataset.evidence) ref.textContent = shownName(ref.dataset.fileName);
     if (ref.dataset.fileStatus === 'trash') ref.title += '（已回收，可预览）';
   });
   container.addEventListener("click", (event) => {
@@ -505,7 +512,7 @@ async function showReviewPreview(state, item) {
     const disposition = item.disposition || related?.disposition;
     const heading = node("div", `review-preview-heading ${disposition || ""}`);
     if (disposition) heading.append(node("span", `file-disposition ${disposition}`, disposition === "trash" ? "待回收 · 确认后移入回收区" : "保留 · 本次不改动"));
-    heading.append(node("strong", "", item.name), node("span", "", item.path_text || item.path));
+    heading.append(node("strong", "", shownName(item.name)), node("span", "", item.path_text || shownName(item.path)));
     const body = node("div", "review-preview-body"); panel.replaceChildren(heading, body);
     if (item.kind === "directory") {
       if (data.parent !== null) {
@@ -514,7 +521,7 @@ async function showReviewPreview(state, item) {
       if (!data.items.length) body.append(node("div", "review-preview-empty", "此文件夹为空"));
       for (const child of data.items) {
         const button = node("button", "review-directory-item"); button.type = "button";
-        button.append(node("span", "", child.type === "directory" ? "▰" : "▤"), node("span", "", child.name), node("small", "", child.size_text));
+        button.append(node("span", "", child.type === "directory" ? "▰" : "▤"), node("span", "", shownName(child.name)), node("small", "", child.size_text));
         button.onclick = () => showReviewPreview(state, {...child, kind: child.type}); body.append(button);
       }
     } else {
@@ -565,12 +572,12 @@ async function loadFiles(path = currentFilePath) {
     const data = await api(`/api/files?path=${encodeURIComponent(path)}`);
     if (epoch !== fileListEpoch) return;
     currentFilePath = data.path;
-    $("current-path").textContent = data.path; $("file-up").disabled = !data.parent; $("file-up").onclick = () => data.parent && loadFiles(data.parent);
+    $("current-path").textContent = shownName(data.path); $("file-up").disabled = !data.parent; $("file-up").onclick = () => data.parent && loadFiles(data.parent);
     const list = $("file-list"); list.replaceChildren();
     if (!data.items.length) list.append(node("div", "file-empty", "此文件夹为空"));
     for (const item of data.items) {
       const button = node("button", `file-row ${item.type === "directory" ? "dir" : ""}`);
-      const name = node("span", "file-name", item.name); name.title = item.name;
+      const name = node("span", "file-name", shownName(item.name)); name.title = shownName(item.name);
       button.append(node("span", "", item.type === "directory" ? "▰" : fileIcon(item.name)), name, node("span", "file-size", item.size_text));
       button.onclick = () => item.type === "directory" ? loadFiles(item.path) : preview(item);
       button.dataset.path = item.path; list.append(button);
@@ -595,7 +602,7 @@ async function preview(item, page = null, reveal = false) {
   const epoch = ++previewEpoch;
   const pane = $("preview"); pane.replaceChildren(node("div", "empty-preview preview-loading", "正在打开文件…"));
   if (reveal) revealFilePanel();
-  $("preview-type").textContent = item.path.split("/").pop(); $("preview-type").title = item.path;
+  $("preview-type").textContent = shownName(item.path.split("/").pop()); $("preview-type").title = shownName(item.path);
   try {
     const artifactBase = item.artifactId ? `/api/conversations/${encodeURIComponent(item.conversationId)}/files/${encodeURIComponent(item.artifactId)}` : null;
     const data = await api(artifactBase ? `${artifactBase}/preview` : `/api/files/preview?path=${encodeURIComponent(item.path)}`);
