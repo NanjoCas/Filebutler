@@ -16,14 +16,35 @@ def _clause(text, limit=180):
     return text if len(text) <= limit else text[:limit].rstrip() + '…'
 
 
-def incomplete_reason(task):
-    """尚未全部完成。原因：one line per unmet part, its local reason or the model's declared one."""
+DECLARED = '模型声明未完成：'
+
+
+def _unmet(g):
+    """(local reasons, the model's declared reasons) for one unmet part."""
+    failed = [c for c in g['conditions'] if not c['passed'] and c['detail']]
+    model = [_clause(c['detail'][len(DECLARED):], 120) for c in failed if c['kind'] == 'declared_unfinished']
+    local = [_clause(c['detail'], 120) for c in failed if c['kind'] != 'declared_unfinished']
+    return local, model
+
+
+def incomplete_reason(task, reply=False):
+    """尚未全部完成。原因：one line per unmet part, with its local reason, else the model's.
+
+    With a reply, the model has spoken in its own words below; a part that only it
+    declared unfinished is then listed by name, its declared reason kept in details,
+    so one reason is not said twice. Local reasons always stay.
+    """
     lines=[]
     for g in task.get('checks',[]):
         if not g['passed']:
-            details='；'.join(_clause(c['detail'].replace('模型声明未完成：', '模型说明：'), 120)
-                            for c in g['conditions'] if not c['passed'] and c['detail'])
-            lines.append(f"- {_clause(g['description'], 70)}：{details or '完成条件未满足'}")
+            local, model = _unmet(g)
+            name = _clause(g['description'], 70)
+            if local:
+                lines.append(f"- {name}：{'；'.join(local)}")
+            elif model and not reply:
+                lines.append(f"- {name}（模型说明）：{'；'.join(model)}")
+            else:
+                lines.append(f"- {name}" + ('' if model else '：完成条件未满足'))
     lines += ['- '+_clause(f) for f in task.get('constraint_failures', [])]
     errors=[o for o in task.get('observations',[]) if o['status']!='ok']
     if errors and lines:
@@ -68,12 +89,16 @@ def build_report(task, model_summary, records, reply=''):
         sections.append(dict(title=f'已恢复的阻塞（{len(recovered)} 项）', markdown='\n\n'.join(
             f"{label(b.get('source') or b.get('tool') or '计划')}：{label(b['message'])}（{label(b.get('resolved_by') or '已恢复')}）"
             for b in recovered)))
+    declared = [(g['description'], m) for g in task['checks'] if not g['passed'] for m in _unmet(g)[1]]
+    if declared:
+        sections.append(dict(title='未完成原因（模型说明）', markdown='\n'.join(
+            f"- {label(_clause(d, 70))}：{label(m)}" for d, m in declared)))
     if model_summary:
         sections.append(dict(title='模型补充说明', markdown=model_summary))
     if operations:
         summary = '；'.join(actions)+'。'
         if state=='completed': summary += '\n\n本地核验通过，可撤销本轮文件操作。'
-        elif state=='partial': summary += '\n\n'+incomplete_reason(task)
+        elif state=='partial': summary += '\n\n'+incomplete_reason(task, bool(reply.strip()))
         elif state=='needs_review': summary += '\n\n文件操作已执行，部分结果待核实；请查看核验详情。'
         else: summary += '\n\n'+STATE_TEXT.get(state,state)+'。'
     else:
@@ -81,11 +106,11 @@ def build_report(task, model_summary, records, reply=''):
         # paraphrase of a locally generated table.
         if records:
             summary = '\n\n'.join(r['text'] for r in records)
-            if state=='partial': summary = incomplete_reason(task)
+            if state=='partial': summary = incomplete_reason(task, bool(reply.strip()))
         elif state=='completed':
             facts = [c['detail'] for g in task['checks'] for c in g['conditions'] if c['detail']]
             summary = '本地核验通过。'+(' '.join(facts) if facts else '')
-        elif state=='partial': summary = incomplete_reason(task)
+        elif state=='partial': summary = incomplete_reason(task, bool(reply.strip()))
         else: summary = model_summary or STATE_TEXT.get(state,state)+'。'
         if state=='needs_review': summary += '\n\n结果待核实，可在“任务与复核”中查看依据。'
         if state=='waiting_input' and task.get('allowed_effects') and not task.get('operation_history'):
