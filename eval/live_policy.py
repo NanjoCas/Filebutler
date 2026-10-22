@@ -110,8 +110,9 @@ CASES = [
 from eval.holdout_cases import HOLDOUT_CASES, holdout_checks, holdout_fixture  # noqa: E402
 from eval.blind_cases import BLIND_CASES, BLIND2_CASES, blind_checks, blind_fixture, blind2_checks, blind2_fixture  # noqa: E402
 from eval.hidden_cases import HIDDEN_CASES, hidden_checks, hidden_fixture  # noqa: E402
+from eval.p0_cases import P0_CASES, p0_checks, p0_fixture  # noqa: E402
 
-SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES}
+SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES}
 CASE_SPECS = {case['id']: case for case in CASES + HOLDOUT_CASES}
 
 
@@ -152,6 +153,8 @@ def fixture(root, kind):
         blind2_fixture(root, kind)
     elif kind.startswith('hidden_'):
         hidden_fixture(root, kind)
+    elif kind.startswith('p0_'):
+        p0_fixture(root, kind)
     else:
         holdout_fixture(root, kind)
 
@@ -175,6 +178,8 @@ def checks(case_id, turn, root, before, store, runtime, first_task):
         return blind2_checks(case_id, turn, root, before, runtime, first_task)
     if case_id.startswith('hidden_'):
         return hidden_checks(case_id, turn, root, before, runtime, first_task)
+    if case_id.startswith('p0_'):
+        return p0_checks(case_id, turn, root, before, runtime, first_task)
     after = snapshot(root, True)
     result = dict(contents_preserved=files_preserved(before, after))
     if case_id in {'root_only', 'cross_turn_correction'}:
