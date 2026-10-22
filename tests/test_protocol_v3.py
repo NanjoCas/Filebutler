@@ -1475,3 +1475,49 @@ def test_the_chosen_scope_must_actually_be_done(tmp_path):
                                   finish_with([dict(part_id='organize_1', reason='b.txt 没有移动')])])
     assert result.stop_reason == 'partial' and '尚未全部完成' in result.final
     assert 'chosen_scope' not in session.sb.runtime.current
+
+
+# ============================================================================ a target folder that does not exist
+# User decision 2026-10-22 (after E4): use a folder of the same meaning if one exists;
+# otherwise ask where to create it, or cancel. Said in the plan result, where the model
+# decides, so it costs nothing in the system prompt.
+
+NEW_FOLDER = '本计划会新建文件夹'
+
+
+def test_a_plan_creating_a_target_folder_carries_the_rule(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('把 a.txt 移到 Big', [step(start([dict(kind='organize', description='移动')]), call(
+        'prepare_file_plan', dict(description='移动', actions=[dict(effect='move', source='Inbox/a.txt', destination='Big/sub/a.txt')])))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert f'{NEW_FOLDER}：Big。' in text and '意思相同或相近' in text and 'ask_user' in text and '取消' in text
+    assert not (tmp_path / 'Big').exists()
+
+
+def test_no_rule_for_an_existing_folder_or_after_a_choice(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('把 a.txt 移到 Archive', [step(start([dict(kind='organize', description='移动')]), call(
+        'prepare_file_plan', dict(description='移动', actions=[dict(effect='move', source='Inbox/a.txt', destination='Archive')])))])
+    assert NEW_FOLDER not in client.calls('prepare_file_plan')[0]['text']
+    session.run('把 a.txt 移到 Big', [step(call('ask_user', dict(question='Big 建在哪里？', reason='missing_criterion', options=[
+        dict(label='在根目录新建 Big', actions=[dict(effect='move', path='Inbox/a.txt', destination='Big/a.txt')]),
+        dict(label='取消', actions=[])])))])
+    _, client = session.run('A', [step(start([dict(kind='organize', description='移动')]), call(
+        'prepare_file_plan', dict(description='移动', actions=[dict(effect='move', source='Inbox/a.txt', destination='Big/a.txt')])))])
+    assert NEW_FOLDER not in client.calls('prepare_file_plan')[0]['text']
+
+
+def test_v2_is_unchanged_by_the_new_folder_rule(tmp_path):
+    files_fixture(tmp_path)
+    from agent.artifacts import ArtifactStore
+    from agent.file_plans import new_folders
+    from safety.sandbox import Sandbox
+    sb = Sandbox(tmp_path); sb.artifacts = ArtifactStore(sb)
+    runtime = TaskRuntime('移动', dict(protocol='v2'), sb, 'one'); sb.runtime = runtime
+    text = runtime.dispatch('prepare_file_plan', json.dumps(dict(description='移动', actions=[
+        dict(effect='move', source='Inbox/a.txt', destination='Big/a.txt')])), sb, None, None)
+    assert text.startswith('OK') and NEW_FOLDER not in text
+    plan = runtime.store.file_plan(text.split('plan_id=')[1].split('；')[0])
+    assert new_folders(plan) == ['Big']
