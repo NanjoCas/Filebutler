@@ -280,3 +280,12 @@ def test_dry_run_holdout_pipeline_accepts_good_script_and_rejects_bad(tmp_path):
     assert code == 1 and not judgement['overall_accepted']
     assert {'turn_1:files', 'turn_1:status', 'turn_1:constraints'} <= set(case['failed_dimensions'])
     assert report['cases'][0]['checks']['undo_restores_fixture']
+
+
+def test_choose_presses_the_one_matching_option_or_records_none():
+    from eval.live_policy import choose, NO_MATCH
+    report = dict(choices=[dict(key='A', label='不覆盖，保留两份'), dict(key='B', label='覆盖旧文件'), dict(key='C', label='不移动')])
+    assert choose({'choose': ['覆盖'], 'avoid': ['不覆盖']}, report)[0] == 'B'
+    text, record = choose({'choose': ['覆盖']}, report)  # two labels match: never guess
+    assert text == NO_MATCH and record['key'] is None and len(record['matched']) == 2
+    assert choose('保留', report) == ('保留', None)
