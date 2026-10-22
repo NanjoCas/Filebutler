@@ -444,8 +444,12 @@ class TaskRuntime:
             return
         touched = {g for b in self.current.get('file_plan_bindings', {}).values() for g in b['goal_ids']} | \
                   {g for o in self.current.get('operation_history', []) + self.operations for g in (o.get('goal_ids') or [])}
+        # "Do nothing" was the choice (no actions): a part that only records it (an answer
+        # part, reviewed by hand) is settled by the choice too, not left for review.
+        nothing = not [a for a in chosen['actions'] if a['effect'] != 'read']
         excluded = [g['id'] for g in self.current['goals'] if g['id'] not in touched
-                    and any(c['kind'] in self.WRITE_CONDITIONS for c in g['conditions'])]
+                    and (any(c['kind'] in self.WRITE_CONDITIONS for c in g['conditions'])
+                         or nothing and all(c['kind'] == 'manual_review' for c in g['conditions']))]
         self.current['chosen_scope'] = dict(revision=self.current['revision'], key=chosen['key'], label=chosen['label'], excluded=excluded)
 
     def sensitive_grants(self):

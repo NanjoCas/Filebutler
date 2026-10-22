@@ -233,3 +233,5 @@ body.resizing iframe { pointer-events: none; }
 .choice-local { font-size: 10px; color: #9aa69e; }
 /* Developer mode toggle in the top bar. */
 .dev-toggle[aria-pressed="true"] { background: #24392c; color: #fff; border-color: #24392c; }
+/* An answered question's options disappear (only the latest question keeps its buttons). */
+.choice-buttons.settled { display: none; }
