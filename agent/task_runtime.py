@@ -318,11 +318,9 @@ class TaskRuntime:
                 '完成条件、写入范围和目标归属由本地生成，你不需要填写。\n'
                 '文件移动、改名、建目录、回收一律用 prepare_file_plan 列出对象（actions 或 selection），'
                 'destination 可写目标目录，表示按原名放入；父目录由本地创建。'
-                '每个 source 指执行前的对象，本地按依赖排定顺序：同一计划里可以先腾出名字再放入（A→B 与 B→C）、'
-                '只改大小写（a.JPG→a.jpg）、先移出文件再改名或移动这个文件夹；两个名字互换没有可行顺序，须分两个计划。'
-                '取得 plan_id 后 execute_file_plan 一次完成确认、执行和核验。计划超出原范围时，本地会在确认卡片中列出。'
-                '同一响应中可依次调用 start_task 和 prepare_file_plan。只有续做以前的任务时才在 prepare_file_plan 填写完整的 task_id；'
-                '本轮已调用 start_task 时不要填。\n'
+                'source 指执行前的对象，本地按依赖排序：可先腾名再放入（A→B、B→C）、只改大小写、先移出文件再改名文件夹；互换名字须分两个计划。'
+                '取得 plan_id 后 execute_file_plan 一次完成确认、执行和核验；超出原范围的对象会列在确认卡片上。'
+                '同一响应中可依次调用 start_task 和 prepare_file_plan；task_id 只在续做以前的任务时填。\n'
                 'dedup 部分只能由 deduplicate 或 apply_dedup 完成（本地比对字节并生成回执），不要在文件计划里回收副本；'
                 '分类用 paper_profiles、submit_classification，'
                 '执行分类方案用 prepare_file_plan(classification_plan_id=精确 P 标识)；查找结论用 report_findings 给证据。\n'
@@ -335,15 +333,14 @@ class TaskRuntime:
                 '请求不清楚时不要猜，调用 ask_user 给 2–4 个具体选项并允许用户补充，本轮随即结束、不写入。须问的情况：'
                 '有多个候选对象；标准没有可执行的界限（如“旧的”“大的”）；遇到冲突而用户没交代怎么处理；'
                 '要动的对象超出用户明确说的范围；无法按原样做到（如没有复制能力）。'
-                '惯例默认（保留原名、自动建父目录、回收可撤销）和能用只读工具查清的事实不必问；问之前先查清事实，让选项具体。'
-                '目标已有同名文件而用户没交代时，问用户：保留两份（新文件改用本地建议的名字）、不移动、覆盖'
-                '（选项 actions 同时写 trash 旧文件和 move 新文件到原名，旧文件移入回收区，可撤销）；未经用户选择的覆盖会被拒绝。'
+                '惯例默认（保留原名、自动建父目录、回收可撤销）和能用只读工具查清的事实不必问；先查清事实，让选项具体。'
+                '目标有同名文件而用户没交代时，问：保留两份（用本地建议的名字）、不移动、覆盖（actions 同时 trash 旧文件、move 到原名）；未经选择的覆盖会被拒绝。'
                 '选项必须是工具能做到的：隐藏文件和隐藏文件夹不能移动或读取，锁文件不能移动或回收，隐藏文件只能随所在文件夹一起回收，'
-                '回收区不能由工具清空（只能由用户在访达中手动清空）。'
-                '敏感文件（凭据、证件、合同、财务、医疗，或内容含密钥、身份证号、银行卡号）默认不读取内容，'
-                '只能按文件名整理；确需内容时 ask_user，同意的选项 actions 写 read 该文件，授权只在本任务内有效。'
+                '回收区只能由用户手动清空。'
+                '敏感文件（凭据、证件、合同、财务、医疗，或含密钥、身份证号、卡号）不读内容，只按文件名整理；'
+                '需要内容时 ask_user，同意项 actions 写 read 该文件，仅本任务有效。'
                 '每个选项写 actions（move/rename/trash/read 及路径，不做操作写空列表），本地会在用户看到前检查，做不到的退回给你改写；'
-                '用户选中的选项会约束下一轮计划，不能超出它声明的操作。\n'
+                '用户选中的选项会约束下一轮计划，不能超出它声明的操作；完成以所选范围为准，选项不含的部分不必做，也不写进 unfinished。\n'
                 '回收文件夹时，本地按其中剩下的内容分级：可见文件须由同一计划先移走（可在同一计划内先移出再回收，'
                 '整个文件夹一次回收即可，不必逐个列子文件夹）；系统元数据（.DS_Store 等）在该 trash 动作设 include_metadata=true，'
                 '确认卡片会列给用户；其他隐藏文件（.env 等）须先 ask_user（subject 填文件夹，同意项 consent=include_hidden），'
@@ -401,6 +398,33 @@ class TaskRuntime:
                                 detail='', consent='include_hidden', local=True, warn=names,
                                 actions=None))  # consent only: it does not bound the other operations
         return choices
+
+    WRITE_CONDITIONS = {'file_plan_verified', 'receipt_verified', 'plan_applied', 'files_placed', 'empty_directories_removed'}
+
+    def _record_chosen_scope(self):
+        """User decision 2026-10-22: after a choice, completion is judged by the chosen scope.
+
+        When every action the chosen option declared was executed in this task, write
+        parts that nothing was done for are excluded by the choice, and the model's
+        "unfinished" notes become explanations. Matched by structure, not by text;
+        if any declared action is missing, nothing changes.
+        """
+        chosen = self.chosen_option
+        if not chosen or not self.current: return
+        ops = [o for o in self.current.get('operation_history', []) + self.operations if o.get('run_id') == self.run_id]
+        def executed(a):
+            path = self._resolve(a['path'])
+            dst = self._resolve(a['destination']) if a.get('destination') else None
+            kinds = {'trash'} if a['effect'] == 'trash' else {'move', 'rename'}
+            return any(o['op'] in kinds and o['src'] == path and
+                       (a['effect'] == 'trash' or not dst or o['dst'] == dst or Path(o['dst']).parent == Path(dst)) for o in ops)
+        if not all(executed(a) for a in chosen['actions'] if a['effect'] != 'read'):
+            return
+        touched = {g for b in self.current.get('file_plan_bindings', {}).values() for g in b['goal_ids']} | \
+                  {g for o in self.current.get('operation_history', []) + self.operations for g in (o.get('goal_ids') or [])}
+        excluded = [g['id'] for g in self.current['goals'] if g['id'] not in touched
+                    and any(c['kind'] in self.WRITE_CONDITIONS for c in g['conditions'])]
+        self.current['chosen_scope'] = dict(revision=self.current['revision'], key=chosen['key'], label=chosen['label'], excluded=excluded)
 
     def sensitive_grants(self):
         """Granted sensitive paths for the current task; a fresh grant is kept with the task."""
@@ -907,6 +931,7 @@ class TaskRuntime:
                 self.current['declared_unfinished'] = dict(revision=self.current['revision'],
                                                            items=[u.model_dump() for u in args.unfinished],
                                                            not_needed=[u.model_dump() for u in args.not_needed])
+                self._record_chosen_scope()
                 self.current['checks'] = verify_task(self.current, sb)
                 state = task_state(self.current)
                 self.current['status'] = state

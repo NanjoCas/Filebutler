@@ -204,6 +204,11 @@ def verify_task(task, sb):
             except (ValueError, KeyError, OSError, AttributeError, SandboxError) as exc:
                 ok, detail = False, str(exc)
             rows.append(dict(kind=kind, passed=bool(ok), needs_review=review, detail=detail))
+        # After a choice (user decision 2026-10-22), completion follows the chosen scope.
+        scope = task.get('chosen_scope') if (task.get('chosen_scope') or {}).get('revision') == task['revision'] else None
+        if scope and goal['id'] in scope['excluded']:
+            rows = [dict(kind='excluded_by_choice', passed=True, needs_review=False,
+                         detail=f"按你选择的选项 {scope['key']}（{scope['label']}），此部分不执行")]
         declared = task.get('declared_unfinished') or {}
         if declared.get('revision') == task['revision']:
             for u in declared.get('not_needed', []):
@@ -216,6 +221,8 @@ def verify_task(task, sb):
                               detail='模型声明无需操作，但本部分已有计划或操作，需按其结果核验：' + u['reason'])] + rows) if touched else \
                        [dict(kind='declared_not_needed', passed=True, needs_review=True, detail='模型说明无需操作（本地未能证明）：' + u['reason'])]
             rows += [dict(kind='declared_unfinished', passed=False, needs_review=False, detail='模型声明未完成：'+u['reason'])
+                     if not scope else dict(kind='declared_outside_choice', passed=True, needs_review=False,
+                                            detail=f"模型说明（已按你选择的选项 {scope['key']} 完成）："+u['reason'])
                      for u in declared.get('items', []) if u['part_id'] == goal['id']]
         checks.append(dict(goal_id=goal['id'], description=goal['description'],
                            passed=all(r['passed'] for r in rows),

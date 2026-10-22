@@ -1302,10 +1302,25 @@ def report_task(declared=True):
 def test_a_reason_the_model_declared_is_stated_once_per_part_and_blockers_move_to_details():
     report = build_report(report_task(), '摘要：空文件夹清理因 .DS_Store 未完成。', [], reply='126 个 PDF 已平铺；「文献」因 .DS_Store 无法回收。')
     main = report['summary']
-    assert main.startswith('已移动 126 个文件。\n\n尚未全部完成。原因：\n- 回收空文件夹：模型说明：「文献」清空后')
+    # The reply speaks for the model, so its declared reason is not repeated above it (browser check 2026-10-22).
+    assert main.startswith('已移动 126 个文件。\n\n尚未全部完成。原因：\n- 回收空文件夹\n\n126 个 PDF')
+    assert main.count('.DS_Store') == 1 and '模型说明' not in main
     assert '。。' not in main and '补充原因' not in main and '阻塞原因' not in main and '摘要：' not in main
     assert main.endswith('126 个 PDF 已平铺；「文献」因 .DS_Store 无法回收。')
     assert any(s['title'] == '阻塞原因' and BLOCK in s['markdown'] for s in report['sections'])
+    assert any(s['title'] == '未完成原因（模型说明）' and REASON.rstrip('。') in s['markdown'] for s in report['sections'])
+
+
+def test_without_a_reply_the_declared_reason_stays_and_is_marked_once():
+    main = build_report(report_task(), '', [])['summary']
+    assert '- 回收空文件夹（模型说明）：「文献」清空后仍含隐藏文件 .DS_Store' in main and '：模型说明：' not in main
+
+
+def test_a_long_part_name_and_a_model_reason_do_not_read_as_two_colons():
+    task = report_task()
+    task['checks'][1]['description'] = '把 测试_锁文件 里的 a.pdf、b.pdf、计划.docx 按原名移到 测试_平铺；因存在 Office 锁文件 ~$计划.docx，保留文件夹'
+    main = build_report(task, '', [])['summary']
+    assert '…（模型说明）：' in main and '…：模型说明：' not in main
 
 
 def test_a_blocker_no_one_explained_stays_in_the_answer():
@@ -1408,3 +1423,55 @@ def test_a_free_text_answer_to_overwrite_is_confirmed_on_the_card(tmp_path):
     from web_confirm import build_confirmation
     notes = build_confirmation(request, H.Sandbox(tmp_path))['notes']
     assert any(n.startswith('⚠ 你在对话中以文字回复，请在此确认：覆盖 Archive/a.txt') for n in notes)
+
+
+# ============================================================================ completion follows the chosen scope
+# User decision 2026-10-22 (browser check: "keep the folder" still ended as partial).
+
+ASK_SCOPE = dict(question='b.txt 也移吗？', reason='scope_beyond_request', subject=['Inbox'], options=[
+    dict(label='只移动 a.txt', actions=[dict(effect='move', path='Inbox/a.txt', destination='Archive')]),
+    dict(label='a.txt 和 b.txt 都移动', actions=[dict(effect='move', path='Inbox/a.txt', destination='Archive'),
+                                             dict(effect='move', path='Inbox/b.txt', destination='Archive')])])
+MOVE_ONLY_A = dict(description='只移动 a', goal_ids=['organize_1'],
+                   actions=[dict(effect='move', source='Inbox/a.txt', destination='Archive')])
+
+
+def finish_with(unfinished, reply=''):
+    return step(call('finish_task', dict(summary='', reply=reply, unfinished=unfinished)))
+
+
+def test_a_part_the_chosen_option_left_out_is_not_unfinished(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', ASK_SCOPE))])
+    result, client = session.run('A', [step(start([dict(kind='organize', description='移动 a.txt'),
+                                                   dict(kind='organize', description='移动 b.txt')]),
+                                            call('prepare_file_plan', MOVE_ONLY_A, alias=PLAN)), execute(),
+                                       finish_with([dict(part_id='organize_2', reason='用户选择 A，b.txt 不移动')])])
+    assert errors(client) == [] and result.stop_reason == 'done', result.final
+    assert (tmp_path / 'Archive/a.txt').is_file() and (tmp_path / 'Inbox/b.txt').is_file()
+    task = session.sb.runtime.current
+    [b] = [c for c in task['checks'] if c['goal_id'] == 'organize_2']
+    assert [r['kind'] for r in b['conditions']] == ['excluded_by_choice', 'declared_outside_choice']
+    assert '尚未全部完成' not in result.final
+
+
+def test_a_done_part_the_model_still_called_unfinished_is_done_within_the_choice(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', ASK_SCOPE))])
+    result, _ = session.run('A', [step(start([dict(kind='organize', description='只移动 a.txt')]),
+                                       call('prepare_file_plan', dict(MOVE_ONLY_A, goal_ids=[]), alias=PLAN)), execute(),
+                                  finish_with([dict(part_id='organize_1', reason='用户选择 A：b.txt 未移动')])])
+    assert result.stop_reason == 'done' and '尚未全部完成' not in result.final
+
+
+def test_the_chosen_scope_must_actually_be_done(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', ASK_SCOPE))])
+    result, _ = session.run('B', [step(start([dict(kind='organize', description='移动 a.txt 和 b.txt')]),
+                                       call('prepare_file_plan', dict(MOVE_ONLY_A, goal_ids=[]), alias=PLAN)), execute(),
+                                  finish_with([dict(part_id='organize_1', reason='b.txt 没有移动')])])
+    assert result.stop_reason == 'partial' and '尚未全部完成' in result.final
+    assert 'chosen_scope' not in session.sb.runtime.current
