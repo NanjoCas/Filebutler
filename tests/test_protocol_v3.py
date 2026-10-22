@@ -1111,3 +1111,50 @@ def test_list_dir_marks_lock_files(tmp_path):
     session = Session(tmp_path)
     _, client = session.run('看看', [step(call('list_dir', {'path': 'Reports'}))], final='好')
     assert '~$q4.docx · 文件' in client.calls('list_dir')[0]['text'] and '锁文件：Office 文档正被打开' in client.calls('list_dir')[0]['text']
+
+
+# ============================================================================ round 14 follow-up: task_id typos
+# policy_live_20261022_14_v3_hidden/hidden_flatten_with_metadata: the model wrote
+# T58c44e8caf2 for T58c44e8caf2f; the bare "任务不存在" cost one request.
+
+MOVE_A = dict(effect='move', source='Inbox/a.txt', destination='Archive')
+
+
+def test_a_mistyped_task_id_in_a_run_with_a_task_uses_that_task(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = session.run('移动', [
+        step(start([dict(kind='organize', description='移动 a')]),
+             call('prepare_file_plan', dict(description='m', task_id='T58c44e8caf2', actions=[MOVE_A]), alias=PLAN)),
+        execute(), finish()])
+    assert errors(client) == [], errors(client)
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert 'task_id T58c44e8caf2 不存在，已按本轮任务' in text and '可以不填' in text
+    assert (tmp_path / 'Archive/a.txt').is_file() and result.stop_reason == 'done'
+
+
+def test_another_existing_task_is_still_refused(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('先登记', [step(start([dict(kind='organize', description='旧任务')])), finish()])
+    _, client = session.run('移动', [step(start([dict(kind='organize', description='新任务')], limits=dict(no_effects=['trash'])),
+                                         call('prepare_file_plan', dict(description='m', task_id=TASK, actions=[MOVE_A])))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert '计划只能属于当前任务' in text and (tmp_path / 'Inbox/a.txt').is_file()
+
+
+def test_continuation_accepts_only_a_unique_long_prefix(tmp_path):
+    files_fixture(tmp_path)
+    from agent.artifacts import ArtifactStore
+    from safety.sandbox import Sandbox
+    sb = Sandbox(tmp_path); sb.artifacts = ArtifactStore(sb)
+    first = TaskRuntime('登记', dict(protocol='v3'), sb, 'one')
+    first.dispatch('start_task', json.dumps(dict(summary='s', parts=[dict(kind='organize', description='旧任务')])), sb, None, None)
+    tid = first.current['id']
+    later = TaskRuntime('续做', dict(protocol='v3'), sb, 'two')
+    task, note = later._task_for(tid[:-1])
+    assert task['id'] == tid and '不完整，已按近期任务' in note
+    for bad in (tid[:6], 'Tffffffffffff'):
+        with pytest.raises(ValueError) as exc:
+            later._task_for(bad)
+        assert tid in str(exc.value) and '请复制完整的任务 ID' in str(exc.value)

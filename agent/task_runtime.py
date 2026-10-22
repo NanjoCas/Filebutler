@@ -307,7 +307,8 @@ class TaskRuntime:
                 '文件移动、改名、建目录、回收一律用 prepare_file_plan 列出对象（actions 或 selection），'
                 'destination 可写目标目录，表示按原名放入；父目录由本地创建。'
                 '取得 plan_id 后 execute_file_plan 一次完成确认、执行和核验。计划超出原范围时，本地会在确认卡片中列出。'
-                '同一响应中可依次调用 start_task 和 prepare_file_plan。续做近期任务时在 prepare_file_plan 填写 task_id，沿用原限制。\n'
+                '同一响应中可依次调用 start_task 和 prepare_file_plan。只有续做以前的任务时才在 prepare_file_plan 填写完整的 task_id；'
+                '本轮已调用 start_task 时不要填。\n'
                 'dedup 部分只能由 deduplicate 或 apply_dedup 完成（本地比对字节并生成回执），不要在文件计划里回收副本；'
                 '分类用 paper_profiles、submit_classification，'
                 '执行分类方案用 prepare_file_plan(classification_plan_id=精确 P 标识)；查找结论用 report_findings 给证据。\n'
@@ -580,6 +581,25 @@ class TaskRuntime:
         return ['待你确认的限制（本地无法自动检查）：' + c['description'] for c in self.current['constraints']
                 if not c['forbidden_effects'] and not c.get('rules') and c['id'] not in accepted]
 
+    def _task_for(self, task_id):
+        """(task, note) a plan's task_id names. A mistyped ID is accepted only when
+        it cannot mean another task; otherwise the model gets the IDs to copy."""
+        try:
+            return self.store.get(task_id), ''
+        except ValueError:
+            pass
+        if self.current:
+            # Only this run's task can take the plan, so an ID that names no task is a typo of it.
+            return self.current, (f"task_id {task_id} 不存在，已按本轮任务 {self.current['id']} 处理；"
+                                  '本轮已登记任务时可以不填 task_id。')
+        recent = self.store.recent(10)
+        matches = [t for t in recent if len(task_id) >= 10 and t['id'].startswith(task_id)]
+        if len(matches) == 1:
+            return matches[0], f"task_id {task_id} 不完整，已按近期任务 {matches[0]['id']} 处理。"
+        listing = '；'.join(f"{t['id']}（{(t['goals'][0]['description'] if t['goals'] else '')[:30]}）" for t in recent[:5])
+        raise ValueError(f"task_id {task_id} 不存在" + ('，且同时匹配多个近期任务' if len(matches) > 1 else '')
+                         + f"。近期任务：{listing or '无'}。请复制完整的任务 ID")
+
     def adopt_observations(self):
         """Facts read before registration belong to the task registered in this run."""
         if self.current and self._pretask:
@@ -670,11 +690,12 @@ class TaskRuntime:
                 from agent import file_plans
                 if name == 'prepare_file_plan':
                     args = PrepareFilePlan.model_validate_json(raw)
+                    id_note = ''
                     if args.task_id:
                         # Continuing a recent task keeps its limits; it never switches tasks.
-                        task = self.store.get(args.task_id)
+                        task, id_note = self._task_for(args.task_id)
                         if self.current and self.current['id'] != task['id']:
-                            raise ValueError('计划只能属于当前任务 '+self.current['id']+'，不能切换任务绕过限制')
+                            raise ValueError('计划只能属于当前任务 '+self.current['id']+'，不能切换任务绕过限制；本轮已登记任务时 task_id 可以不填')
                         if not self.current:
                             self.current = task
                             self.adopt_observations()
@@ -694,6 +715,8 @@ class TaskRuntime:
                             fix = 'revise_task 修正对应部分' if self.protocol == 'v3' else 'edit_task 修正完成条件'
                             text += '\n注意：' + '；'.join(hints) + f'。若与用户要求不符，请先用 {fix}；不要执行此计划。'
                         outcome = registry.ToolResult(status='ok', text=text)
+                    if id_note:
+                        outcome.text += '\n' + id_note
                 elif name == 'inspect_file_plan':
                     plan = self.store.file_plan(ExecuteFilePlan.model_validate_json(raw).plan_id)
                     outcome = registry.ToolResult(status='ok', text='OK: '+file_plans.markdown(plan))
