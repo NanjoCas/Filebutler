@@ -76,7 +76,7 @@ SCRIPTS = {
         [('read_file', dict(path='Notes/note_01.txt')), ('read_file', dict(path='Notes/note_02.txt')),
          ('read_file', dict(path='Notes/note_03.txt')), ('read_file', dict(path='Notes/note_04.txt'))],
         [('prepare_file_plan', dict(
-            description='把两篇光合作用笔记移到 Topics/光合作用', semantic_review=True,
+            description='把两篇光合作用笔记移到 Topics/光合作用',
             actions=_moves([('Notes/note_01.txt', f'{TOPIC}/note_01.txt'), ('Notes/note_02.txt', f'{TOPIC}/note_02.txt')])))],
         _execute(),
         _finish('note_01.txt 与 note_02.txt 讨论光合作用，已移到 Topics/光合作用；副本 note_01_copy.txt 已回收。'),

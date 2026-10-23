@@ -62,7 +62,6 @@ class PrepareFilePlan(StrictModel):
     goal_ids: list[str] = Field(default_factory=list, max_length=30,
         description='已有任务中此计划服务的目标；可省略，本地按完成条件逐项归属，无法确定时才要求提供')
     task_id: str | None = Field(None, description='仅在续做以前的任务时填写，复制完整 ID，沿用原限制；本轮已调用 start_task 时不要填')
-    semantic_review: bool = Field(False, description='分类或相关性等语义结论须为 true，本地只能证明文件操作')
 
 
 class ExecuteFilePlan(StrictModel):
