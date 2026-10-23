@@ -177,15 +177,17 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 console.print(f"[bold cyan]{escape(name)}[/] [dim]{escape(raw)}[/]")  # 先打印，确认提示才有上下文
                 repeat_count = repeats.observe(name, raw) if repeats else 0
                 executed = False
-                if blocked:
-                    result=blocked
-                elif stop_reason in {"repeated_call", "repair_limit"}:
+                # A call the runtime blocked (invalid JSON, out of scope, over budget) counts
+                # as a repeat too: retrying it unchanged is the same idling (user decision 2026-10-23).
+                if stop_reason in {"repeated_call", "repair_limit"}:
                     result = "ERROR: 本次运行已触发重复或无进展保护，此调用未执行"
                 elif repeat_count >= 3:
                     stop_reason = "repeated_call"
                     result = "ERROR: 相同工具和参数连续调用 3 次，已中止运行；此调用未执行"
                 else:
-                    if name == "search_content" and not retrieval:
+                    if blocked:
+                        result = blocked
+                    elif name == "search_content" and not retrieval:
                         result = "ERROR: 本次运行未启用内容检索，请使用 search_files 和 read_file"
                     else:
                         executed = True
