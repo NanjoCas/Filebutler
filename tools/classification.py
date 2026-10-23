@@ -9,14 +9,13 @@ import os
 import re
 import unicodedata
 import uuid
-from collections import Counter
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 from agent.artifacts import digest, label
 from agent.policy import EvidencePolicy, evidence_policy
-from tools.registry import LocalWriteBatch, ToolError, tool
-from tools.scopes import catalog_scope, classification_paths
+from tools.registry import ToolError, tool
+from tools.scopes import catalog_scope
 
 PAGE_SIZE = 16
 
@@ -24,7 +23,7 @@ PAGE_SIZE = 16
 def _store(sb):
     store = getattr(sb, 'artifacts', None)
     if not store:
-        raise ToolError('分类计划需要启用 local_runtime')
+        raise ToolError('分类计划需要文件引用存储（artifacts）')
     return store
 
 
@@ -159,9 +158,6 @@ def paper_profiles(a, sb):
         if fid not in catalog['delivered']:
             catalog['delivered'].append(fid)
     store._save()
-    runtime = getattr(sb, 'runtime', None)
-    if runtime:
-        runtime.classification_stats = dict(catalog_id=cid, total=len(catalog['members']), delivered=len(catalog['delivered']), cached_cards=cached)
     return (f"OK: catalog_id={cid}；范围={catalog['path']}；PDF={len(catalog['members'])}；第 {a.page}/{pages} 页；本页缓存复用={cached}\n"
             '依据用户指定标准及以下原文分类。查看全部页后提交 file_id→category，不复写长路径；不足项 uncertain=true。\n'+'\n'.join(cards))
 
@@ -246,10 +242,8 @@ def submit_classification(a, sb):
         raise ToolError('目录文件清单已变化，请重新获取分类快照')
     pid='P'+uuid.uuid4().hex[:10]
     scope=Path(catalog['path'])
-    # Only the explicitly retained legacy controller keeps its historical layout.
-    legacy = getattr(getattr(sb, 'runtime', None), 'task', None) in {'classification', 'classification_apply'}
-    base=a.base_dir if a.base_dir is not None else ((scope/'按方法').as_posix() if legacy else scope.as_posix())
-    numbered = a.numbered if a.numbered is not None else legacy
+    base=a.base_dir if a.base_dir is not None else scope.as_posix()
+    numbered = bool(a.numbered)
     _safe_target(sb, base)
     if set(a.category_paths) - {str(i) for i in range(1, len(categories)+1)}:
         raise ToolError('目录映射引用了不存在的类别')
@@ -266,15 +260,9 @@ def submit_classification(a, sb):
         raise ToolError('不同类别映射到了同一目录，请明确互不冲突的 category_paths')
     store.data['classification_plans'][pid]=plan;store._save()
     runtime=getattr(sb,'runtime',None)
-    if runtime and hasattr(runtime, 'capture_output'):
+    if runtime:
         runtime.capture_output('submit_classification', classification_markdown(store,pid,plan), pid)
-    elif runtime and runtime.task=='classification':
-        runtime.final_answer=classification_markdown(store,pid,plan)
     return f'OK: 已保存分类计划 {pid}，共 {len(ids)} 篇；分类表已由本地生成，尚未移动文件。'
-
-
-class ApplyArgs(BaseModel):
-    plan_id: str = Field('latest', description='V2 必须填写精确 P 标识；latest 仅保留给旧控制器兼容')
 
 
 def _safe_target(sb, rel):
@@ -313,109 +301,3 @@ def _move_plan(sb, pid, plan):
         moves.append(dict(file_id=fid,src=sb.rel(source),dst=sb.rel(target),dst_dir=directory,
                           uncertain=item['uncertain'], category=item['category']))
     return moves
-
-
-def _execute(sb, oplog, confirmer, pid, plan):
-    from tools.fs_write import make_dir,MakeDirArgs
-    if not oplog:
-        raise ToolError('批量分类需要操作日志，才能撤销')
-    store=_store(sb);runtime=getattr(sb,'runtime',None)
-    moved=[];created=[]
-    def finish(error=''):
-        plan['last_execution']=dict(run_id=store.run_id,moved=list(moved),manifest=moves,
-                                    created=list(created),error=error,verified=not error)
-        plan['status']='partial' if error else 'applied';store._save()
-        counts=Counter(x['category'] for x in plan['assignments'])
-        text=f"{'批量移动未全部完成' if error else '分类计划执行完成'}：已移动 {len(moved)} 篇，创建 {len(created)} 个文件夹。"
-        if error:
-            text+=f'\n{label(error)}\n已记录的操作可撤销；未报告为全部成功。'
-        else:
-            text+='\n本地逐项复核所有计划文件的位置与 SHA256 通过；未覆盖同名文件。\n\n| 分类目录 | 计划篇数 |\n| --- | ---: |'
-            for category,count in sorted(counts.items()):
-                text+=f"\n| {label(plan['base_dir'])}/{label(plan_directory(plan, category))} | {count} |"
-            text+='\n\n| 文件 | 分类 |\n| --- | --- |'
-            for item in plan['assignments']:
-                text+=f"\n| {store.file_link(item['file_id'])} | {label(plan['categories'][item['category']-1])}"+('（待核实）' if item['uncertain'] else '')+' |'
-            text+='\n\n仅执行本计划，后续新增文件不在本次计划内；本轮可撤销。'
-        if plan['note']:text+='\n\n'+label(plan['note'])
-        if runtime and hasattr(runtime, 'capture_output'):
-            runtime.capture_output('apply_classification', text, pid)
-        elif runtime and runtime.task=='classification_apply':
-            runtime.final_answer=text
-            if error:runtime.stop_reason='operation_error'
-        return ('ERROR: ' if error else 'OK: ')+f'已移动 {len(moved)} 篇，新增目录 {len(created)} 个；'+(error or '本地逐文件 SHA256/位置复核通过，结果已生成。')
-    moves=_move_plan(sb,pid,plan)
-    from agent.constraints import enforce, operation, creations
-    def check_operations(items):
-        ops=[operation('move',m['src'],m['dst']) for m in items if m['src']!=m['dst']]
-        for directory in dict.fromkeys(m['dst_dir'] for m in items):
-            ops.extend(creations(sb, directory))
-        enforce(sb, ops)
-    check_operations(moves)
-    affected=[m for m in moves if m['src']!=m['dst']]
-    if affected and confirmer and not confirmer.allow('move_many',{'plan_id':pid,'moves':affected},file_count=len(affected)):
-        if runtime and runtime.task=='classification_apply':runtime.final_answer='你已拒绝执行分类计划，未创建目录或移动文件。'
-        return 'ERROR: 用户拒绝了分类移动，未改动文件'
-    # Confirmation may take minutes: revalidate the whole plan before mutation.
-    moves=_move_plan(sb,pid,plan)
-    check_operations(moves)
-    if hasattr(sb,'progress'):sb.progress(f'本地执行分类计划：{len(affected)} 篇，逐项记录并复核')
-    try:
-        for directory in dict.fromkeys(m['dst_dir'] for m in moves):
-            result=make_dir(MakeDirArgs(path=directory),sb)
-            if isinstance(result,tuple):
-                for op,src,dst in result[1]:
-                    try:oplog.record(op,src,dst)
-                    except Exception:
-                        # Remove this and any as-yet unjournalled empty parents.
-                        for _,_,pending in reversed(result[1]):
-                            p=sb.path(pending,exact=True)
-                            if pending not in created and p.is_dir() and not any(p.iterdir()):p.rmdir()
-                        raise
-                    created.append(dst)
-        for item in moves:
-            if item['src']==item['dst']:continue
-            source,_=store.resolve(item['file_id'],allow_trash=False)
-            target=_safe_target(sb,item['dst'])
-            if sb.rel(source)!=item['src'] or digest(source)!=plan['versions'][item['file_id']] or target.exists():
-                raise ToolError('执行期间文件或目标发生变化，已停止')
-            # Exclusive hard-link creation avoids rename-overwrite races on the
-            # local filesystem. Unlink only after the destination is reserved.
-            enforce(sb, [operation('move', item['src'], item['dst'])])
-            os.link(source,target)
-            try:source.unlink()
-            except Exception:
-                target.unlink();raise
-            try:oplog.record('move',item['src'],item['dst'])
-            except Exception:
-                # Restore without overwriting an externally-created source.
-                try:os.link(target,source)
-                except FileExistsError:raise ToolError(f"日志失败且原路径被占用；文件保留于 {item['dst']}，需手动恢复")
-                target.unlink();store.relocate(item['src'],item['src']);raise
-            moved.append(item['file_id']);store.relocate(item['src'],item['dst'])
-        for item in moves:
-            target=_safe_target(sb,item['dst'])
-            if not target.is_file() or digest(target)!=plan['versions'][item['file_id']]:
-                raise ToolError('执行后文件位置/内容复核失败')
-            if item['src']!=item['dst'] and (sb.path(item['src'],exact=True).exists() or sb.path(item['src'],exact=True).is_symlink()):
-                raise ToolError('执行后原位置仍有文件，需核对外部改动')
-        return finish()
-    except Exception as exc:
-        return finish(f'{type(exc).__name__}: {exc}')
-
-
-@tool('apply_classification',
-      '仅在用户明确授权执行已保存分类计划时使用。本地一次校验全部版本/目标、展示逐文件确认、建目录、移动、记日志、复核并生成最终表格。'
-      '不需要逐个 make_dir/move，也不需要后续模型总结。', ApplyArgs,writes=True,batch=True,
-      effects=('create','move'),verification='execution_receipt', read_scope=classification_paths,
-      write_scope=classification_paths, reference_inputs=(('plan_id', 'classification_plans'),),
-      produces=('classification_plans',))
-def apply_classification(a,sb):
-    store=_store(sb);runtime=getattr(sb,'runtime',None)
-    if not runtime or not runtime.allow_classification_apply:
-        raise ToolError('本轮未授权执行分类计划，只能查看分类结果')
-    pid,plan=_plan(store,a.plan_id)
-    count=None if hasattr(runtime, 'capture_output') else re.search(r'(\d+)\s*类',runtime.instruction)
-    if count and int(count.group(1))!=len(plan['categories']):
-        raise ToolError('指令中的分类数与最新计划不符，请明确要执行的计划')
-    return LocalWriteBatch(lambda sandbox,oplog,confirmer:_execute(sandbox,oplog,confirmer,pid,plan))

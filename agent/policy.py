@@ -27,16 +27,8 @@ class TaskPolicy(PolicyModel):
     output: OutputPolicy = Field(default_factory=OutputPolicy)
 
 
-class ExecutionStep(PolicyModel):
-    id: str = Field(min_length=1, max_length=60)
-    goal_ids: list[str] = Field(min_length=1, max_length=30)
-    description: str = Field(min_length=1, max_length=800)
-
-
 def active_goals(runtime):
-    """Single-goal tasks have an unambiguous compatibility step."""
-    if runtime.active_step:
-        return runtime.active_step['goal_ids']
+    """The goal a write serves: the only goal, or the only one verifying its receipt."""
     goals = (runtime.current or {}).get('goals', [])
     if len(goals) == 1:
         return [goals[0]['id']]
@@ -55,21 +47,3 @@ def applies(constraint, goal_ids):
 def evidence_policy(sb):
     task = getattr(getattr(sb, 'runtime', None), 'current', None) or {}
     return EvidencePolicy.model_validate(task.get('policy', {}).get('evidence', {}))
-
-
-def retain_step(before, after, step):
-    """Preserve binding only when its semantic and permission dependencies match."""
-    if not before or not step or before['id'] != after['id']:
-        return None
-    ids = set(step['goal_ids'])
-    def dependencies(task):
-        policy = task.get('policy', {})
-        return dict(goals=[g for g in task['goals'] if g['id'] in ids],
-                    constraints=[c for c in task['constraints'] if applies(c, ids)],
-                    read_roots=task['read_roots'], write_roots=task['write_roots'],
-                    allowed_effects=task['allowed_effects'], cancelled=task.get('cancelled', False),
-                    unresolved_questions=task['unresolved_questions'],
-                    criteria=policy.get('criteria', []), evidence=policy.get('evidence', {}))
-    if ids <= {g['id'] for g in after['goals']} and dependencies(before) == dependencies(after):
-        return step
-    return None

@@ -5,7 +5,7 @@
   python main.py run "把 PDF 移到报告文件夹"
   python main.py search "semi supervised fake news detection"  本地检索，不调用 API
   python main.py undo [run_id]        撤销一次运行（默认最近一次）
-  python main.py eval --exp baseline [--repeats 3] [--ids R01] [--tasks real|synthetic|all] [--set prompt=v2]
+  评测：python -m eval.live_policy --dry-run|--live --suite all --out <目录>
 """
 import argparse
 import sys
@@ -66,23 +66,11 @@ def main():
     dedup_p.add_argument("--confirm", choices=["always", "risky", "never"], help="覆盖确认模式")
     undo_p = sub.add_parser("undo", help="撤销一次运行的所有写操作")
     undo_p.add_argument("run_id", nargs="?", help="不填则撤销最近一次")
-    ev = sub.add_parser("eval", help="跑评测任务集")
-    ev.add_argument("--exp", required=True, help="实验名，结果存到 eval/results/<实验名>/")
-    ev.add_argument("--repeats", type=int, default=3)
-    ev.add_argument("--workers", type=int, default=4)
-    ev.add_argument("--ids", nargs="*", help="只跑这些任务")
-    ev.add_argument("--category", nargs="*", help="只跑这些类别")
-    ev.add_argument("--tasks", choices=["real", "synthetic", "retrieval", "all"], default="real",
-                    help="任务集：real 真实数据（默认）/ synthetic 生成数据 / retrieval E12 主题查找 / all")
-    ev.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="临时覆盖 config，如 prompt=v2")
     args = ap.parse_args()
 
     cfg = load_config(Path(args.config))
     if args.model:
         cfg["model"] = args.model
-    for kv in getattr(args, "set", []):
-        k, v = kv.split("=", 1)
-        cfg[k] = yaml.safe_load(v)  # 让 15、true 这类值保持类型
     console = Console()
 
     if args.cmd == "ping":
@@ -154,9 +142,6 @@ def main():
         run_agent(args.instruction, LLM(cfg), sb, cfg, console,
                   trace_path=logs / f"{run_id}.trace.jsonl", oplog=OpLog(sb, run_id), confirmer=confirmer)
         console.print(f"[dim]撤销本次运行：python main.py undo {run_id}")
-    elif args.cmd == "eval":
-        from eval.runner import run_eval
-        run_eval(cfg, args.exp, args.repeats, args.workers, args.ids, args.category, args.tasks)
     elif args.cmd == "undo":
         for line in undo(Sandbox(cfg["sandbox"]), args.run_id):
             console.print(("[yellow]" if line.startswith("跳过") else "") + line)

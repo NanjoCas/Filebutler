@@ -47,40 +47,10 @@ def run(script, sb, **cfg):
 
 def test_count_pdfs(sb):
     res, client = run([[("search_files", {"ext": "pdf"})], "有 3 个 PDF。"], sb)
-    assert res.stop_reason == "done" and res.final == "有 3 个 PDF。"
+    assert res.stop_reason == "answered" and res.final == "有 3 个 PDF。"
     tool_msg = client.seen[1][-1]
     assert tool_msg["role"] == "tool" and tool_msg["tool_call_id"] == "call_1_0"
     assert "找到 3 个文件" in tool_msg["content"]
-
-
-def test_move_pdfs_to_report(sb):
-    pdfs = ["季度报告.pdf", "invoice_2026_03.pdf", "Attention Is All You Need.pdf"]
-    res, _ = run([
-        [("search_files", {"ext": "pdf"})],
-        [("make_dir", {"path": "报告"})],
-        [("move", {"src": p, "dst_dir": "报告"}) for p in pdfs],  # 一轮多个工具调用
-        "已把 3 个 PDF 移到「报告」。",
-    ], sb)
-    assert res.stop_reason == "done" and res.steps == 4 and res.tool_calls == 5
-    assert sorted(p.name for p in (sb.root / "报告").iterdir()) == sorted(pdfs)
-    assert not list(sb.root.glob("*.pdf"))
-
-
-def test_errors_are_returned_not_raised(sb):
-    res, client = run([[
-        ("no_such_tool", {}),
-        ("move", "{bad json"),
-        ("move", {"src": "notes.md"}),                 # 缺 dst_dir
-        ("move", {"src": "notes.md", "dst_dir": "不存在"}),
-        ("read_file", {"path": "../../etc/passwd"}),
-        ("read_file", {"path": "/etc/passwd"}),
-        ("trash", {"path": "."}),
-    ], "完成"], sb)
-    results = [m["content"] for m in client.seen[1] if m["role"] == "tool"]
-    assert all(r.startswith("ERROR") for r in results)
-    assert "可用工具" in results[0] and "JSON" in results[1] and "dst_dir" in results[2]
-    assert "make_dir" in results[3]
-    assert res.violations == 3
 
 
 def test_max_steps(sb):
@@ -103,22 +73,10 @@ def test_read_tools(sb):
     assert "ERROR" in d("search_files", {"modified_after": "2026/01/01"})  # 日期格式校验
 
 
-def test_write_tools(sb):
-    d = lambda n, a: registry.dispatch(n, json.dumps(a, ensure_ascii=False), sb)
-    assert d("rename", {"path": "notes.md", "new_name": "Notes.md"}).startswith("OK")  # 仅大小写不同
-    assert (sb.root / "Notes.md").exists()
-    assert "已有" in d("rename", {"path": "data.csv", "new_name": "Notes.md"})
-    assert "扩展名" in d("rename", {"path": "data.csv", "new_name": "data.txt"})
-    assert "ERROR" in d("rename", {"path": "data.txt", "new_name": "a/b.txt"})
-    assert "回收区" in d("trash", {"path": "data.txt"})
-    assert len(list((sb.root / ".trash").iterdir())) == 1
-    assert "ERROR" in d("move", {"src": "Notes.md", "dst_dir": ".trash"})
-    assert "已经在" in d("move", {"src": "Notes.md", "dst_dir": "."})
-
-
 def test_schemas():
     names = {s["function"]["name"] for s in registry.schemas()}
-    assert names == {"list_dir", "search_files", "file_info", "read_file", "make_dir", "move", "rename", "trash", "search_content", "find_duplicates", "apply_dedup", "deduplicate", "report_findings", "paper_profiles", "submit_classification", "apply_classification", "inventory_files"}
+    # Writes go through file plans (task runtime); single-step write tools are retired.
+    assert names == {"list_dir", "search_files", "file_info", "read_file", "search_content", "find_duplicates", "apply_dedup", "deduplicate", "report_findings", "paper_profiles", "submit_classification", "inventory_files"}
 
 
 def test_trace_records_instruction_and_final(sb, tmp_path):
@@ -131,4 +89,4 @@ def test_trace_records_instruction_and_final(sb, tmp_path):
     assert next(r for r in rows if r.get("event") == "llm")["ms"] >= 0
     assert any(r.get("event") == "llm_request" for r in rows)
     assert rows[-1]["llm_seconds"] >= 0
-    assert rows[-1]["event"] == "end" and rows[-1]["final"] == "3 个" and rows[-1]["stop_reason"] == "done"
+    assert rows[-1]["event"] == "end" and rows[-1]["final"] == "3 个" and rows[-1]["stop_reason"] == "answered"

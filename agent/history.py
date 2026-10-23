@@ -18,37 +18,55 @@ def has_undo(history, run_id):
     return any(m.get("role") == "system" and m.get("content", "").startswith(marker) for m in history)
 
 
+# Tools retired with protocol v2 (tag archive-v2-legacy-20261023). Their old calls
+# are folded into notes: the model never sees a call to a tool it no longer has.
+LEGACY_TOOLS = {'set_task', 'begin_step', 'edit_task', 'apply_task_edit',
+                'move', 'rename', 'make_dir', 'trash', 'apply_classification'}
+LEGACY_WRITES = {'move', 'rename', 'make_dir', 'trash', 'apply_classification'}
+
+
+def _exchanges(full, boundary):
+    """Complete (assistant tool_calls, tool results) pairs before ``boundary``."""
+    groups = []
+    for i, m in enumerate(full[:boundary]):
+        if m.get('tool_calls'):
+            end = i + 1
+            ids = {tc['id'] for tc in m['tool_calls']}
+            while end < boundary and full[end].get('role') == 'tool': end += 1
+            if {r.get('tool_call_id') for r in full[i+1:end]} == ids: groups.append((i, end))
+    return groups
+
+
+def _fold(full, start, end, legacy=False):
+    """Replace one exchange by its prose plus a note per write (or per call, for legacy tools)."""
+    from tools.registry import TOOLS
+    m = full[start]; result_by_id = {r['tool_call_id']: r for r in full[start+1:end]}
+    notes = []
+    for tc in m['tool_calls']:
+        name = tc['function']['name']
+        tool = TOOLS.get(name)
+        if not (legacy or name in LEGACY_WRITES or (tool and tool.writes)):
+            continue
+        raw = result_by_id[tc['id']].get('content', '')
+        try:
+            outcome = json.loads(raw); text = outcome['text']; ok = outcome.get('status') == 'ok'
+        except (ValueError, KeyError, TypeError): text = raw; ok = raw.startswith('OK')
+        status = '成功（历史结果；当前位置需核实）' if ok else (text.splitlines() or ['调用未完成'])[0][:250]
+        prefix = '[旧版本工具记录] ' if name in LEGACY_TOOLS else '[历史工具执行记录] '
+        notes.append(prefix + name + ' ' + tc['function']['arguments'] + '\n' + status)
+    return ([{'role': 'assistant', 'content': m['content']}] if m.get('content') else []) + \
+           [dict(role='assistant', content=n) for n in notes]
+
+
 def project_task_history(full, limit, before):
     """Evict whole previous exchanges when recent turns alone exceed the budget."""
     boundary=max((i for i,m in enumerate(full) if m.get('role')=='user'),default=0)
     projected=copy.deepcopy(full); removed=0
-    # Work backwards so replacement does not invalidate the earlier indices.
-    groups=[]
-    for i,m in enumerate(full[:boundary]):
-        if m.get('tool_calls'):
-            end=i+1
-            ids={tc['id'] for tc in m['tool_calls']}
-            while end<boundary and full[end].get('role')=='tool':end+=1
-            results=full[i+1:end]
-            if {r.get('tool_call_id') for r in results}==ids:groups.append((i,end))
     selected=[]
     size=len(json.dumps(projected,ensure_ascii=False))
-    for start,end in groups:
+    for start,end in _exchanges(full, boundary):
         if size<=limit:break
-        m=full[start];result_by_id={r['tool_call_id']:r for r in full[start+1:end]}
-        notes=[]
-        from tools.registry import TOOLS
-        for tc in m['tool_calls']:
-            tool=TOOLS.get(tc['function']['name'])
-            if tool and tool.writes:
-                raw=result_by_id[tc['id']].get('content','')
-                try:
-                    outcome=json.loads(raw);text=outcome['text'];ok=outcome.get('status')=='ok'
-                except (ValueError,KeyError,TypeError):text=raw;ok=raw.startswith('OK')
-                status='成功（历史结果；当前位置需核实）' if ok else (text.splitlines() or ['调用未完成'])[0][:250]
-                notes.append('[历史工具执行记录] '+tool.name+' '+tc['function']['arguments']+'\n'+status)
-        replacement=([{'role':'assistant','content':m['content']}] if m.get('content') else [])
-        replacement += [dict(role='assistant',content=n) for n in notes]
+        replacement=_fold(full,start,end)
         delta=len(json.dumps(full[start:end],ensure_ascii=False))-len(json.dumps(replacement,ensure_ascii=False))
         if delta<=0:continue
         selected.append((start,end,replacement));size-=delta;removed+=end-start
@@ -60,56 +78,23 @@ def project_task_history(full, limit, before):
 
 
 def prepare_history(history, cfg, artifacts=None):
-    """Archive only completed old tool exchanges; never split call/result pairs.
-
-    User constraints and assistant prose remain verbatim. Work once at turn entry,
-    not on every LLM round. This is separate from the experimental compressor.
+    """Fold retired-tool exchanges, then archive old tool exchanges only over budget;
+    never split call/result pairs. User constraints and assistant prose remain
+    verbatim. Works once at turn entry, not on every LLM round.
     """
     full = copy.deepcopy(history)
     before = len(json.dumps(full, ensure_ascii=False))
-    if cfg.get('task_runtime'):
-        full = [m for m in full if not (m.get('role') == 'system' and
-                m.get('content', '').startswith('【任务控制 V2，优先于旧版流程说明】'))]
-    if artifacts and cfg.get('local_runtime') and not cfg.get('task_runtime') and full and full[-1].get('role')=='user':
-        from agent.runtime import classification_followup
-        from tools.classification import latest_plan
-        pid=latest_plan(artifacts)
-        if pid and classification_followup(full[-1]['content']):
-            # A deterministic executor needs the stored plan, not old excerpts.
-            # Keep all user/system constraints; the UI still retains everything.
-            projected=[m for m in full[:-1] if m['role'] in {'user','system'}]
-            plan=artifacts.data['classification_plans'][pid]
-            projected += [{'role':'system','content':f'本地分类计划 {pid}：{len(plan["assignments"])} 篇，{len(plan["categories"])} 类；执行时逐项校验版本和路径。'},full[-1]]
-            return projected,dict(before_chars=before,after_chars=len(json.dumps(projected,ensure_ascii=False)),
-                                  archived_messages=len(full)-len(projected)+1,projection='classification_plan')
+    full = [m for m in full if not (m.get('role') == 'system' and
+            m.get('content', '').startswith('【任务控制 V2，优先于旧版流程说明】'))]
+    boundary = max((i for i, m in enumerate(full) if m.get('role') == 'user'), default=0)
+    legacy = [(s, e) for s, e in _exchanges(full, boundary)
+              if any(tc['function']['name'] in LEGACY_TOOLS for tc in full[s]['tool_calls'])]
+    for start, end in reversed(legacy):
+        full[start:end] = _fold(full, start, end, legacy=True)
     limit = cfg.get("conversation_history_max_chars", 40000)
-    if cfg.get('task_runtime') and limit and len(json.dumps(full,ensure_ascii=False))>limit:
-        return project_task_history(full,limit,before)
-    users = [i for i, m in enumerate(full) if m.get("role") == "user"]
-    keep = max(0, int(cfg.get("conversation_keep_full_turns", 2)))
-    if not limit or before <= limit or len(users) <= keep + 1:
-        return full, {"before_chars": before, "after_chars": before, "archived_messages": 0}
-    boundary = users[-(keep + 1)]  # current user plus recent completed turns
-    projected, removed = [], 0
-    writes = {}
-    for i, m in enumerate(full):
-        if i < boundary and m.get("role") == "tool":
-            removed += 1
-            # Preserve local mutation outcomes even if a final reply was interrupted.
-            if m.get("tool_call_id") in writes:
-                projected.append({"role": "assistant", "content": "[历史工具执行记录] " + writes[m["tool_call_id"]] + "\n" + m.get("content", "")})
-            continue
-        if i < boundary and m.get("tool_calls"):
-            writes = {tc["id"]: tc["function"]["name"] + " " + tc["function"]["arguments"]
-                           for tc in m["tool_calls"] if tc["function"]["name"] in {"apply_dedup", "deduplicate", "apply_classification", "trash", "move", "rename", "make_dir"}}
-            removed += 1
-            if m.get("content"):
-                projected.append({"role": "assistant", "content": m["content"]})
-            continue
-        projected.append(m)
-    if removed:
-        projected.insert(1, {"role": "system", "content": ARCHIVE_NOTE})
-    after = len(json.dumps(projected, ensure_ascii=False))
-    if after >= before:
-        return full, {"before_chars": before, "after_chars": before, "archived_messages": 0}
-    return projected, {"before_chars": before, "after_chars": after, "archived_messages": removed}
+    if limit and len(json.dumps(full, ensure_ascii=False)) > limit:
+        return project_task_history(full, limit, before)
+    after = len(json.dumps(full, ensure_ascii=False))
+    stats = {"before_chars": before, "after_chars": after, "archived_messages": 0}
+    if legacy: stats["legacy_folded"] = len(legacy)
+    return full, stats

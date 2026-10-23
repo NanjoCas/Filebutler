@@ -9,7 +9,7 @@ import string
 
 from agent.secrets_scan import SCAN_BYTES, entropy, scan_file, scan_text, sensitive_name
 
-import test_live_regressions_20261021 as H
+import helpers as H
 from test_protocol_v3 import Session, step, call, start, errors, TASK, PLAN, execute, finish
 
 rng = random.Random(7)

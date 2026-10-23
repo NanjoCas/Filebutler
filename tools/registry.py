@@ -29,12 +29,6 @@ class TrashBatch:
 
 
 @dataclass
-class LocalWriteBatch:
-    """Local executor owns preflight, one confirmation, journalling and verification."""
-    execute: Callable
-
-
-@dataclass
 class Tool:
     name: str
     desc: str
@@ -157,9 +151,9 @@ def _dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
                         artifacts.register(sandbox.rel(sandbox.path(value)))
         result = t.func(args, sandbox)
         if t.batch:
-            if not isinstance(result, (TrashBatch, LocalWriteBatch)) or not t.writes:
+            if not isinstance(result, TrashBatch) or not t.writes:
                 raise ToolError("批量工具未返回有效回收计划")
-            result = result.execute(sandbox, oplog, confirmer) if isinstance(result, LocalWriteBatch) else _trash_batch(result, sandbox, oplog, confirmer)
+            result = _trash_batch(result, sandbox, oplog, confirmer)
     except SandboxError as e:
         return _failure(f"ERROR: {e}", 'TOOL_ERROR')
     except ToolError as e:
@@ -231,12 +225,8 @@ def _trash_batch_locked(plan: TrashBatch, sandbox: Sandbox, oplog: OpLog | None,
     moved = []
     def failed(message):
         if artifacts:
-            rid = artifacts.receipt(groups=reference_groups, moved=moved, keeps=plan.keeps,
-                                    verified=False, error=message, scan=plan.scan)
-            runtime = getattr(sandbox, 'runtime', None)
-            if runtime and runtime.task == 'dedup':
-                runtime.final_answer = artifacts.receipt_markdown(rid)
-                runtime.stop_reason = 'operation_error'
+            artifacts.receipt(groups=reference_groups, moved=moved, keeps=plan.keeps,
+                              verified=False, error=message, scan=plan.scan)
         return 'ERROR: ' + message
     for path in plan.paths:
         try:

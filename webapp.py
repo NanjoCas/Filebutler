@@ -28,7 +28,7 @@ from agent.task import TaskPatch
 from agent.history import prepare_history, undo_note, has_undo, UNDO_MARK
 from agent.llm import LLM  # noqa: E402
 from agent.loop import run_agent  # noqa: E402
-from agent.prompts import SYSTEM_PROMPTS, LATENCY_GUIDANCE, LOCAL_RUNTIME_GUIDANCE, CLASSIFICATION_GUIDANCE  # noqa: E402
+from agent.prompts import SYSTEM_PROMPT  # noqa: E402
 from rich.console import Console  # noqa: E402
 from safety.confirm import Confirmer  # noqa: E402
 from safety.oplog import OpLog, undo  # noqa: E402
@@ -218,25 +218,24 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
                                   ask_action=ask_in_browser)
             sb = Sandbox(cfg['sandbox'])
             cfg['task_session'] = state.conversation_id
-            if cfg.get('task_runtime'):
-                # Upgrade old per-turn metadata without rewriting old messages.
-                store=_tasks(state.conversation_id)
-                with _db() as db:
-                    previous=db.execute('SELECT run_id,final,result_json FROM turns WHERE conversation_id=? AND id<>? ORDER BY created_at,rowid',
-                                        (state.conversation_id,state.id)).fetchall()
-                causes={'cost_budget':'费用预算上限','token_budget':'Token 预算上限','max_steps':'执行轮数上限',
-                        'repeated_call':'连续重复调用保护','partial':'存在未通过的完成条件','needs_review':'需要人工判断'}
-                for old in previous:
-                    result_data=json.loads(old['result_json']);reason=result_data.get('stop_reason')
-                    if not reason:continue
-                    try:store.outcome(old['run_id']);continue
-                    except ValueError:pass
-                    summary=result_data.get('report',{}).get('summary') or old['final']
-                    if reason in causes:summary='该轮结束原因：'+causes[reason]+'。\n\n'+summary
-                    store.save_outcome(dict(run_id=old['run_id'],stop_reason=reason,summary=summary[:1600],
-                        task_id=result_data.get('runtime',{}).get('task_id'),cost=result_data.get('cost',0),
-                        purpose='action',source='legacy_turn'))
-            artifacts = _artifacts(state.conversation_id, sb, persist=True) if (cfg.get('local_runtime') or cfg.get('task_runtime')) else None
+            # Upgrade old per-turn metadata without rewriting old messages.
+            store=_tasks(state.conversation_id)
+            with _db() as db:
+                previous=db.execute('SELECT run_id,final,result_json FROM turns WHERE conversation_id=? AND id<>? ORDER BY created_at,rowid',
+                                    (state.conversation_id,state.id)).fetchall()
+            causes={'cost_budget':'费用预算上限','token_budget':'Token 预算上限','max_steps':'执行轮数上限',
+                    'repeated_call':'连续重复调用保护','partial':'存在未通过的完成条件','needs_review':'需要人工判断'}
+            for old in previous:
+                result_data=json.loads(old['result_json']);reason=result_data.get('stop_reason')
+                if not reason:continue
+                try:store.outcome(old['run_id']);continue
+                except ValueError:pass
+                summary=result_data.get('report',{}).get('summary') or old['final']
+                if reason in causes:summary='该轮结束原因：'+causes[reason]+'。\n\n'+summary
+                store.save_outcome(dict(run_id=old['run_id'],stop_reason=reason,summary=summary[:1600],
+                    task_id=result_data.get('runtime',{}).get('task_id'),cost=result_data.get('cost',0),
+                    purpose='action',source='legacy_turn'))
+            artifacts = _artifacts(state.conversation_id, sb, persist=True)
             working_history, context_stats = prepare_history(history, cfg, artifacts)
             _event(state.id, {"type": "context_prepared", **context_stats})
             oplog = OpLog(Sandbox(cfg["sandbox"]), state.run_id)
@@ -562,7 +561,6 @@ def send_message(conversation_id: str, body: NewMessage):
 
     state = None
     try:
-        cfg = _config()
         history = json.loads(row["history_json"])
         # Backfill historical UI undos that predate history synchronization.
         with _db() as db:
@@ -572,25 +570,11 @@ def send_message(conversation_id: str, body: NewMessage):
             if report is not None and not has_undo(history, old["run_id"]):
                 history.append(undo_note(old["run_id"], report, at=old["updated_at"], historical=True))
         if not history:
-            cfg = _config()
-            prompt = cfg.get("prompt", "v1")
-            if prompt not in SYSTEM_PROMPTS:
-                raise HTTPException(500, f"未知系统提示词版本：{prompt}")
-            history = [{"role": "system", "content": SYSTEM_PROMPTS[prompt]}]
+            history = [{"role": "system", "content": SYSTEM_PROMPT}]
         for message in history:
             if message.get("role") == "system":
-                if cfg.get('task_runtime'):
-                    # A conversation created under the old keyword controller must
-                    # receive the new protocol as well as newly created chats.
-                    message['content'] = SYSTEM_PROMPTS[cfg.get('prompt', 'v8_tasks')]
-                if WEB_PRESENTATION_GUIDANCE not in message["content"]:
-                    message["content"] += WEB_PRESENTATION_GUIDANCE
-                if not cfg.get('task_runtime') and LATENCY_GUIDANCE not in message["content"]:
-                    message["content"] += LATENCY_GUIDANCE
-                if cfg.get('local_runtime') and not cfg.get('task_runtime') and LOCAL_RUNTIME_GUIDANCE not in message['content']:
-                    message['content'] += LOCAL_RUNTIME_GUIDANCE
-                if cfg.get('local_runtime') and not cfg.get('task_runtime') and CLASSIFICATION_GUIDANCE not in message['content']:
-                    message['content'] += CLASSIFICATION_GUIDANCE
+                # Conversations from older prompt versions receive the current protocol.
+                message['content'] = SYSTEM_PROMPT + WEB_PRESENTATION_GUIDANCE
                 break
         history.append({"role": "user", "content": content})
         turn_id, run_id, now = uuid.uuid4().hex, datetime.now().strftime("%Y%m%d-%H%M%S-%f"), _now()

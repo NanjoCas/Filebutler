@@ -9,24 +9,13 @@ from tools.fs_read import _fmt_size
 
 def describe_task_value(field, value):
     effects={'create':'创建目录','move':'移动','rename':'改名','trash':'移入回收区'}
-    predicates={'within':'限定路径','outside':'排除路径','extensions':'限定扩展名','name_glob':'限定名称',
-                'empty_directory':'仅空目录','same_extension':'扩展名不变','max_count':'本轮数量上限',
-                'content_unchanged':'内容保持不变'}
-    conditions={'path_exists':'路径存在','path_absent':'路径不存在','directory_empty':'目录为空',
-                'sha256':'内容哈希一致','tool_success':'已执行指定工具（仍需复核）','manual_review':'人工复核',
-                'evidence_valid':'证据引用有效','plan_ready':'计划已保存','plan_applied':'计划执行已核验',
-                'receipt_verified':'执行回执有效','file_plan_verified':'文件计划的位置和内容已核验'}
-    conditions.update(files_placed='执行前清单中的文件均已按原名归集且内容一致',
-                      empty_directories_removed='范围内已无可见空子目录')
+    predicates={'within':'限定路径','outside':'排除路径','extensions':'限定扩展名','max_count':'本轮数量上限'}
+    conditions={'manual_review':'人工复核','evidence_valid':'证据引用有效','plan_ready':'计划已保存',
+                'plan_applied':'计划执行已核验','receipt_verified':'执行回执有效','file_plan_verified':'文件计划的位置和内容已核验'}
     if field=='cancelled': return '已取消' if value else '可继续'
     if field=='goals':
         return '\n'.join(g['description']+'；完成条件：'+ '、'.join(
-            conditions.get(c['kind'],c['kind']) + (' '+c['path'] if c.get('path') else '')
-            + (' → '+c['destination'] if c.get('destination') else '')
-            + ('；后缀：'+ '、'.join(c['extensions']) if c.get('extensions') else '')
-            + ('；排除：'+ '、'.join(c['exclude_paths']) if c.get('exclude_paths') else '')
-            + ('；仅当前层' if c.get('recursive') is False else '')
-            + (' '+c['tool'] if c.get('tool') else '') + (' '+c['reference'] if c.get('reference') else '')
+            conditions.get(c['kind'],c['kind']) + (' '+c['reference'] if c.get('reference') else '')
             for c in g['conditions']) for g in value) or '无'
     if field=='constraints':
         lines=[]

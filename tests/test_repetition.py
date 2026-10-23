@@ -6,10 +6,9 @@ from rich.console import Console
 
 from agent.llm import LLM
 from agent.loop import run_agent
-from safety.oplog import OpLog, undo
+from safety.oplog import OpLog
 from safety.sandbox import Sandbox
 from tests.test_week1 import FakeClient
-from tools import registry
 
 
 def run(tmp_path, script, **cfg):
@@ -27,7 +26,7 @@ def test_second_call_warns_and_model_can_recover(tmp_path):
     res, client, _, _ = run(tmp_path, [
         [("list_dir", {})], [("list_dir", {})], "目录为空，无需整理。",
     ])
-    assert res.stop_reason == "done"
+    assert res.stop_reason == "answered"
     assert "重复调用提醒" not in client.seen[1][-1]["content"]
     assert "重复调用提醒" in client.seen[2][-1]["content"]
     assert "OK:" in client.seen[2][-1]["content"]
@@ -57,48 +56,14 @@ def test_different_call_resets_count(tmp_path, middle):
         [("list_dir", {})], [("list_dir", {})], [middle],
         [("list_dir", {})], [("list_dir", {})], "完成",
     ])
-    assert res.stop_reason == "done"
+    assert res.stop_reason == "answered"
     assert [r["repeat_count"] for r in rows if "tool" in r] == [1, 2, 1, 1, 2]
-
-
-def test_batch_stops_before_third_dispatch_and_remaining_writes(tmp_path, monkeypatch):
-    dispatched = []
-    original = registry.dispatch
-
-    def track(name, *args):
-        dispatched.append(name)
-        return original(name, *args)
-
-    monkeypatch.setattr(registry, "dispatch", track)
-    res, _, sb, rows = run(tmp_path, [[
-        ("make_dir", {"path": "created"}),
-        ("make_dir", {"path": "created"}),
-        ("make_dir", {"path": "created"}),
-        ("make_dir", {"path": "must-not-exist"}),
-    ]])
-    assert res.stop_reason == "repeated_call" and res.steps == 1
-    assert dispatched == ["make_dir", "make_dir"]
-    assert (sb.root / "created").is_dir() and not (sb.root / "must-not-exist").exists()
-    calls = [tc for m in res.messages for tc in m.get("tool_calls", [])]
-    replies = [m for m in res.messages if m["role"] == "tool"]
-    assert [tc["id"] for tc in calls] == [m["tool_call_id"] for m in replies]
-    assert all("未执行" in m["content"] for m in replies[2:])
-    assert [r["executed"] for r in rows if "tool" in r] == [True, True, False, False]
-    undo(sb, "repeat-test")
-    assert not (sb.root / "created").exists()
-
-
-def test_repeated_invalid_json_is_also_stopped(tmp_path):
-    res, client, _, _ = run(tmp_path, [[("move", "{bad json")]] * 3)
-    assert "参数不是合法 JSON" in client.seen[2][-1]["content"]
-    assert "重复调用提醒" in client.seen[2][-1]["content"]
-    assert res.stop_reason == "repeated_call"
 
 
 def test_detection_can_be_disabled_for_ablation(tmp_path):
     res, _, _, rows = run(tmp_path, [[("list_dir", {})]] * 4 + ["完成"],
                           repeat_detection=False)
-    assert res.stop_reason == "done" and res.tool_calls == 4
+    assert res.stop_reason == "answered" and res.tool_calls == 4
     assert all(r["executed"] for r in rows if "tool" in r)
     assert not any("重复调用提醒" in m["content"] for m in res.messages if m["role"] == "tool")
 

@@ -1,5 +1,6 @@
 """Local completion predicates. Evidence validity is not semantic correctness."""
 from agent.artifacts import digest
+from agent.task import LEGACY_NOTE, is_legacy
 from safety.sandbox import SandboxError
 
 
@@ -88,6 +89,11 @@ def _followed(task, receipt, path):
 
 
 def verify_task(task, sb):
+    if is_legacy(task):
+        # v2-era conditions are no longer verified; the task is shown read-only.
+        return [dict(goal_id=g['id'], description=g['description'], passed=False, needs_review=False, legacy=True,
+                     conditions=[dict(kind=c['kind'], passed=False, needs_review=False, detail=LEGACY_NOTE)
+                                 for c in g['conditions']]) for g in task['goals']]
     checks = []
     store = getattr(sb, 'artifacts', None)
     for goal in task['goals']:
@@ -97,35 +103,6 @@ def verify_task(task, sb):
             try:
                 if kind == 'file_plan_verified':
                     ok, detail = verify_bound_plans(task, goal['id'], c, sb)
-                elif kind in {'files_placed', 'empty_directories_removed'}:
-                    from agent.completion import verify_selection
-                    ok, detail = verify_selection(task, goal['id'], index, c, sb)
-                elif kind in {'path_exists', 'path_absent', 'directory_empty', 'sha256'}:
-                    if not c['path']:
-                        raise ValueError('验证路径不能为空')
-                    p = sb.path(c['path'], exact=True)
-                    if not _in_scope(task, sb, c['path']):
-                        raise ValueError('验证对象超出当前任务读取范围')
-                    exists = p.exists()
-                    if kind == 'path_exists': ok = exists
-                    elif kind == 'path_absent': ok = not exists
-                    elif kind == 'directory_empty': ok = p.is_dir() and not any(p.iterdir())
-                    else: ok = p.is_file() and digest(p) == c['sha256']
-                    if not ok:
-                        detail = {'path_exists':'路径不存在：','path_absent':'路径仍然存在：',
-                                  'directory_empty':'目录不存在或仍有内容：','sha256':'文件缺失或内容哈希不符：'}[kind]+c['path']
-                elif kind == 'tool_success':
-                    # Explicit arguments are themselves the binding, so an untagged
-                    # call (e.g. before set_task in this run) matches; another goal's
-                    # step does not. Without arguments only this goal's calls count.
-                    ok = any(o['status'] == 'ok' and o['tool'] == c['tool'] and
-                             all(o['arguments'].get(k) == v for k, v in c['arguments'].items())
-                             and (goal['id'] in o.get('goal_ids', []) or
-                                  (not o.get('goal_ids') and (bool(c['arguments']) or len(task['goals']) == 1)))
-                             for o in task['observations'])
-                    # A successful invocation alone does not prove goal completion.
-                    review = True
-                    if not ok:detail='未找到满足参数的成功调用：'+c['tool']
                 elif kind == 'manual_review':
                     ok, review = True, True
                 elif kind == 'evidence_valid':
@@ -152,11 +129,9 @@ def verify_task(task, sb):
                         formed = (bool(ids) and len(ids)==len(set(ids)) and set(ids)==set(plan['versions'])
                                   and all(1 <= a['category'] <= len(plan['categories']) for a in assignments))
                         ok = ok and formed
-                        historical = kind == 'plan_applied' and c.get('evaluation') == 'execution_fact'
-                        if not historical:
-                            for fid, version in plan['versions'].items():
-                                _, row = store.resolve(fid, allow_trash=False)
-                                ok = ok and row['version'] == version and _in_scope(task, sb, row['path'])
+                        for fid, version in plan['versions'].items():
+                            _, row = store.resolve(fid, allow_trash=False)
+                            ok = ok and row['version'] == version and _in_scope(task, sb, row['path'])
                         if kind == 'plan_ready':
                             # A formed plan remains formed after execution. The
                             # execution state is checked separately below.
@@ -171,14 +146,12 @@ def verify_task(task, sb):
                             for move in execution.get('manifest', []):
                                 if not _in_scope(task, sb, move['src']) or not _in_scope(task, sb, move['dst']):
                                     ok = False
-                                if historical: continue
                                 if move['src'] == move['dst']:
                                     continue
                                 ok = ok and not sb.path(move['src'], exact=True).exists()
                                 target = sb.path(move['dst'], exact=True)
                                 ok = ok and target.is_file() and digest(target) == plan['versions'][move['file_id']]
                             if not ok:detail='分类计划尚未全部执行，或执行后位置/内容核验未通过：'+pid
-                            elif historical: detail='本地回执证明此计划已执行；该条件不声明文件当前仍在原目标位置'
                     if not refs:detail=f'{kind} 只核验分类计划（P 标识）；本目标没有绑定的分类计划，普通文件计划不能满足此条件'
                 elif kind == 'receipt_verified':
                     refs = _reference(c, task, 'receipts', goal['id'])
@@ -188,14 +161,12 @@ def verify_task(task, sb):
                         ok = ok and receipt['verified']
                         for src, dst in receipt['moved']:
                             ok = ok and _in_scope(task, sb, src)
-                            if c.get('evaluation') == 'execution_fact': continue
                             # Trash is an internal location, inaccessible as an ordinary tool path.
                             target = store._path(dst, trash=True)
                             ok = ok and digest(target) == receipt.get('versions', {}).get(dst)
                             ok = ok and not sb.path(src, exact=True).exists()
                         for keeper in receipt['keeps']:
                             ok = ok and _in_scope(task, sb, keeper)
-                            if c.get('evaluation') == 'execution_fact': continue
                             p = sb.path(_followed(task, receipt, keeper), exact=True)
                             ok = ok and p.is_file()
                             ok = ok and p.is_file() and digest(p) == receipt.get('versions', {}).get(keeper)

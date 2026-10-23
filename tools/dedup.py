@@ -287,8 +287,6 @@ class FindDuplicatesArgs(BaseModel):
       FindDuplicatesArgs, display_result=True, read_scope=scan_scope)
 def find_duplicates(a, sb):
     scan = get_scan(sb, a.scan_id) if a.scan_id else scan_duplicates(sb, a.path, a.mode, a.threshold, a.keep)
-    if getattr(sb,"runtime",None):
-        sb.runtime.dedup_scan = dict(scan["stats"])
     lines = []
     artifacts=getattr(sb,'artifacts',None)
     for g in scan['groups']:
@@ -393,7 +391,6 @@ def deduplicate(a,sb):
     progress=getattr(sb,'progress',lambda _:None)
     progress('扫描文件并比较内容')
     scan=scan_duplicates(sb,a.path,a.mode,keep=a.keep)
-    if getattr(sb,'runtime',None): sb.runtime.dedup_scan=dict(scan['stats'])
     requested=[]
     for name in a.keep_files:
         if name.startswith('file:') and getattr(sb,'artifacts',None):

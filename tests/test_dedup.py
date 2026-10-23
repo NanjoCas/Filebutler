@@ -4,16 +4,11 @@ import textwrap
 
 import pymupdf
 import pytest
-from rich.console import Console
 
-from agent.llm import LLM
-from agent.loop import run_agent
-from agent.reflect import file_write_count, successful_writes
 from eval.checker import files_preserved, snapshot
 from safety.confirm import Confirmer
 from safety.oplog import OpLog, undo
 from safety.sandbox import Sandbox
-from tests.test_week1 import FakeClient
 from tools import registry
 from tools.dedup import normalize_pdf, scan_duplicates
 
@@ -241,23 +236,3 @@ def test_cached_plan_pagination_does_not_scan_again(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.dedup.scan_duplicates", lambda *a, **kw: pytest.fail("不得重扫"))
     out = registry.dispatch("find_duplicates", json.dumps(dict(scan_id=scan["id"], page=2)), sb)
     assert out.startswith("OK") and "已截断" not in out and len(out) <= 2000
-
-
-def test_dynamic_fake_model_only_needs_two_tool_calls(tmp_path):
-    sb = Sandbox(tmp_path)
-    for n in ("a", "b", "c", "d", "e", "f"):
-        (tmp_path / n).write_text("same")
-    before = snapshot(tmp_path, True)
-    class Client(FakeClient):
-        def create(self, **kw):
-            if len(self.seen) == 1:
-                scan_id = next(iter(sb._dedup_scans))
-                self.script[0] = [("apply_dedup", {"scan_id": scan_id})]
-            return super().create(**kw)
-    client = Client([[("find_duplicates", {"mode": "bytes"})], [], "已完成去重"])
-    result = run_agent("清理完全相同的文件", LLM({"model": "fake"}, client=client), sb,
-                       {"prompt": "v3_local"}, Console(quiet=True), oplog=OpLog(sb, "test-dedup"))
-    assert result.tool_calls == 2 and result.steps == 3
-    assert file_write_count(successful_writes(result.messages)) == 5
-    undo(sb, "test-dedup")
-    assert snapshot(tmp_path, True) == before

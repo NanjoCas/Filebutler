@@ -6,8 +6,9 @@
 
 **当前状态：协议 v3 是默认配置；两套盲测各跑 3 次，v3 47/48，v2 对照 35/48。其余功能验收每组只跑过 1 次。**
 
-- 默认 `protocol: v3`、`prompt: v9_intent`。v2 + `v8_tasks` 冻结为对照基线（`tests/fixtures/v2_tool_schemas_20261021.json`，v2 不显示 `V2_HIDDEN_FIELDS`），不要改。
-- 离线测试 643 passed（2026-10-22）。
+- **2026-10-23 起只有协议 v3。** v2 协议、旧控制器（LocalRuntime）、自检、上下文压缩、单步写工具（move/rename/make_dir/trash）、apply_classification 和旧评测 runner 已退役，代码保留在本地标签 `archive-v2-legacy-20261023`（未推送）。删掉的测试和覆盖缺口见 `docs/v2-retirement-coverage-2026-10-23.md`。
+- 模型可见的提示 + 工具定义有绝对上限 31,311 字符，只减不增（`tests/test_protocol_v3.py` 的 `PROMPT_CAP`）。
+- 离线测试 391 passed（2026-10-23，v2 退役后；退役前 699）。
 - **第 20 轮：两套盲测各 3 次 + v2 对照**：v3 47/48 = 97.9%（95% 区间 89.1%–99.6%），v2 35/48 = 72.9%（59.0%–83.4%）；费用 ¥0.575 对 ¥0.978。
 - 其余真实复验（DeepSeek `deepseek-flash`，每组 1 次）：
   - 第 08 轮：回归 + holdout 13/13，¥0.23。同一套场景的 v2（第 05 轮）是 11/13、¥0.52。
@@ -87,9 +88,7 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 
 | 配置 | 值 |
 | --- | --- |
-| model / protocol / prompt | `deepseek-flash` / `v3` / `v9_intent`（对照：`v2` / `v8_tasks`） |
-| local_runtime / task_runtime | `true` / `true` |
-| local_dispatch | `true`，仅旧控制器有效；任务控制器不走关键词捷径 |
+| model | `deepseek-flash`；协议固定为 v3，提示词为 `agent/prompts.py` 的 `SYSTEM_PROMPT` |
 | max_steps | 25 |
 | task_query_limit / task_read_limit | 12 / 40，跨续做累计 |
 | task_repair_limit | 6；0 关闭无进展修复保护 |
@@ -97,7 +96,6 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | llm_timeout / llm_retries | 60 秒 / 1；真实验收覆盖为 0 次重试 |
 | cost_budget | 每轮 ¥0.30 软预算，非硬账单上限 |
 | confirm | `risky`；文件计划强制展示确认卡片，调用方显式 `never` 除外 |
-| context_compress / reflect | `false` / `false` |
 | sandbox | 仓库下 `./sandbox` |
 
 数据位置：
@@ -115,14 +113,14 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 
 | 文件/模块 | 作用与重要边界 |
 | --- | --- |
-| `agent/loop.py` | 模型循环、工具分发、预算、事件与收尾；默认接入 TaskRuntime。 |
-| `agent/task.py` | Pydantic 任务/条件/规则、TaskStore SQLite、修订/CAS、任务编辑与人工复核、blocker 记录与 task_state；完成条件的引用由本地绑定；v2 下条件由模型编写，v3 下由 `agent/intent.py` 本地生成。 |
-| `agent/task_runtime.py` | 两套协议的控制工具（v3：start_task、revise_task、ask_user、finish_task；v2：set_task、begin_step 等）、工具可见性、权限和约束检查、选项检查与用户选择约束。 |
+| `agent/loop.py` | 模型循环、工具分发、预算、事件与收尾；每次运行都由 TaskRuntime 控制。 |
+| `agent/task.py` | Pydantic 任务/条件/规则、TaskStore SQLite、修订/CAS、任务编辑与人工复核、blocker 记录与 task_state；完成条件只有 6 种，由 `agent/intent.py` 本地生成；v2 时期登记的旧任务按只读处理（`is_legacy`）。 |
+| `agent/task_runtime.py` | 控制工具（start_task、revise_task、ask_user、finish_task 等）、工具可见性、权限和约束检查、选项检查与用户选择约束。 |
 | `agent/intent.py` | v3：把模型给的部分和限制编译成完成条件、写入范围和效果。 |
 | `agent/system_files.py`、`agent/secrets_scan.py` | 回收文件夹时的系统文件名单与内容核验；隐藏文件的密钥扫描（只加强警告）。 |
 | `agent/file_plans.py` | prepare_file_plan / execute_file_plan / inspect_file_plan。模型选择对象，本地生成目录、范围需求、清单、源快照、摘要、执行与核验；已有任务不自动扩权限。 |
-| `agent/completion.py` | files_placed / empty_directories_removed 的执行前快照及核验；无效快照前置拒绝，旧任务写入前也检查。 |
-| `agent/constraints.py` | 本地操作谓词、祖先/后代范围、数量/内容等检查；不按自然语言关键词授权。 |
+| `agent/completion.py` | 选择集展开（包当作整体）；操作按完成条件归属到任务的部分；回执类条件的执行器检查。 |
+| `agent/constraints.py` | 本地操作谓词（within / outside / extensions / max_count）、祖先/后代范围检查；不按自然语言关键词授权。 |
 | `agent/policy.py` | 用户偏好、证据/输出策略、目标绑定、依赖敏感的 retain_step。 |
 | `agent/verifier.py` | 当前状态、执行事实、证据、分类与通用计划回执核验；证据有效不等于语义正确。 |
 | `agent/reporting.py` | 正文摘要与折叠详情；未解决的 blocker 进主答复，已恢复的进“已恢复的阻塞”详情。 |
@@ -402,7 +400,6 @@ NoProgressGuard 仍可能漏过跨工具、伴随证据变化的长修复链，�
 ```bash
 cd /Users/nanjo/Desktop/projects/DocAgent/filebutler
 .venv/bin/python -m pytest -q
-.venv/bin/python -m pytest tests/test_live_regressions_20261021.py tests/test_live_regressions_20261021_02.py -q
 /opt/homebrew/bin/node --check web/app.js
 /opt/homebrew/bin/node --check web/tasks.js
 git diff --check
@@ -410,10 +407,10 @@ git diff --check
 
 测试重点：
 
-- `tests/test_live_regressions_20261021.py`、`tests/test_live_regressions_20261021_02.py`：真实 trace 的离线回放（fixture 在 `tests/fixtures/live_20261021/`、`live_20261021_02/`），以及防止弱化核验的反向测试。真实运行没保存的模型原话，测试里有标注为脚本补写的部分。
-- `tests/test_p0_binding.py`：引用绑定与动作归属。
+- `tests/test_protocol_v3.py`：v3 编译器、授权边界、脚本化场景（含真实 trace 回放，回放工具在 `tests/helpers.py`）、提示体积上限。
+- `tests/test_legacy_tasks.py`：v2 时期的旧任务只读、旧对话里的 v2 工具调用折叠成摘要。
 - `tests/test_live_policy_acceptance.py`：判定器故障注入、重判工具、干跑。
-- `tests/test_file_plans.py`、`tests/test_document_cache.py`、`tests/test_result_reporting.py`、`tests/test_task_runtime_v2.py`、`tests/test_policy_redesign.py`：计划执行、缓存、报告、任务运行时。
+- `tests/test_file_plans.py`、`tests/test_plan_ordering.py`、`tests/test_document_cache.py`、`tests/test_result_reporting.py`：计划执行、依赖排序、缓存、报告。
 - `tests/test_web_ui.py`：HTTP、预览、确认与删除对话；不等于真实浏览器验收。
 
 修复流程：先把真实失败做成离线回放，在修复前的代码上确认测试失败，再改实现，并补反向测试。
@@ -421,9 +418,8 @@ git diff --check
 真实复验会收费，输出目录必须是新的。正式入口（只写不跑，跑前先报估算；参考：13 组约 ¥0.23，4 组约 ¥0.06–0.09）：
 
 ```bash
-zsh -ic '.venv/bin/python -m eval.live_policy --live --suite all --protocol v3 --out eval/results/policy_live_NEXT_v3_all --total-cap 0.5'
-zsh -ic '.venv/bin/python -m eval.live_policy --live --suite blind2 --protocol v2 --out eval/results/policy_live_NEXT_v2_blind2 --total-cap 0.3'
-zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --protocol v3 --cases p1_swap --out eval/results/policy_live_NEXT_p1_swap --total-cap 0.05'
+zsh -ic '.venv/bin/python -m eval.live_policy --live --suite all --out eval/results/policy_live_NEXT_v3_all --total-cap 0.5'
+zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --cases p1_swap --out eval/results/policy_live_NEXT_p1_swap --total-cap 0.05'
 ```
 
 套件：regression 8、holdout 5、all 13、blind 8、blind2 8、hidden 7、p0 4、p1 4。新场景要在跑真实模型前提交冻结，之后不改期望；检查写错时，在提交说明里写明原因，期望保持不变。
