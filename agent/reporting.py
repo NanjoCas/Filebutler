@@ -47,14 +47,14 @@ def plain(text):
     return text.strip().rstrip('。；;：:，,、 ')
 
 
-DECLARED = '模型声明未完成：'
+NOTE_BY = {'model': '模型说明', 'choice': '你的选择', 'local': '核验依据'}
 
 
 def _unmet(g):
     """(local reasons, the model's declared reasons) for one unmet part."""
-    failed = [c for c in g['conditions'] if not c['passed'] and c['detail']]
-    model = [_clause(c['detail'][len(DECLARED):], 120) for c in failed if c['kind'] == 'declared_unfinished']
-    local = [_clause(c['detail'], 120) for c in failed if c['kind'] != 'declared_unfinished']
+    local = [_clause(c['detail'], 120) for c in g['conditions'] if not c['passed'] and c['detail']]
+    local += [_clause(n['text'], 120) for n in g.get('notes', []) if n['by'] == 'local']
+    model = [_clause(n['text'], 120) for n in g.get('notes', []) if n['by'] == 'model']
     return local, model
 
 
@@ -83,7 +83,7 @@ def incomplete_reason(task, reply=False):
 def _all_explained(task):
     """The model declared a reason for every unmet part (finish_task.unfinished)."""
     unmet = [g for g in task.get('checks', []) if not g['passed']]
-    return bool(unmet) and all(any(c['kind'] == 'declared_unfinished' for c in g['conditions']) for g in unmet)
+    return bool(unmet) and all(any(n['by'] == 'model' for n in g.get('notes', [])) for g in unmet)
 
 
 def build_report(task, model_summary, records, reply=''):
@@ -102,6 +102,8 @@ def build_report(task, model_summary, records, reply=''):
         lines.append(f"| {label(check['description'])} | {result} |")
         for c in check['conditions']:
             if c['detail']: lines.append(f"| 核验依据 | {label(c['detail'])} |")
+        for n in check.get('notes', []):
+            lines.append(f"| {NOTE_BY[n['by']]} | {label(n['text'])} |")
     # audience 'dev': internal detail, shown on the page only in developer mode.
     sections.append(dict(title='目标与核验依据', markdown='\n'.join(lines), audience='dev'))
     for record in records:

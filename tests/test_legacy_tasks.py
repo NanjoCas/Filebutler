@@ -114,6 +114,6 @@ def test_decisions_saved_before_the_table_are_migrated_on_load(runtime):
     task = runtime.store.get('Tv3000000002')
     assert 'chosen_scope' not in task and 'sensitive_grants' not in task
     [check] = verify_task(task, runtime.sb)
-    assert check['passed'] and check['conditions'][0]['detail'] == '按你选择的选项 B（只移 a），此部分不执行'
+    assert check['outcome'] == 'by_choice' and check['notes'][0]['text'] == '按你选择的选项 B（只移 a），此部分不执行'
     runtime.current = task
     assert runtime.sensitive_grants() == {'合同.txt'}

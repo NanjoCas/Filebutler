@@ -1251,12 +1251,13 @@ BLOCK = '文献 不是空目录：只含隐藏文件 .DS_Store'
 
 
 def report_task(declared=True):
-    unmet = [dict(kind='declared_unfinished', passed=False, needs_review=False, detail='模型声明未完成：' + REASON)] if declared \
-        else [dict(kind='directory_empty', passed=False, needs_review=False, detail='目录不为空：文献')]
+    rows = [] if declared else [dict(kind='file_plan_verified', passed=False, needs_review=False, detail='目录不为空：文献')]
+    notes = [dict(by='model', text=REASON)] if declared else []
     return dict(status='partial', operations=[dict(op='move', kind='文件')] * 126, observations=[], unresolved_questions=[],
                 blockers=[dict(source='prepare_file_plan', object='', message=BLOCK, status='open')],
-                checks=[dict(goal_id='g1', description='平铺', passed=True, needs_review=False, conditions=[]),
-                        dict(goal_id='g2', description='回收空文件夹', passed=False, needs_review=False, conditions=unmet)])
+                checks=[dict(goal_id='g1', description='平铺', outcome='done', passed=True, needs_review=False, conditions=[], notes=[]),
+                        dict(goal_id='g2', description='回收空文件夹', outcome='unfinished', passed=False, needs_review=False,
+                             conditions=rows, notes=notes)])
 
 
 def test_a_reason_the_model_declared_is_stated_once_per_part_and_blockers_move_to_details():
@@ -1413,7 +1414,7 @@ def test_a_part_the_chosen_option_left_out_is_not_unfinished(tmp_path):
     assert (tmp_path / 'Archive/a.txt').is_file() and (tmp_path / 'Inbox/b.txt').is_file()
     task = session.sb.runtime.current
     [b] = [c for c in task['checks'] if c['goal_id'] == 'organize_2']
-    assert [r['kind'] for r in b['conditions']] == ['excluded_by_choice', 'declared_outside_choice']
+    assert b['outcome'] == 'by_choice' and b['conditions'] == [] and [n['by'] for n in b['notes']] == ['choice', 'choice']
     assert '尚未全部完成' not in result.final
 
 
