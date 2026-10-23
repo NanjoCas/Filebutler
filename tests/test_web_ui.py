@@ -218,6 +218,9 @@ def test_api_reports_model_start_before_completion_and_renders_saved_markdown(ui
         history = json.loads(db.execute("SELECT history_json FROM conversations WHERE id=?", (cid,)).fetchone()[0])
     assert WEB_PRESENTATION_GUIDANCE in history[0]["content"]
     assert any(m["role"] == "tool" for m in history)
+    # The per-run task snapshot is rebuilt next run, never stored in the conversation.
+    from agent.prompts import GUIDANCE_MARK
+    assert not any(m["content"].startswith(GUIDANCE_MARK) for m in history if m["role"] == "system")
 
 
 def make_folder_plan(final):

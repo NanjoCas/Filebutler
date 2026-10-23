@@ -371,7 +371,7 @@ def run_suite(cases, out, cfg, total_cap, llm_for, mode):
                     result = run_agent(instruction, llm, sb, turn_cfg, Console(file=io.StringIO()), artifacts=store, history=history,
                                        oplog=OpLog(sb, f"{case['id']}_{index+1}"), confirmer=Confirmer('always', ask_action=approve),
                                        trace_path=case_dir/f'turn_{index+1}.trace.jsonl', on_event=observe)
-                    data = asdict(result); history = data.pop('messages'); last_report = data.get('report')
+                    data = asdict(result); history = data.pop('messages'); data.pop('added_messages'); last_report = data.get('report')
                     if chosen: data['chosen_by_eval'] = chosen
                     safe_history = [{k: v for k, v in m.items() if k != 'reasoning_content'} for m in history]
                     (case_dir/f'turn_{index+1}.history.json').write_text(json.dumps(safe_history, ensure_ascii=False, indent=2))
