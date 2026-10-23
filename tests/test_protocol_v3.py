@@ -1435,7 +1435,7 @@ def test_the_chosen_scope_must_actually_be_done(tmp_path):
                                        call('prepare_file_plan', dict(MOVE_ONLY_A, goal_ids=[]), alias=PLAN)), execute(),
                                   finish_with([dict(part_id='organize_1', reason='b.txt 没有移动')])])
     assert result.stop_reason == 'partial' and '尚未全部完成' in result.final
-    assert 'chosen_scope' not in session.sb.runtime.current
+    assert not session.sb.runtime.current.get('decisions')
 
 
 # ============================================================================ a target folder that does not exist

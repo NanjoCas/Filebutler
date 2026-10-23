@@ -1,4 +1,5 @@
 """Local completion predicates. Evidence validity is not semantic correctness."""
+from agent import choices
 from agent.artifacts import digest
 from agent.task import LEGACY_NOTE, is_legacy
 from safety.sandbox import SandboxError
@@ -176,10 +177,10 @@ def verify_task(task, sb):
                 ok, detail = False, str(exc)
             rows.append(dict(kind=kind, passed=bool(ok), needs_review=review, detail=detail))
         # After a choice (user decision 2026-10-22), completion follows the chosen scope.
-        scope = task.get('chosen_scope') if (task.get('chosen_scope') or {}).get('revision') == task['revision'] else None
-        if scope and goal['id'] in scope['excluded']:
+        scope, skipped = choices.chosen_scope(task)
+        if goal['id'] in skipped:
             rows = [dict(kind='excluded_by_choice', passed=True, needs_review=False,
-                         detail=f"按你选择的选项 {scope['key']}（{scope['label']}），此部分不执行")]
+                         detail=f"按你选择的选项 {scope}，此部分不执行")]
         declared = task.get('declared_unfinished') or {}
         if declared.get('revision') == task['revision']:
             for u in declared.get('not_needed', []):
@@ -193,12 +194,12 @@ def verify_task(task, sb):
                        [dict(kind='declared_not_needed', passed=True, needs_review=True, detail='模型说明无需操作（本地未能证明）：' + u['reason'])]
             rows += [dict(kind='declared_unfinished', passed=False, needs_review=False, detail='模型声明未完成：'+u['reason'])
                      if not scope else dict(kind='declared_outside_choice', passed=True, needs_review=False,
-                                            detail=f"模型说明（已按你选择的选项 {scope['key']} 完成）："+u['reason'])
+                                            detail=f"模型说明（已按你选择的选项 {scope} 完成）："+u['reason'])
                      for u in declared.get('items', []) if u['part_id'] == goal['id']]
         checks.append(dict(goal_id=goal['id'], description=goal['description'],
                            passed=all(r['passed'] for r in rows),
                            # A part the user's choice excluded has nothing left to judge.
-                           needs_review=(goal['semantic_review'] and not (scope and goal['id'] in scope['excluded']))
+                           needs_review=(goal['semantic_review'] and goal['id'] not in skipped)
                                         or any(r['needs_review'] for r in rows),
                            conditions=rows))
     return checks

@@ -42,7 +42,10 @@ def is_legacy(task):
 def normalized(task):
     """Drop the empty v2 condition fields that older revisions stored, so unchanged
     goals compare equal to their re-validated form. Legacy tasks stay as stored."""
-    if not task or is_legacy(task): return task
+    if not task: return task
+    from agent.choices import migrate
+    migrate(task)
+    if is_legacy(task): return task
     for g in task.get('goals', []):
         g['conditions'] = [{k: c[k] for k in ('kind', 'reference') if k in c} for c in g['conditions']]
     return task
