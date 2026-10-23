@@ -33,32 +33,18 @@ class Tool:
     name: str
     desc: str
     args_model: type[BaseModel]
-    func: Callable  # (args, sandbox) -> str；写工具返回 (str, [(op, src, dst), ...]) 供记日志
+    func: Callable  # (args, sandbox) -> str | ToolResult；写工具返回 TrashBatch，由本地批量执行
     writes: bool
     batch: bool = False
     max_result_chars: int = MAX_RESULT_CHARS
     effects: tuple[str, ...] = ()
-    verification: str = 'tool_result_only'
     display_result: bool = False
     read_scope: Callable | None = None
     write_scope: Callable | None = None
-    operation_preview: Callable | None = None
-    path_fields: tuple[str, ...] = ()
     file_fields: tuple[str, ...] = ()
     usage: str | None = None
     reference_inputs: tuple[tuple[str, str], ...] = ()
     produces: tuple[str, ...] = ()  # artifact collections whose execution receipts this tool writes
-
-    def contract(self):
-        """Machine policy metadata, separate from natural-language routing."""
-        return dict(name=self.name, input_schema=self.args_model.model_json_schema(),
-                    effects=list(self.effects),
-                    preconditions=['sandbox', 'valid_arguments'] +
-                    (['task_scope', 'confirmation_policy', 'operation_log'] if self.writes else []),
-                    retry_policy='no_automatic_retry' if self.writes else 'caller_decides',
-                    verification=self.verification, usage=self.usage,
-                    scope_adapter=self.read_scope is not None,
-                    output_schema=ToolResult.model_json_schema())
 
 
 class ToolResult(BaseModel):
@@ -66,11 +52,6 @@ class ToolResult(BaseModel):
     text: str
     error_code: str | None = None
     retryable: bool = False
-
-
-def dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
-    """Migration adapter: never invent precise business codes from error prose."""
-    return _dispatch_result(name, raw_args, sandbox, oplog, confirmer)
 
 
 def _failure(text, code='TOOL_ERROR'):
@@ -83,16 +64,18 @@ TOOLS: dict[str, Tool] = {}
 
 def tool(name: str, desc: str, args_model: type[BaseModel], writes: bool = False, batch: bool = False,
          max_result_chars: int = MAX_RESULT_CHARS, *, effects: tuple[str, ...] | None = None,
-         verification: str = 'tool_result_only', display_result: bool = False,
-         read_scope: Callable | None = None, write_scope: Callable | None = None,
-         operation_preview: Callable | None = None, path_fields: tuple[str, ...] = (),
+         display_result: bool = False, read_scope: Callable | None = None, write_scope: Callable | None = None,
          file_fields: tuple[str, ...] = (), usage: str | None = None,
          reference_inputs: tuple[tuple[str, str], ...] = (), produces: tuple[str, ...] = ()):
+    # Single-step writes were retired (2026-10-23): files change through file plans,
+    # and a write tool returns a batch the local executor confirms, runs and journals.
+    if writes and not batch:
+        raise ValueError(f'{name}: 写工具必须是批量工具（返回 TrashBatch）；文件改动请走文件计划')
     def deco(func):
         declared = effects if effects is not None else (('unknown_write',) if writes else ())
         TOOLS[name] = Tool(name, desc, args_model, func, writes, batch, max_result_chars,
-                           declared, verification, display_result, read_scope, write_scope,
-                           operation_preview, path_fields, file_fields, usage, reference_inputs, produces)
+                           declared, display_result, read_scope, write_scope,
+                           file_fields, usage, reference_inputs, produces)
         return func
     return deco
 
@@ -108,11 +91,11 @@ def schemas() -> list[dict]:
 
 def dispatch(name: str, raw_args: str, sandbox: Sandbox,
              oplog: OpLog | None = None, confirmer: Confirmer | None = None) -> str:
-    return _dispatch_result(name, raw_args, sandbox, oplog, confirmer).text
+    return dispatch_result(name, raw_args, sandbox, oplog, confirmer).text
 
 
-def _dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
-    """JSON 解析 → pydantic 校验 → 沙盒路径检查 →（写操作）确认 → 执行 →（写操作）记日志 → 截断。
+def dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
+    """JSON 解析 → pydantic 校验 → 执行（工具内做沙盒路径检查；批量写入由本地确认、执行、记日志）→ 截断。
     任何错误都转成一句 ERROR 文本返回给模型，不让程序崩溃。"""
     t = TOOLS.get(name)
     if t is None:
@@ -136,19 +119,6 @@ def _dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
     except ValueError as e:
         return _failure(f"ERROR: {e}", 'TOOL_ERROR')
     try:
-        if t.writes:
-            # 先查路径再问用户，不让用户去确认一个本来就会被拦下的操作
-            for f in t.path_fields:
-                if hasattr(args, f):
-                    v = getattr(args, f)
-                    sandbox.path(v, write=not t.batch and not (f == "dst_dir" and v.strip() in ("", ".")))
-            if not t.batch and confirmer and not confirmer.allow(name, args.model_dump()):
-                return _failure("ERROR: 用户拒绝了这个操作。请调整计划，或在总结里说明没有执行的部分", 'TOOL_ERROR')
-            if artifacts and not t.batch:
-                for key in t.file_fields:
-                    value = getattr(args, key, None)
-                    if value and sandbox.path(value).is_file():
-                        artifacts.register(sandbox.rel(sandbox.path(value)))
         result = t.func(args, sandbox)
         if t.batch:
             if not isinstance(result, TrashBatch) or not t.writes:
@@ -160,13 +130,6 @@ def _dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
         return _failure(f"ERROR: {e}", 'TOOL_ERROR')
     except Exception as e:  # 兜底：意外异常也回传给模型
         return _failure(f"ERROR: {type(e).__name__}: {e}", 'TOOL_ERROR')
-    if isinstance(result, tuple):
-        result, ops = result
-        if oplog:
-            for op in ops:
-                oplog.record(*op)
-                if artifacts and op[0] != 'make_dir':
-                    artifacts.relocate(op[1], op[2])
     if isinstance(result, ToolResult):
         result.text = result.text[:t.max_result_chars] if len(result.text) > t.max_result_chars else result.text
         return result

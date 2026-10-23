@@ -52,23 +52,9 @@ def test_incomplete_family_metadata_never_hides_files(files):
     assert "无法按重复组归类" in action["notes"][0]
 
 
-def test_move_review_uses_real_source_name_and_computed_destination(files):
-    (files.root / " actual.md ").touch()
-    action = build_confirmation({"tool": "move", "args": {"src": "actual.md", "dst_dir": "文献"}}, files)
-    source = action["groups"][0]["items"][0]
-    assert source["path"] == " actual.md "
-    assert source["destination"] == "文献/ actual.md "
-    assert action["groups"][1]["items"][0]["kind"] == "directory"
-
-
-def test_rename_shows_target_and_extension_change(files):
-    action = build_confirmation({"tool": "rename", "args": {"path": "notes.md", "new_name": " 新笔记.txt "}}, files)
-    assert action["groups"][0]["items"][0]["destination"] == "新笔记.txt"
-    assert ".md" in action["notes"][0] and ".txt" in action["notes"][0]
-
-
 def test_new_folder_is_planned_and_not_previewable(files):
-    action = build_confirmation({"tool": "make_dir", "args": {"path": "new/folder"}}, files)
+    action = build_confirmation({"tool": "file_plan", "args": {"steps": [
+        {"effect": "create", "source": None, "destination": "new/folder"}]}}, files)
     item = action["groups"][0]["items"][0]
     assert item["planned"] and item["kind"] == "directory" and not item["previewable"]
     assert not (files.root / "new").exists()
@@ -83,12 +69,6 @@ def test_symlink_has_no_preview_action(files, tmp_path):
     outside = tmp_path / "private.md"; outside.touch()
     (files.root / "link.md").symlink_to(outside)
     assert not describe_path(files, "link.md")["previewable"]
-
-
-def test_directory_action_mentions_descendants(files):
-    action = build_confirmation({"tool": "trash", "args": {"path": "文献"}}, files)
-    assert action["groups"][0]["items"][0]["previewable"]
-    assert "全部文件" in action["notes"][0]
 
 
 def test_structured_confirmation_receives_lists_and_keeps_rejection_count():

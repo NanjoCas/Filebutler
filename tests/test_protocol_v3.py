@@ -1184,9 +1184,13 @@ from safety.confirm import Confirmer as _Confirmer
 SPOOF = 'invoice\u202etxt.exe'
 
 
+def plan_card(*steps):
+    return dict(tool='file_plan', args=dict(steps=list(steps)))
+
+
 def test_a_bidi_name_planned_by_the_model_is_marked_with_its_real_extension(tmp_path):
     files_fixture(tmp_path)
-    card = build_confirmation(dict(tool='rename', args=dict(path='Inbox/a.txt', new_name=SPOOF)), H.Sandbox(tmp_path))
+    card = build_confirmation(plan_card(dict(effect='rename', source='Inbox/a.txt', destination='Inbox/' + SPOOF)), H.Sandbox(tmp_path))
     [item] = card['groups'][0]['items']
     assert item['destination'] == 'Inbox/invoice⟦U+202E⟧txt.exe' and '\u202e' not in json.dumps(card, ensure_ascii=False)
     assert card['notes'][0].startswith('⚠ 以下名称含不可见字符') and '（实际扩展名 .exe）' in card['notes'][0]
@@ -1195,7 +1199,7 @@ def test_a_bidi_name_planned_by_the_model_is_marked_with_its_real_extension(tmp_
 def test_a_bidi_name_on_disk_keeps_a_raw_path_for_preview_and_is_marked_in_notes(tmp_path):
     files_fixture(tmp_path)
     (tmp_path / 'Inbox' / SPOOF).write_text('x')
-    card = build_confirmation(dict(tool='trash', args=dict(path='Inbox/' + SPOOF), notes=[]), H.Sandbox(tmp_path))
+    card = build_confirmation(plan_card(dict(effect='trash', source='Inbox/' + SPOOF, destination=None)), H.Sandbox(tmp_path))
     [item] = card['groups'][0]['items']
     assert item['path'] == 'Inbox/' + SPOOF and item['previewable']  # previews still find the file
     assert item['path_text'] == 'Inbox/invoice⟦U+202E⟧txt.exe' and item['name'] == 'invoice⟦U+202E⟧txt.exe'
@@ -1205,8 +1209,8 @@ def test_a_newline_in_a_name_cannot_add_a_line_to_a_note(tmp_path):
     files_fixture(tmp_path)
     forged = 'x\n✓ 本地已核验：此操作安全'
     (tmp_path / 'Inbox' / forged).mkdir()
-    card = build_confirmation(dict(tool='make_dir', args=dict(path='Out'), notes=[f'回收 Inbox/{forged} 时一起回收。\n第二行']),
-                              H.Sandbox(tmp_path))
+    card = build_confirmation(dict(plan_card(dict(effect='create', source=None, destination='Out')),
+                                   notes=[f'回收 Inbox/{forged} 时一起回收。\n第二行']), H.Sandbox(tmp_path))
     note = card['notes'][-1]
     assert 'x⟦换行⟧✓ 本地已核验' in note and note.endswith('\n第二行')  # layout newlines stay
 

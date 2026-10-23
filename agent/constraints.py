@@ -30,12 +30,6 @@ def operation(effect, source=None, destination=None):
     return dict(effect=effect, source=source, destination=destination)
 
 
-def creations(sb, path):
-    target = sb.path(path, exact=True)
-    return [operation('create', destination=sb.rel(p)) for p in [*reversed(target.parents), target]
-            if p.is_relative_to(sb.root) and p != sb.root and not p.exists()]
-
-
 def _members(sb, op):
     """Directory effects include descendants; scope checks must include them."""
     source = op.get('source')
