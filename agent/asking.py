@@ -8,7 +8,8 @@ from typing import Literal
 
 from pydantic import Field
 
-from agent.task import StrictModel
+from agent.intent import parts_text
+from agent.task import StrictModel, is_legacy
 from tools import registry
 
 
@@ -51,7 +52,23 @@ class Asking:
         key = instruction.strip().upper().rstrip('。.）)').lstrip('（(')
         chosen = next((c for c in asked['choices'] if c['key'] == key), None)
         return dict(question=asked['question'], chosen=chosen, text=None if chosen else instruction.strip(),
-                    subject=asked.get('subject', []))
+                    subject=asked.get('subject', []), task_id=last.get('task_id'))
+
+    def _resume_asked_task(self):
+        """A chosen option goes back to the task its question was asked in, with its
+        progress, limits and budget; typed text may be a new request and resumes nothing."""
+        a = self.answered_choice
+        if not a or not a['chosen'] or not a.get('task_id'): return
+        try: task = self.store.get(a['task_id'])
+        except ValueError: return
+        if is_legacy(task) or task.get('cancelled') or not task.get('pending_choice'): return
+        task.pop('pending_choice')
+        # Earlier runs' operations join the history (as file_plans._reconcile does), so
+        # this run's own ledger, written at finish, does not replace them.
+        history = task.setdefault('operation_history', [])
+        history += [row for row in task.get('operations', []) if row not in history]
+        task['operations'] = []
+        self.current = task
 
     def _subject_trees(self, subject, sb):
         from agent.file_plans import scan_tree
@@ -200,7 +217,11 @@ class Asking:
         a = self.answered_choice
         if a['chosen']:
             c = a['chosen']
-            return f"用户回答了你上一轮的提问“{a['question']}”：选择 {c['key']}. {c['label']}" + (f"（{c['detail']}）" if c['detail'] else '') + '。按此执行。'
+            text = f"用户回答了你上一轮的提问“{a['question']}”：选择 {c['key']}. {c['label']}" + (f"（{c['detail']}）" if c['detail'] else '') + '。按此执行。'
+            if self.current:
+                text += (f"已接回提问时的任务 {self.current['id']}（部分：{parts_text(self.current)}），不必重新登记；"
+                         '按此选择不做的部分在 finish_task.unfinished 写明。')
+            return text
         # Typed text may answer the question or start something else; nothing local tells them apart.
         return (f"你上一轮提问了“{a['question']}”，用户没有选择选项。本轮消息可能是对它的回答，也可能是新的请求："
                 '是回答就据此继续；是新请求就按新请求处理，不要沿用上一问的选项。')
