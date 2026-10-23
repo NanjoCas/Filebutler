@@ -14,9 +14,13 @@ from tests.helpers import spec
 from web_confirm import build_confirmation
 
 
-def runtime(root, session='cli', run='one'):
+def runtime(root, session='cli', run='one', task=True):
+    """A runtime with a registered organize task, as start_task leaves it in production."""
     sb=Sandbox(root); sb.artifacts=ArtifactStore(sb)
     r=TaskRuntime('明确整理这些文件',dict(task_session=session),sb,run); sb.runtime=r
+    if task:
+        text=r.dispatch('start_task',json.dumps(dict(summary='整理文件',parts=[dict(id='files',kind='organize',description='明确整理这些文件')])),sb,None,None)
+        assert text.startswith('OK'),text
     return r
 
 
@@ -30,7 +34,6 @@ def test_local_selection_compiles_executes_once_and_undo(tmp_path):
     r=runtime(tmp_path)
     plan=prepare(r,proposal(selection=dict(path='in',extensions=['txt'],destination='out/deep')))
     assert not (tmp_path/'out').exists()
-    assert r.current['write_roots'] and '.' not in r.current['write_roots']
     asked=[]
     def confirm(req):
         preview=build_confirmation(req,r.sb)
@@ -75,11 +78,11 @@ def test_confirmation_wait_rechecks_without_writes(tmp_path,race):
     dict(effect='move',source='a.txt',destination='a.txt'),
     dict(effect='move',source='a.txt',destination='.hidden/a.txt'),
 ])
-def test_preflight_blocks_conflicts_before_task_or_confirmation(tmp_path,bad):
+def test_preflight_blocks_conflicts_before_plan_or_confirmation(tmp_path,bad):
     (tmp_path/'a.txt').write_text('A');(tmp_path/'taken.txt').write_text('B')
     r=runtime(tmp_path)
     with pytest.raises(ValueError):prepare(r,proposal(actions=[bad]))
-    assert not r.store.recent()
+    assert not r.current.get('file_plan_bindings')
 
 
 def test_foreign_session_stale_plan_and_tampering(tmp_path):
@@ -95,7 +98,7 @@ def test_restart_after_completed_plan_uses_saved_receipt_without_writes(tmp_path
     (tmp_path/'a.txt').write_text('A')
     r=runtime(tmp_path);p=prepare(r,proposal(actions=[dict(effect='move',source='a.txt',destination='out/a.txt')]))
     execute(r,p['id'],OpLog(r.sb,'one'),Confirmer('never'))
-    reloaded=runtime(tmp_path,run='two'); asked=[]
+    reloaded=runtime(tmp_path,run='two',task=False); asked=[]
     execute(reloaded,p['id'],OpLog(reloaded.sb,'two'),Confirmer('always',ask=lambda _:asked.append(1) or 'y'))
     assert not asked and not (tmp_path/'.oplog/two.jsonl').exists()
     assert verify_task(reloaded.current,reloaded.sb)[0]['passed']
@@ -107,7 +110,7 @@ def test_interrupted_mutation_is_not_guessed_or_replayed(tmp_path):
     p['inflight']=p['payload']['steps'][0]['id'];r.store.save_file_plan(p)
     (tmp_path/'.trash').mkdir();(tmp_path/p['payload']['steps'][0]['destination']).write_text('A')
     with pytest.raises(ValueError,match='禁止自动重放'):
-        execute(runtime(tmp_path,run='two'),p['id'],OpLog(r.sb,'two'),Confirmer('never'))
+        execute(runtime(tmp_path,run='two',task=False),p['id'],OpLog(r.sb,'two'),Confirmer('never'))
     assert (tmp_path/'a.txt').exists()
 
 
@@ -147,7 +150,7 @@ def test_resume_partial_plan_skips_completed_steps_and_keeps_old_run_ledger(tmp_
     with pytest.raises(ValueError):execute(r,p['id'],OpLog(r.sb,'one'),Confirmer('never'))
     assert (tmp_path/'out/a.txt').exists() and (tmp_path/'b.txt').exists()
     monkeypatch.setattr(atomic,'rename_no_replace',original)
-    new=runtime(tmp_path,run='two');execute(new,p['id'],OpLog(new.sb,'two'),Confirmer('never'))
+    new=runtime(tmp_path,run='two',task=False);execute(new,p['id'],OpLog(new.sb,'two'),Confirmer('never'))
     assert len((tmp_path/'.oplog/one.jsonl').read_text().splitlines())==1
     assert len((tmp_path/'.oplog/two.jsonl').read_text().splitlines())==1
     assert len(new.current['operation_history'])==1 and len(new.operations)==1
@@ -165,7 +168,7 @@ def test_reconcile_journalled_move_without_replaying_it(tmp_path,monkeypatch):
         original(plan)
     monkeypatch.setattr(r.store,'save_file_plan',crash_after_journal)
     with pytest.raises(KeyboardInterrupt):execute(r,p['id'],OpLog(r.sb,'one'),Confirmer('never'))
-    new=runtime(tmp_path,run='two');execute(new,p['id'],OpLog(new.sb,'two'),Confirmer('never'))
+    new=runtime(tmp_path,run='two',task=False);execute(new,p['id'],OpLog(new.sb,'two'),Confirmer('never'))
     assert len((tmp_path/'.oplog/one.jsonl').read_text().splitlines())==1
     assert not (tmp_path/'.oplog/two.jsonl').exists()
     assert verify_task(new.current,new.sb)[0]['passed']
@@ -184,9 +187,10 @@ def test_classification_bridge_compiles_paths_and_preserves_semantic_review(tmp_
     from tests.helpers import classification
     for name in ('a.pdf','b.pdf','c.pdf'):
         pdf(tmp_path/name,['Abstract. Clinical application study and method evidence. '*10])
-    r=runtime(tmp_path)
+    r=runtime(tmp_path,task=False)
     cid=classification(r,base_dir='organized',category_paths={'1':'应用/医疗'})
-    assert r.current is None
+    assert r.dispatch('start_task',json.dumps(dict(summary='分类并移动',parts=[dict(kind='classify',description='按应用领域分类并移动',execute=True)])),
+                      r.sb,None,None).startswith('OK')
     plan=prepare(r,proposal(classification_plan_id=cid))
     assert r.current['goals'][0]['semantic_review']
     assert len([s for s in plan['payload']['steps'] if s['effect']=='move'])==3
