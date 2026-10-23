@@ -245,6 +245,34 @@ def test_confirmed_relaxation_allows_the_effect(tmp_path):
     assert 'trash' in session.sb.runtime.store.get(session.ids[TASK])['allowed_effects']
 
 
+TWO_ORGANIZE = [dict(id='g1', kind='organize', description='把 Inbox/a.txt 移到 Archive'),
+                dict(id='g2', kind='organize', description='把 Inbox/b.txt 改名为 c.txt')]
+ARCHIVE_A = [dict(effect='move', source='Inbox/a.txt', destination='Archive')]
+
+
+def test_a_plan_claimed_by_several_parts_needs_goal_ids(tmp_path):
+    # 2026-10-23: archiving a alone used to pass both parts; b was never renamed.
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('归档 a，并把 b 改名为 c.txt', [
+        step(start(TWO_ORGANIZE), call('prepare_file_plan', dict(description='归档 a', actions=ARCHIVE_A)))])
+    text = client.calls('prepare_file_plan')[0]['text']
+    assert text.startswith('ERROR') and 'goal_ids' in text and 'g1（organize）' in text and 'g2（organize）' in text
+    assert (tmp_path / 'Inbox/a.txt').is_file()
+
+
+def test_only_the_named_part_is_completed_by_its_plan(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = session.run('归档 a，并把 b 改名为 c.txt', [
+        step(start(TWO_ORGANIZE), call('prepare_file_plan', dict(description='归档 a', actions=ARCHIVE_A, goal_ids=['g1']),
+                                       alias=PLAN)),
+        execute(), finish()])
+    assert errors(client) == []
+    checks = {c['goal_id']: c['passed'] for c in session.sb.runtime.store.get(session.ids[TASK])['checks']}
+    assert checks == {'g1': True, 'g2': False} and result.runtime['task_status'] != 'completed'
+
+
 def test_unstarted_plan_is_rebased_after_a_revision(tmp_path):
     files_fixture(tmp_path)
     session = Session(tmp_path)
@@ -694,6 +722,7 @@ def flatten_fixture(root):
 PARTS = [dict(kind='organize', description='文献内所有文件平铺到根目录'),
          dict(kind='organize', description='回收清空后的子文件夹和文献文件夹本身')]
 MOVE_ALL = dict(path='文献', recursive=True, effect='move', destination='.')
+BOTH = ['organize_1', 'organize_2']  # one plan serving two parts of the same kind names them
 
 
 def test_flatten_and_recycle_folder_with_metadata_in_one_plan(tmp_path):
@@ -703,7 +732,7 @@ def test_flatten_and_recycle_folder_with_metadata_in_one_plan(tmp_path):
     flatten_fixture(tmp_path)
     session = Session(tmp_path)
     result, client = session.run('平铺并删除空文件夹', [
-        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=MOVE_ALL, actions=[
+        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=MOVE_ALL, goal_ids=BOTH, actions=[
             dict(effect='trash', source='文献/01'), dict(effect='trash', source='文献', include_metadata=True)]), alias=PLAN)),
         execute(), finish()])
     assert errors(client) == [], errors(client)
@@ -829,7 +858,7 @@ def test_finder_metadata_appearing_before_execution_is_tolerated(tmp_path):
     from agent.file_plans import PrepareFilePlan, prepare, execute
     flatten_fixture(tmp_path)
     r, sb = tree_runtime(tmp_path)
-    plan = prepare(r, PrepareFilePlan(description='m', selection=MOVE_ALL,
+    plan = prepare(r, PrepareFilePlan(description='m', selection=MOVE_ALL, goal_ids=BOTH,
                                       actions=[dict(effect='trash', source='文献', include_metadata=True)]))
     (tmp_path / '文献/01/.DS_Store').write_bytes(DS_STORE + b'later')
     execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
@@ -840,7 +869,7 @@ def test_new_hidden_file_before_execution_stops_before_any_write(tmp_path):
     from agent.file_plans import PrepareFilePlan, prepare, execute
     flatten_fixture(tmp_path)
     r, sb = tree_runtime(tmp_path)
-    plan = prepare(r, PrepareFilePlan(description='m', selection=MOVE_ALL,
+    plan = prepare(r, PrepareFilePlan(description='m', selection=MOVE_ALL, goal_ids=BOTH,
                                       actions=[dict(effect='trash', source='文献', include_metadata=True)]))
     (tmp_path / '文献/.env').write_text('appeared after the plan was confirmed')
     with pytest.raises(ValueError, match='文献'):
@@ -942,8 +971,8 @@ def test_part_with_nothing_to_do_is_proved_by_an_empty_selection(tmp_path):
     session = Session(tmp_path)
     result, client = session.run('把文献文件夹里的所有内容平铺到根目录并删除空文件夹', [
         step(start(PARTS), call('prepare_file_plan', dict(description='平铺', selection=MOVE_ALL, goal_ids=['organize_1']))),
-        step(call('prepare_file_plan', dict(description='回收', actions=[dict(effect='trash', source='文献', include_metadata=True)]),
-                  alias=PLAN)),
+        step(call('prepare_file_plan', dict(description='回收', actions=[dict(effect='trash', source='文献', include_metadata=True)],
+                                  goal_ids=['organize_2']), alias=PLAN)),
         execute(), step(call('finish_task', dict(reply='文献 里已没有文件，无需平铺；空文件夹已回收。')))])
     assert errors(client) == [], errors(client)
     assert '无需操作' in client.calls('prepare_file_plan')[0]['text']
@@ -990,7 +1019,7 @@ def test_recycled_folder_is_counted_as_a_folder(tmp_path):
     flatten_fixture(tmp_path)
     session = Session(tmp_path)
     result, _ = session.run('平铺', [
-        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=MOVE_ALL, actions=[
+        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=MOVE_ALL, goal_ids=BOTH, actions=[
             dict(effect='trash', source='文献', include_metadata=True)]), alias=PLAN)), execute(), finish()])
     assert result.final.startswith('已移动 2 个文件；已移入回收区 1 个文件夹')
 
