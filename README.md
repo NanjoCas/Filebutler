@@ -166,7 +166,11 @@ web_confirm.py        确认卡片：一句话说明、提醒、详情，名字�
 web/                  前端（app.js、tasks.js、样式）；开发者模式开关
 agent/
   loop.py             主循环：调模型 → 校验并执行工具 → 回填结果；文件名隔离在这里统一处理
-  task_runtime.py     任务控制器（协议 v3）：工具可见性、权限与约束、ask_user、按你选定的范围判断完成
+  task_runtime.py     任务控制器（协议 v3）：工具分发、工具可见性、权限与约束
+  asking.py           ask_user：选项在你看到前由本地检查；解析你的回答
+  finishing.py        finish_task 的本地核验、按你选定的范围判断完成、查询运行结果
+  choices.py          你的决定（回收隐藏文件、覆盖、读取敏感文件、所选选项）合成一张表
+  prompts.py          模型可见的全部文字：系统提示、协议说明、控制工具和字段说明
   intent.py           v3：把模型给的部分和限制编译成完成条件和范围
   file_plans.py       文件计划：清单、快照、依赖排序、整体移动文件夹、预检、原子执行、中断恢复、核验
   completion.py       选择集展开（包当作一个整体）；操作归属到任务的部分
