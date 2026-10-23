@@ -18,7 +18,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from agent.artifacts import digest, signature, label
-from agent import choices
+from agent import choices, intent
 from agent.completion import selected, walk_selection, is_package, attribute, claimed
 from agent.task import StrictModel
 
@@ -60,7 +60,7 @@ class PrepareFilePlan(StrictModel):
     selection: Selection | None = None
     classification_plan_id: str | None = Field(None, description='已有分类计划的精确 P 标识；本地展开全部来源和目标，不必抄写文件路径')
     goal_ids: list[str] = Field(default_factory=list, max_length=30,
-        description='已有任务中此计划服务的目标；可省略，本地按完成条件逐项归属，无法确定时才要求提供')
+        description='此计划完成的部分；任务只有一个会改文件的部分时可省略，有多个同类部分时必填')
     task_id: str | None = Field(None, description='仅在续做以前的任务时填写，复制完整 ID，沿用原限制；本轮已调用 start_task 时不要填')
 
 
@@ -769,7 +769,7 @@ def _attribute_steps(runtime, task, steps, requested, producers):
         raise ValueError('goal_ids 引用了任务中不存在的目标：'+'、'.join(sorted(set(requested) - known)))
     candidates = requested or [g['id'] for g in task['goals']]
     explicit = bool(requested) or len(candidates) == 1
-    unresolved = []
+    unresolved, shared = [], []
     for row in steps:
         if row['effect'] == 'create': continue
         op = dict(effect=row['effect'], source=row['source'],
@@ -778,6 +778,13 @@ def _attribute_steps(runtime, task, steps, requested, producers):
         row['goal_ids'] = served or list(candidates)
         if not explicit and not served:
             unresolved.append(row['source'])
+        # Parts with the same condition all "claim" an action; one plan proving
+        # each of them would pass a part nothing was done for.
+        elif not explicit and len(served) > 1:
+            shared.append(row['source'])
+    if shared:
+        raise ValueError('以下动作可能属于多个部分，本地无法确定是哪一个：' + '、'.join(shared[:8]) +
+                         '；请在 goal_ids 写明本计划完成的部分。当前部分：' + intent.parts_text(task))
     for row in steps:
         if row['effect'] != 'create': continue
         # A parent directory serves the actions placed inside it.
