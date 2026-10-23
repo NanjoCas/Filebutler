@@ -25,14 +25,11 @@ class LLM:
         self.timeout = max(1, float(cfg.get("llm_timeout", 60)))
         self.client = client
         self._config = dict(cfg)
-        # Local routes must work offline, including without an API credential.
-        if client is None and not cfg.get('local_runtime'):
-            self._ensure_client()
+        # The client is created on first request, so offline paths need no API credential.
         self.prices = (cfg.get("prices") or {}).get(self.model)  # 元/百万 tokens：cache_hit / cache_miss / output
         self.prompt_tokens = 0
         self.cache_hit_tokens = 0
         self.completion_tokens = 0
-        self.last_prompt_tokens = None  # 上一次调用的准确输入长度，上下文压缩用它估算当前长度
 
     def _ensure_client(self):
         if self.client is not None:
@@ -40,8 +37,7 @@ class LLM:
         cfg = self._config
         key = os.environ.get(cfg['api_key_env'])
         if not key:
-            if cfg.get('local_runtime'):raise ModelConfigurationError(cfg['api_key_env'])
-            raise SystemExit(f"环境变量 {cfg['api_key_env']} 未设置，请配置后再运行需要模型的任务")
+            raise ModelConfigurationError(cfg['api_key_env'])
         self.client = OpenAI(api_key=key, base_url=cfg['base_url'], timeout=self.timeout, max_retries=0)
 
     @property
@@ -98,7 +94,6 @@ class LLM:
         if resp.usage:
             u = resp.usage
             self.prompt_tokens += u.prompt_tokens
-            self.last_prompt_tokens = u.prompt_tokens
             self.completion_tokens += u.completion_tokens
             # DeepSeek 用 prompt_cache_hit_tokens；OpenAI 格式是 prompt_tokens_details.cached_tokens
             hit = getattr(u, "prompt_cache_hit_tokens", None)

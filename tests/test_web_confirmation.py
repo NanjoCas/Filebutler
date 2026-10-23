@@ -1,17 +1,13 @@
 """Structured operation reviews preserve the existing execution and confirmation boundary."""
-import threading
 
 import pytest
 
-from agent.llm import LLM
 from safety.confirm import Confirmer
 from safety.oplog import OpLog
 from tools.dedup import ApplyDedupArgs, apply_dedup, scan_duplicates
 from tools.registry import _trash_batch
-from tests.test_week1 import FakeClient
-from tests.test_web_ui import files, ui  # reusable temporary sandbox and isolated API fixtures
+from tests.test_web_ui import files, ui  # noqa: F401  reusable temporary sandbox and isolated API fixtures
 from web_confirm import build_confirmation, describe_path
-import webapp
 
 
 def test_batch_review_keeps_duplicates_together_with_per_file_disposition(files):
@@ -103,32 +99,6 @@ def test_structured_confirmation_receives_lists_and_keeps_rejection_count():
     assert not c.allow("trash_many", args, file_count=2)
     assert seen == [{"tool": "trash_many", "args": args, "file_count": 2}]
     assert c.rejections == 1 and c.file_writes == 0
-
-
-def test_review_allows_preview_before_approval_and_can_undo_after(ui, monkeypatch, files):
-    waiting, finished = threading.Event(), threading.Event()
-    fake = FakeClient([[("trash", {"path": "notes.md"})], "已移入回收区。"])
-    monkeypatch.setattr(webapp, "LLM", lambda cfg: LLM({"model": "fake"}, client=fake))
-    original_event = webapp._event
-    def notify(turn_id, event):
-        original_event(turn_id, event)
-        if event["type"] == "confirmation_required": waiting.set()
-        if event["type"] in ("completed", "failed"): finished.set()
-    monkeypatch.setattr(webapp, "_event", notify)
-    cid = ui.post("/api/conversations").json()["id"]
-    tid = ui.post(f"/api/conversations/{cid}/messages", json={"content": "清理笔记"}).json()["turn_id"]
-    assert waiting.wait(4)
-    pending = ui.get(f"/api/turns/{tid}").json()["pending_confirmation"]
-    assert "请输入" not in pending["question"]
-    item = pending["action"]["groups"][0]["items"][0]
-    assert item["path"] == "notes.md" and item["previewable"]
-    assert ui.get("/api/files/preview", params={"path": item["path"]}).json()["content"] == "测试内容"
-    assert (files.root / "notes.md").exists()
-    assert ui.post(f"/api/turns/{tid}/confirm", json={"answer": "y", "confirmation_id": pending["id"]}).status_code == 200
-    assert finished.wait(5)
-    assert not (files.root / "notes.md").exists()
-    ui.post(f"/api/turns/{tid}/undo")
-    assert (files.root / "notes.md").read_text(encoding="utf-8") == "测试内容"
 
 
 # ---------------------------------------------------------------- the card as a permission prompt

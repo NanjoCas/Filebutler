@@ -7,9 +7,7 @@ from rich.console import Console
 
 from agent.llm import LLM
 from agent.loop import run_agent
-from eval.checker import snapshot
 from eval.retrieval import evaluate, metrics
-from safety.oplog import OpLog, undo
 from safety.sandbox import Sandbox
 from tests.test_week1 import FakeClient
 from tools import registry
@@ -81,7 +79,7 @@ def test_text_offset_reading(tmp_path):
     assert "page 只适用于 PDF" in dispatch(sb, "read_file", path="note.txt", page=1)
 
 
-def test_cache_refreshes_on_edit_move_rename_trash_and_undo(tmp_path):
+def test_cache_refreshes_on_edit(tmp_path):
     sb, index = Sandbox(tmp_path), PaperIndex()
     p = tmp_path / "one.pdf"
     pdf(p, ["dengue prediction"])
@@ -93,19 +91,6 @@ def test_cache_refreshes_on_edit_move_rename_trash_and_undo(tmp_path):
     pdf(p, ["influenza prediction"])
     assert not index.search(sb, "dengue")[0]
     assert index.search(sb, "influenza")[0]
-    log = OpLog(sb, "retrieval")
-    def write(name, **args):
-        assert registry.dispatch(name, json.dumps(args), sb, log).startswith("OK")
-    write("make_dir", path="folder")
-    write("move", src="one.pdf", dst_dir="folder")
-    assert index.search(sb, "influenza")[0][0]["path"] == "folder/one.pdf"
-    write("rename", path="folder/one.pdf", new_name="two.pdf")
-    assert index.search(sb, "influenza")[0][0]["path"] == "folder/two.pdf"
-    write("trash", path="folder/two.pdf")
-    assert not index.search(sb, "influenza")[0]
-    assert not index.cache
-    undo(sb, "retrieval")
-    assert index.search(sb, "influenza")[0][0]["path"] == "one.pdf"
 
 
 def test_hidden_corrupt_empty_and_symlink_files_are_reported(tmp_path):
@@ -154,24 +139,6 @@ def test_output_is_paginated_without_cutting_evidence_tags(tmp_path):
 @pytest.mark.parametrize("args", [dict(query=" "), dict(query="dengue", top_k=0), dict(query="dengue", page=0)])
 def test_invalid_query_arguments_return_error(tmp_path, args):
     assert dispatch(Sandbox(tmp_path), **args).startswith("ERROR")
-
-
-def test_agent_can_retrieve_verify_move_and_undo(tmp_path):
-    pdf(tmp_path / "paper.pdf", ["Background", "Dengue outbreak prediction"])
-    sb = Sandbox(tmp_path)
-    before = snapshot(tmp_path, True)
-    client = FakeClient([
-        [("search_content", {"query": "dengue outbreak prediction"})],
-        [("read_file", {"path": "paper.pdf", "page": 2})],
-        [("make_dir", {"path": "reading"}), ("move", {"src": "paper.pdf", "dst_dir": "reading"})],
-        "已找到并移动论文",
-    ])
-    result = run_agent("找登革热论文移到 reading", LLM({"model": "fake"}, client=client), sb, {},
-                       Console(quiet=True), oplog=OpLog(sb, "search"))
-    assert result.stop_reason == "done" and (tmp_path / "reading/paper.pdf").exists()
-    assert "page=2" in client.seen[1][-1]["content"]
-    undo(sb, "search")
-    assert snapshot(tmp_path, True) == before
 
 
 def test_retrieval_disabled_hides_schema_and_rejects_calls(tmp_path):

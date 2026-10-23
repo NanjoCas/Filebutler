@@ -182,7 +182,7 @@ def test_resume_after_first_step_of_a_chain(tmp_path, monkeypatch):
 
 def _two_plan_swap(tmp_path):
     from agent.task import TaskSubmission
-    from tests.test_task_runtime_v2 import spec
+    from tests.helpers import spec
     write(tmp_path, {'a.txt': 'a', 'b.txt': 'b'})
     r = runtime(tmp_path)
     r.current = r.store.submit(TaskSubmission.model_validate(spec(('互换', [dict(kind='file_plan_verified')]),

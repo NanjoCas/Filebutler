@@ -72,9 +72,9 @@ flowchart LR
 | 出错后无法挽回或会泄露数据的操作，由本地硬拦；能撤销、卡片上看得见的，交给模型判断，卡片兜底 | 覆盖、读取敏感文件、回收隐藏文件都必须由你选择。“新建文件夹要先问你”一度做成本地硬拦，后来改回软规则：只要规则写进提示词，验证 12/12 通过；8 类表面相近的正常请求，规则误伤 0 次 |
 | 批量操作走计划和选择集，不逐个调用工具 | 130 个文件平铺用一个计划完成，共 6 次请求；先登记任务时，500 项计划准备 0.37 秒、执行 4.85 秒 |
 | 预算按费用算，不按 Token 算 | 七八成 Token 命中前缀缓存，单价只有 1/50。按 5 万 Token 设预算时，300 个文件的任务 0/5 通过；改为每次 ¥0.30 后 5/5 |
-| 上下文压缩默认关闭 | R06 任务上 Token 减半，费用反而 +25%：压缩改写了旧消息，缓存命中率从 87% 降到 45% |
+| 不做上下文压缩（2026-10-23 已移除） | R06 任务上 Token 减半，费用反而 +25%：压缩改写了旧消息，缓存命中率从 87% 降到 45% |
 | 失败先做成离线回放，再修 | 1/70 的随机漏文件靠重跑复现不出来；把模型输出录下来做成确定性测试，修复前先确认这个测试会失败 |
-| 模型可见的提示和工具说明，不超过 v2 的 80% | 每加一条规则都要占用模型的注意力；现在是 31,311 字符，约为 v2 的 79.7%，由测试守住这个上限 |
+| 模型可见的提示和工具说明设绝对上限 31,311 字符，只减不增 | 每加一条规则都要占用模型的注意力；31,311 是 v2 退役时的实测值（约为 v2 的 79.7%），由测试守住 |
 
 ## 安全设计
 
@@ -118,7 +118,7 @@ python -m pytest -q                  # 离线测试（699 项），使用假模�
 
 ```bash
 python -m eval.live_policy --dry-run --suite blind3 --out <新目录>    # 用脚本模型干跑，不花钱
-zsh -ic 'python -m eval.live_policy --live --suite blind3 --protocol v3 --out eval/results/<新目录> --total-cap 0.3'   # 收费
+zsh -ic 'python -m eval.live_policy --live --suite blind3 --out eval/results/<新目录> --total-cap 0.3'   # 收费
 python -m eval.rejudge eval/results/<已有目录> --out <新目录>          # 用当前判法离线重判
 python -m eval.protocol_errors eval/results/<目录>...                 # 统计协议错误的原因
 ```
@@ -155,22 +155,22 @@ python -m eval.protocol_errors eval/results/<目录>...                 # 统计
 
 ### 早期实验（2026-10-07 之前，旧控制器）
 
-在 51 篇真实论文上，每个任务跑 5 次：R01–R05 都是 5/5，R06（51 篇打散后重新分类）4/5；37 个合成任务通过率 95%。R04 和 R06 起初只有 1/5、0/5，逐条分析后，问题出在 PDF 解析库、任务描述和文件系统特性上，模型真正判断错的只有 1 次。详见 [docs/experiments.md](docs/experiments.md)。旧控制器和当时的实验命令（`python main.py eval ...`）仍然保留，复现时设置 `task_runtime: false` 并换回对应的旧提示词。
+在 51 篇真实论文上，每个任务跑 5 次：R01–R05 都是 5/5，R06（51 篇打散后重新分类）4/5；37 个合成任务通过率 95%。R04 和 R06 起初只有 1/5、0/5，逐条分析后，问题出在 PDF 解析库、任务描述和文件系统特性上，模型真正判断错的只有 1 次。详见 [docs/experiments.md](docs/experiments.md)。旧控制器、自检、上下文压缩和当时的实验命令（`python main.py eval ...`）已于 2026-10-23 随协议 v2 一起退役，代码保留在本地标签 `archive-v2-legacy-20261023`，复现请检出该标签。
 
 ## 代码结构
 
 ```
-main.py               命令行：ping / gen / init-demo / run / search / dedup / undo / eval
+main.py               命令行：ping / gen / init-demo / run / search / dedup / undo
 webapp.py             FastAPI：多对话、文件预览、确认与撤销接口
 web_confirm.py        确认卡片：一句话说明、提醒、详情，名字里的特殊字符标记
 web/                  前端（app.js、tasks.js、样式）；开发者模式开关
 agent/
   loop.py             主循环：调模型 → 校验并执行工具 → 回填结果；文件名隔离在这里统一处理
-  task_runtime.py     任务控制器：v2/v3 协议、工具可见性、权限与约束、ask_user、按你选定的范围判断完成
+  task_runtime.py     任务控制器（协议 v3）：工具可见性、权限与约束、ask_user、按你选定的范围判断完成
   intent.py           v3：把模型给的部分和限制编译成完成条件和范围
   file_plans.py       文件计划：清单、快照、依赖排序、整体移动文件夹、预检、原子执行、中断恢复、核验
-  completion.py       文件集合类完成条件；选择集展开（包当作一个整体）
-  constraints.py      本地操作规则（范围、扩展名、数量、内容不变……）
+  completion.py       选择集展开（包当作一个整体）；操作归属到任务的部分
+  constraints.py      本地操作规则（范围、扩展名、数量）
   verifier.py         逐部分核验；证据有效不等于语义正确
   reporting.py        回复：本地事实、未完成原因、模型说明；内部细节只放进开发者详情
   sensitive.py        敏感文件判定与授权
@@ -197,6 +197,7 @@ tests/                离线测试（假模型），包括真实运行记录的�
 - [HANDOFF.md](HANDOFF.md)：现状、配置、代码入口、待办清单
 - [docs/live-acceptance-2026-10-21-rounds.md](docs/live-acceptance-2026-10-21-rounds.md)：第 02–29 轮真实复验，逐轮数据、暴露的问题和修复
 - [docs/protocol-v3-2026-10-21.md](docs/protocol-v3-2026-10-21.md)：协议 v3 的设计、授权边界和数据
+- [docs/v2-retirement-coverage-2026-10-23.md](docs/v2-retirement-coverage-2026-10-23.md)：v2 退役时删掉的测试、对应机制在 v3 的覆盖情况和已知缺口
 - [docs/system-files-candidates-2026-10-22.md](docs/system-files-candidates-2026-10-22.md)：系统文件名单的来源核对
 - [docs/experiments.md](docs/experiments.md)：全部实验的时间线
 - [docs/engineering-notes.md](docs/engineering-notes.md)：技术取舍和踩过的坑

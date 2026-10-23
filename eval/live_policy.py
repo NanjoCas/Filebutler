@@ -26,7 +26,7 @@ from agent.artifacts import ArtifactStore, digest
 from agent.history import prepare_history
 from agent.llm import LLM
 from agent.loop import run_agent
-from agent.prompts import SYSTEM_PROMPTS
+from agent.prompts import SYSTEM_PROMPT
 from eval.checker import files_preserved, snapshot
 from main import ROOT, load_config
 from safety.confirm import Confirmer
@@ -351,7 +351,7 @@ def run_suite(cases, out, cfg, total_cap, llm_for, mode):
                     history.append(dict(role='user', content=instruction))
                     history, projection = prepare_history(history, turn_cfg, store)
                 else:
-                    history = [dict(role='system', content=SYSTEM_PROMPTS[cfg['prompt']]), dict(role='user', content=instruction)]
+                    history = [dict(role='system', content=SYSTEM_PROMPT), dict(role='user', content=instruction)]
                     projection = {}
                 def approve(request): approvals.append(request); return 'y'
                 def observe(event):
@@ -422,13 +422,9 @@ def main(argv=None):
     ap.add_argument('--out', type=Path, required=True)
     ap.add_argument('--cases', nargs='+', help='run only these case IDs of the suite')
     ap.add_argument('--total-cap', type=float, default=1.2)
-    ap.add_argument('--protocol', choices=['v2', 'v3'], default=None,
-                    help='model-visible task protocol; default from config.yaml (v2 = pre-P1-4 baseline)')
     args = ap.parse_args(argv)
     cfg = load_config(ROOT/'config.yaml')
     cfg.update(llm_retries=0, task_session='live-policy-acceptance')
-    if args.protocol:
-        cfg.update(protocol=args.protocol, prompt={'v2': 'v8_tasks', 'v3': 'v9_intent'}[args.protocol])
     cases = SUITES[args.suite]
     if args.cases:
         unknown = set(args.cases) - {c['id'] for c in cases}

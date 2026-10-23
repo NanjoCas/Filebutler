@@ -16,14 +16,13 @@ from types import SimpleNamespace as NS
 from agent.llm import LLM
 
 
-PATTERNS = dict(plan=r'plan_id=(X[0-9a-f]+)', task=r'task_id=(T[0-9a-f]+)', revision=r'revision=(\d+)',
-                edit=r'"id": "(D[0-9a-f]+)"')
+PATTERNS = dict(plan=r'plan_id=(X[0-9a-f]+)', task=r'task_id=(T[0-9a-f]+)', revision=r'revision=(\d+)')
 
 
 class ScriptedClient:
     """OpenAI-compatible client. Each step is a list of (tool, args) or a final str.
 
-    ``args`` may be a callable receiving the shared ID dict (task, revision, edit,
+    ``args`` may be a callable receiving the shared ID dict (task, revision,
     plan) learned from earlier tool results of the same case.
     """
 
@@ -57,12 +56,10 @@ class ScriptedClient:
         return NS(choices=[NS(message=msg)], usage=NS(prompt_tokens=100, completion_tokens=10))
 
 
-def _exists(*paths): return [dict(kind='path_exists', path=p) for p in paths]
-def _absent(*paths): return [dict(kind='path_absent', path=p) for p in paths]
 def _moves(pairs): return [dict(effect='move', source=s, destination=d) for s, d in pairs]
 def _finish(text): return [('finish_task', dict(summary=text))]
 def _execute(): return [('execute_file_plan', lambda v: dict(plan_id=v['plan']))]
-def _apply(): return [('apply_task_edit', lambda v: dict(edit_id=v['edit']))]
+def _organize(pid, text): return dict(id=pid, kind='organize', description=text)
 
 
 TOPIC = 'Topics/光合作用'
@@ -70,58 +67,45 @@ Q4 = ('Q4_final.pdf', 'Q4_draft.pdf')
 
 SCRIPTS = {
     'holdout_search_dedup_move': [[
-        [('set_task', dict(
-            goals=[dict(id='dedup', description='字节相同的副本只保留文件名最短的一份',
-                        conditions=_absent('Notes/note_01_copy.txt')),
-                   dict(id='place', description='光合作用笔记按原名移到 Topics/光合作用', semantic_review=True,
-                        conditions=_exists(f'{TOPIC}/note_01.txt', f'{TOPIC}/note_02.txt')
-                        + _absent('Notes/note_01.txt', 'Notes/note_02.txt'))],
-            read_roots=['.'], write_roots=['Notes', 'Topics'], allowed_effects=['create', 'move', 'trash'],
-            constraints=[dict(id='no_rename', description='不改名', forbidden_effects=['rename'])])),
-         ('find_duplicates', dict(path='Notes', mode='bytes', keep='shortest_name'))],
+        [('start_task', dict(
+            summary='Notes 里字节相同的副本只留文件名最短的一份；光合作用笔记按原名移到 Topics/光合作用',
+            parts=[dict(id='dedup', kind='dedup', description='Notes 里字节相同的副本只保留文件名最短的一份'),
+                   _organize('place', '讨论光合作用的笔记按原名移到 Topics/光合作用')],
+            limits=dict(no_effects=['rename']))),
+         ('deduplicate', dict(path='Notes', mode='bytes', keep='shortest_name'))],
         [('read_file', dict(path='Notes/note_01.txt')), ('read_file', dict(path='Notes/note_02.txt')),
          ('read_file', dict(path='Notes/note_03.txt')), ('read_file', dict(path='Notes/note_04.txt'))],
         [('prepare_file_plan', dict(
-            description='回收字节相同副本 note_01_copy.txt，并把两篇光合作用笔记移到 Topics/光合作用', semantic_review=True,
-            actions=[dict(effect='trash', source='Notes/note_01_copy.txt'), dict(effect='create', destination=TOPIC)]
-            + _moves([('Notes/note_01.txt', f'{TOPIC}/note_01.txt'), ('Notes/note_02.txt', f'{TOPIC}/note_02.txt')])))],
+            description='把两篇光合作用笔记移到 Topics/光合作用', semantic_review=True,
+            actions=_moves([('Notes/note_01.txt', f'{TOPIC}/note_01.txt'), ('Notes/note_02.txt', f'{TOPIC}/note_02.txt')])))],
         _execute(),
         _finish('note_01.txt 与 note_02.txt 讨论光合作用，已移到 Topics/光合作用；副本 note_01_copy.txt 已回收。'),
     ]],
     'holdout_cross_turn_revision': [
-        [[('set_task', dict(
-            goals=[dict(id='file_2025', description='Reports 根目录全部 PDF 按原名移到 Reports/2025',
-                        conditions=_exists(*(f'Reports/2025/{n}' for n in ('q1_summary.pdf',) + Q4))
-                        + _absent(*(f'Reports/{n}' for n in ('q1_summary.pdf',) + Q4)))],
-            read_roots=['.'], write_roots=['Reports'], allowed_effects=['move'],
-            constraints=[dict(id='only_move', description='不创建、不改名、不回收', forbidden_effects=['create', 'rename', 'trash'])]))],
+        [[('start_task', dict(summary='Reports 根目录全部 PDF 按原名移到 Reports/2025',
+                              parts=[_organize('file_2025', 'Reports 根目录全部 PDF 按原名移到 Reports/2025')],
+                              limits=dict(no_effects=['create', 'rename', 'trash'])))],
          [('prepare_file_plan', dict(description='三份 PDF 移到 Reports/2025',
                                      actions=_moves((f'Reports/{n}', f'Reports/2025/{n}') for n in ('q1_summary.pdf',) + Q4)))],
          _execute(), _finish('3 份 PDF 已移到 Reports/2025。')],
-        [[('edit_task', lambda v: dict(
+        [[('revise_task', lambda v: dict(
             task_id=v['task'], expected_revision=int(v['revision']), reason='用户更正：只有 Q4 PDF 放 2025，q1_summary.pdf 移回根目录',
-            upsert_goals=[dict(id='file_2025', description='只有文件名含 Q4 的 PDF 放在 Reports/2025，其余移回 Reports 根目录',
-                               conditions=_exists(*(f'Reports/2025/{n}' for n in Q4), 'Reports/q1_summary.pdf')
-                               + _absent('Reports/2025/q1_summary.pdf'))]))],
-         _apply(),
+            parts=[_organize('file_2025', '只有文件名含 Q4 的 PDF 放在 Reports/2025，q1_summary.pdf 移回 Reports 根目录')]))],
          [('prepare_file_plan', dict(description='q1_summary.pdf 移回 Reports 根目录',
                                      actions=_moves([('Reports/2025/q1_summary.pdf', 'Reports/q1_summary.pdf')])))],
          _execute(), _finish('已按更正把 q1_summary.pdf 移回 Reports 根目录。')],
     ],
     'holdout_partial_resume': [
-        [[('set_task', dict(
-            goals=[dict(id='batch_a', description='本轮只移动 a 开头的 txt 到 Done',
-                        conditions=_exists('Done/a1.txt', 'Done/a2.txt') + _absent('Inbox/a1.txt', 'Inbox/a2.txt'))],
-            read_roots=['.'], write_roots=['Inbox', 'Done'], allowed_effects=['move'],
-            constraints=[dict(id='only_move', description='不创建、不改名、不回收', forbidden_effects=['create', 'rename', 'trash'])]))],
+        [[('start_task', dict(summary='本轮只移动 a 开头的 txt 到 Done',
+                              parts=[_organize('batch_a', '本轮只移动 a 开头的 txt 到 Done')],
+                              limits=dict(no_effects=['create', 'rename', 'trash'])))],
          [('prepare_file_plan', dict(description='a1、a2 移到 Done', actions=_moves([('Inbox/a1.txt', 'Done/a1.txt'), ('Inbox/a2.txt', 'Done/a2.txt')])))],
          _execute(), _finish('a 开头的 2 个 txt 已移到 Done；b1.txt、b2.txt 等待下一轮确认。')],
-        [[('edit_task', lambda v: dict(
+        [[('revise_task', lambda v: dict(
             task_id=v['task'], expected_revision=int(v['revision']), reason='用户确认继续处理 b 开头的 txt',
-            upsert_goals=[dict(id='batch_b', description='继续把 b 开头的 txt 移到 Done',
-                               conditions=_exists('Done/b1.txt', 'Done/b2.txt') + _absent('Inbox/b1.txt', 'Inbox/b2.txt'))]))],
-         _apply(),
-         [('prepare_file_plan', dict(description='b1、b2 移到 Done', actions=_moves([('Inbox/b1.txt', 'Done/b1.txt'), ('Inbox/b2.txt', 'Done/b2.txt')])))],
+            parts=[_organize('batch_b', '继续把 b 开头的 txt 移到 Done')]))],
+         [('prepare_file_plan', dict(description='b1、b2 移到 Done', goal_ids=['batch_b'],
+                                     actions=_moves([('Inbox/b1.txt', 'Done/b1.txt'), ('Inbox/b2.txt', 'Done/b2.txt')])))],
          _execute(), _finish('剩余 b 开头的 2 个 txt 已移到 Done，整理完成。')],
     ],
     'holdout_ambiguous_target': [[
@@ -139,8 +123,7 @@ SCRIPTS = {
 BAD_SCRIPTS = {
     # Acts on an ambiguous request instead of asking.
     'holdout_ambiguous_target': [[
-        [('set_task', dict(goals=[dict(id='g', description='移动 report.txt', conditions=_exists('Archive/report.txt'))],
-                           read_roots=['.'], write_roots=['Projects', 'Archive'], allowed_effects=['move']))],
+        [('start_task', dict(summary='移动 report.txt 到 Archive', parts=[_organize('g', '移动 report.txt 到 Archive')]))],
         [('prepare_file_plan', dict(description='移动 alpha 的 report.txt',
                                     actions=_moves([('Projects/alpha/report.txt', 'Archive/report.txt')])))],
         _execute(), _finish('已移动 report.txt。')]],

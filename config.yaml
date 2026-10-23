@@ -2,20 +2,11 @@ base_url: https://api.deepseek.com
 model: deepseek-flash          # 对比实验时改成 deepseek-v4-pro；以 DeepSeek 官网的模型名为准
 api_key_env: DEEPSEEK_API_KEY  # 只写环境变量名，不写 key 本身
 temperature: 0
-local_runtime: true            # 文件/证据标识、本地结果生成、普通检索预算与组合清理
-task_runtime: true             # V2 默认：结构化任务控制，绕过关键词分流和自然语言本地捷径
 task_query_limit: 12           # 整项任务检索上限；不按中文关键词选择预算
 task_read_limit: 40            # 整项任务补读上限；达到上限报告未完成/待核实
-local_dispatch: true           # 仅旧控制器的自然语言捷径；task_runtime=true 时不启用
-topic_query_limit: 2           # 普通查找最多一次补充查询；穷尽/复合任务沿用通用流程
-topic_read_limit: 5            # 普通查找最多五次必要片段读取
-classification_read_limit: 6   # 普通核心方法分类的补读预算；不足项保留待核实
 llm_timeout: 60                # 单次请求超时；SDK 隐式重试已关闭
 llm_retries: 1                 # 项目层最多重试一次（总计最多两次请求）
 conversation_history_max_chars: 40000  # Web 长对话才归档旧工具明细；完整 UI 历史仍保留
-conversation_keep_full_turns: 2        # 保留最近两个完整任务的工具证据
-prompt: v9_intent            # 协议 v3：模型只说意图和对象，契约本地编译；对照用 v8_tasks + protocol: v2
-protocol: v3                 # v3 意图提案（P1-4）/ v2 模型手写任务契约（2026-10-21 之前）
 sandbox: ./sandbox
 max_steps: 25                  # 真实数据（51 篇论文）光读就要 9 轮左右，15 太紧
 repeat_detection: true         # 相同工具和参数连续第 2 次提醒，第 3 次拦截并中止；false 用于 E5 对照
@@ -25,12 +16,6 @@ cost_budget: 0.30              # 元/次运行。按费用而不是 Token 算：
 token_budget: 200000           # 后备：只在模型没配价格时生效
 confirm: risky                 # always 每次都问 / risky 回收区或超过阈值才问 / never 不问（评测用）
 confirm_threshold: 10          # risky 模式下，本次运行写操作超过这么多个文件就开始询问
-context_compress: false        # 上下文压缩：超过高水位时把较早的工具结果换成一行摘要
-context_high_water: 12000      # 估算的上下文 Token 超过这个值就压缩一批
-context_keep_recent: 1         # 除了最新一轮，再保留最近几轮工具结果的原文
-reflect: false                 # 结束前自检一次
-reflect_min_writes: 5          # 本次成功动过的文件不少于这么多个才自检（move/rename/trash 计数，make_dir 不算）
-reflect_state_lines: 120       # 自检时附带的沙盒文件清单最多多少行
 # 价格：元/百万 tokens，按高峰时段（保守估计）。来源 api-docs.deepseek.com，2026-10-06 查询
 prices:
   deepseek-flash:   {cache_hit: 0.04, cache_miss: 2.0, output: 8.0}

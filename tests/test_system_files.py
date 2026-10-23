@@ -11,7 +11,7 @@ import pytest
 from agent.file_plans import scan_tree
 from agent.system_files import entries
 
-import test_live_regressions_20261021 as H
+import helpers as H
 from test_protocol_v3 import Session, step, call, start, errors, PLAN, execute, finish, DS_STORE
 
 OLE = bytes.fromhex('d0cf11e0a1b11ae1') + b'\x00' * 64

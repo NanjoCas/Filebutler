@@ -11,7 +11,7 @@ from safety.sandbox import Sandbox
 from tools import registry
 from tools.registry import ToolError
 
-import test_live_regressions_20261021 as H
+import helpers as H
 from test_protocol_v3 import Session, step, call, start, errors
 
 

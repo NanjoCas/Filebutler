@@ -1,5 +1,4 @@
 """Latency accounting, safe cache reuse, bounded retries and archival; no API spend."""
-import copy
 import json
 import threading
 from types import SimpleNamespace as NS
@@ -19,33 +18,11 @@ from safety.confirm import Confirmer
 from safety.oplog import OpLog
 from safety.sandbox import Sandbox
 from tests.test_week1 import FakeClient
+from tests.test_web_ui import files, ui  # noqa: F401  shared temporary app fixtures
 from tests.test_dedup import pdf, BASE, apply
-from tests.test_web_ui import files, ui  # shared temporary app fixtures
 from tools.dedup import scan_duplicates
 import tools.dedup as dedup
 import webapp
-
-
-def test_exact_timing_excludes_confirmation(monkeypatch, tmp_path):
-    clock = [100.0]
-    monkeypatch.setattr('time.perf_counter', lambda: clock[0])
-    client = FakeClient([[('trash', {'path': 'a.txt'})], '完成'])
-    original = client.chat.completions.create
-    def create(**kw):
-        clock[0] += 2
-        return original(**kw)
-    client.chat.completions.create = create
-    def ask(_):
-        clock[0] += 17
-        return 'y'
-    sb = Sandbox(tmp_path); (tmp_path / 'a.txt').write_text('a')
-    trace = tmp_path.parent / (tmp_path.name + '.trace.jsonl')
-    result = run_agent('清理', LLM({'model': 'fake'}, client=client), sb, {}, Console(quiet=True),
-                       confirmer=Confirmer('always', ask=ask), oplog=OpLog(sb, 'timing'), trace_path=trace)
-    assert result.seconds == 21 and result.active_seconds == 4
-    assert result.wait_seconds == 17 and result.llm_seconds == 4 and result.tool_seconds == 0
-    tool = next(r for r in map(json.loads, trace.read_text().splitlines()) if 'tool' in r)
-    assert tool['wait_ms'] == 17000 and tool['active_ms'] == 0
 
 
 def test_sdk_retries_disabled_and_configurable(monkeypatch):
@@ -53,6 +30,7 @@ def test_sdk_retries_disabled_and_configurable(monkeypatch):
     monkeypatch.setenv('TEST_FAKE_KEY', 'fake-key')
     monkeypatch.setattr('agent.llm.OpenAI', lambda **kw: kwargs.update(kw) or NS())
     llm = LLM({'model': 'fake', 'api_key_env': 'TEST_FAKE_KEY', 'base_url': 'https://example.invalid', 'llm_timeout': 12})
+    llm._ensure_client()  # created on first request
     assert kwargs['max_retries'] == 0 and kwargs['timeout'] == 12 and llm.retries == 1
 
 
@@ -147,18 +125,6 @@ def history_fixture():
     return history
 
 
-def test_history_projection_keeps_constraints_pairs_undo_and_ui_original():
-    history = history_fixture(); original = copy.deepcopy(history)
-    projected, stats = prepare_history(history, {'conversation_history_max_chars': 1000})
-    assert stats['after_chars'] < stats['before_chars'] * .6 and stats['archived_messages'] == 6
-    assert history == original and has_undo(projected, 'old')
-    assert [m['content'] for m in projected if m['role'] == 'user'] == [m['content'] for m in history if m['role'] == 'user']
-    for i, msg in enumerate(projected):
-        if msg.get('tool_calls'):
-            assert projected[i+1]['tool_call_id'] == msg['tool_calls'][0]['id']
-    assert all(any(m.get('content') == f'conclusion {i}' for m in projected) for i in range(5))
-
-
 def install_model(monkeypatch, script):
     fake, finished = FakeClient(script), threading.Event()
     original = webapp._run_turn
@@ -228,7 +194,7 @@ def test_legacy_undo_backfilled_before_next_request(ui, monkeypatch):
     ui.post(f'/api/conversations/{cid}/messages', json={'content': '重做'})
     assert done.wait(5) and has_undo(fake.seen[0], 'legacy-run')
     assert any('不是当前文件快照' in m.get('content', '') for m in fake.seen[0])
-    assert fake.seen[0][-1] == {'role': 'user', 'content': '重做'}
+    assert [m for m in fake.seen[0] if m['role'] == 'user'][-1] == {'role': 'user', 'content': '重做'}
 
 
 def test_projection_does_not_erase_persisted_transcript(ui, monkeypatch):
@@ -244,7 +210,7 @@ def test_projection_does_not_erase_persisted_transcript(ui, monkeypatch):
     with webapp._db() as db:
         saved = json.loads(db.execute('SELECT history_json FROM conversations WHERE id=?', (cid,)).fetchone()[0])
     assert len([m for m in saved if m['role'] == 'tool']) == 5
-    assert len([m for m in fake.seen[0] if m['role'] == 'tool']) == 2
+    assert len([m for m in fake.seen[0] if m['role'] == 'tool']) < 5  # the request is projected
     assert saved[-1]['content'] == 'new reply'
     trace = ui.get(f'/api/turns/{tid}/trace').json()
     assert trace['requests'][-1]['ok'] and trace['requests'][-1]['phase'] == 'end'
@@ -260,7 +226,7 @@ def test_repetition_resets_for_new_user_request(tmp_path):
     history += [{'role': 'assistant', 'content': 'done'}, {'role': 'user', 'content': '再列一次'}]
     result = run_agent('再列一次', LLM({'model': 'fake'}, client=client), Sandbox(tmp_path), {},
                        Console(quiet=True), history=history)
-    assert result.stop_reason == 'done'
+    assert result.stop_reason == 'answered'
 
 
 def test_submission_failure_releases_conversation(ui, monkeypatch):
@@ -295,9 +261,11 @@ def test_history_archival_preserves_write_receipt_without_misattributing_reused_
             {'id': 'reused-id', 'function': {'name': name, 'arguments': '{"path":"a.txt"}'}}]},
                     {'role': 'tool', 'tool_call_id': 'reused-id', 'content': content}]
     history += [{'role': 'assistant', 'content': 'done'}, {'role': 'user', 'content': 'new'}]
-    projected, stats = prepare_history(history, {'conversation_history_max_chars': 100, 'conversation_keep_full_turns': 0})
+    projected, stats = prepare_history(history, {'conversation_history_max_chars': 100})
     text = json.dumps(projected, ensure_ascii=False)
-    assert '已回收 a.txt' in text and 'x' * 100 not in text and stats['archived_messages'] == 4
+    # trash is a retired tool: its call is folded into a note, the read is archived.
+    assert '[旧版本工具记录] trash {\\"path\\":\\"a.txt\\"}' in text and 'x' * 100 not in text
+    assert 'read_file' not in text and stats['archived_messages'] == 2
 
 
 def test_immediate_undo_waits_for_completion_save(ui, monkeypatch, files):

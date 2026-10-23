@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from agent.policy import TaskPolicy
@@ -19,24 +19,33 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
+# The six conditions protocol v3 compiles (agent/intent.py TEMPLATES). Tasks
+# stored by protocol v2 may hold others; they are legacy, kept read-only.
+CONDITION_KINDS = ('evidence_valid', 'file_plan_verified', 'manual_review',
+                   'plan_ready', 'plan_applied', 'receipt_verified')
+RULE_PREDICATES = ('within', 'outside', 'extensions', 'max_count')
+LEGACY_NOTE = '这是旧版本（协议 v2）登记的任务，只读，不再核验；需要继续请新建任务'
+
+
 class CompletionCondition(StrictModel):
-    kind: Literal['path_exists', 'path_absent', 'directory_empty', 'sha256',
-                  'tool_success', 'evidence_valid', 'plan_ready', 'plan_applied',
-                  'receipt_verified', 'manual_review', 'files_placed', 'empty_directories_removed', 'file_plan_verified']
-    path: str = ''
+    kind: Literal[CONDITION_KINDS]
     reference: str = Field('', description='通常留空：本地把该目标的计划/回执/证据确定性绑定；仅引用已有对象时填精确 E/P/R/X 标识')
-    sha256: str = ''
-    tool: str = ''
-    arguments: dict[str, Any] = Field(default_factory=dict, description='tool_success 必须匹配的参数子集')
-    destination: str = Field('', description='files_placed 的目标目录；按原文件名归集执行前清单中的全部文件')
-    extensions: list[str] = Field(default_factory=list, description='files_placed 筛选后缀；空列表包含所有可见普通文件')
-    exclude_paths: list[str] = Field(default_factory=list)
-    recursive: bool = True
-    placement: Literal['flatten', 'preserve_tree', 'mapping'] = 'flatten'
-    placements: dict[str, str] = Field(default_factory=dict,
-        description='mapping 时为执行前源相对路径到最终目标路径，支持改名及多层目录，不可遗漏选定文件')
-    evaluation: Literal['current_state', 'execution_fact'] = Field('current_state',
-        description='当前状态必须持续满足；execution_fact 仅核验已执行的不可变回执，仍需单独声明最终位置条件')
+
+
+def is_legacy(task):
+    """A v2-era task: a condition, evaluation mode or rule v3 no longer verifies."""
+    return (any(c['kind'] not in CONDITION_KINDS or c.get('evaluation', 'current_state') != 'current_state'
+                for g in task.get('goals', []) for c in g['conditions'])
+            or any(r['predicate'] not in RULE_PREDICATES for c in task.get('constraints', []) for r in c.get('rules', [])))
+
+
+def normalized(task):
+    """Drop the empty v2 condition fields that older revisions stored, so unchanged
+    goals compare equal to their re-validated form. Legacy tasks stay as stored."""
+    if not task or is_legacy(task): return task
+    for g in task.get('goals', []):
+        g['conditions'] = [{k: c[k] for k in ('kind', 'reference') if k in c} for c in g['conditions']]
+    return task
 
 
 class Goal(StrictModel):
@@ -58,30 +67,22 @@ class Constraint(StrictModel):
 class OperationRule(StrictModel):
     effects: list[Effect] = Field(min_length=1)
     selector: Literal['source', 'destination'] = 'source'
-    predicate: Literal['within', 'outside', 'extensions', 'name_glob', 'empty_directory',
-                       'same_extension', 'max_count', 'content_unchanged']
+    predicate: Literal[RULE_PREDICATES]
     values: list[str] = Field(default_factory=list, max_length=30)
     limit: int | None = Field(None, ge=0)
     count_scope: Literal['task', 'run'] = Field('task', description='数量上限跨续做累计，或仅本轮')
 
     @model_validator(mode='after')
     def arguments_present(self):
-        if self.predicate in {'within', 'outside', 'extensions', 'name_glob'} and not self.values:
+        if self.predicate != 'max_count' and not self.values:
             raise ValueError('该约束需要 values')
         if self.predicate == 'max_count' and self.limit is None:
             raise ValueError('数量约束需要 limit')
-        path_predicates = {'within', 'outside', 'extensions', 'name_glob'}
-        if self.predicate in path_predicates:
+        if self.predicate != 'max_count':
             if 'create' in self.effects and self.selector == 'source':
                 raise ValueError('create 没有 source；路径约束必须 selector=destination，并与其他副作用规则分开')
             if 'trash' in self.effects and self.selector == 'destination':
                 raise ValueError('trash 没有用户目标 destination；请使用 selector=source')
-        if self.predicate in {'same_extension', 'content_unchanged'} and 'create' in self.effects:
-            raise ValueError('create 没有原内容，不能用于扩展名或内容保持约束')
-        if self.predicate == 'same_extension' and 'trash' in self.effects:
-            raise ValueError('trash 没有用户目标，不能用于 same_extension')
-        if self.predicate == 'empty_directory' and self.effects != ['trash']:
-            raise ValueError('empty_directory 仅用于 trash 源目录')
         return self
 
 
@@ -89,8 +90,6 @@ Constraint.model_rebuild()
 
 
 class TaskSubmission(StrictModel):
-    task_id: str | None = None
-    expected_revision: int | None = Field(None, ge=1)
     goals: list[Goal] = Field(min_length=1, max_length=30)
     read_roots: list[str] = Field(default_factory=lambda: ['.'], min_length=1, max_length=1000)
     write_roots: list[str] = Field(default_factory=list, max_length=1000)
@@ -105,8 +104,6 @@ class TaskSubmission(StrictModel):
         for items in (self.goals, self.constraints):
             if len({item.id for item in items}) != len(items):
                 raise ValueError('目标或约束 ID 重复')
-        if bool(self.task_id) != bool(self.expected_revision):
-            raise ValueError('修改已有任务必须同时提供 task_id 和 expected_revision')
         return self
 
 
@@ -228,7 +225,7 @@ class TaskStore:
                 (task_id, self.root, self.session)).fetchone()
         if not row:
             raise ValueError('任务不存在或不属于当前资料库/会话')
-        return json.loads(row['data_json'])
+        return normalized(json.loads(row['data_json']))
 
     def save_file_plan(self, plan):
         with self.connect() as db:
@@ -287,72 +284,27 @@ class TaskStore:
                     SELECT MAX(revision) FROM task_revisions WHERE id=t.id)
                 ORDER BY updated_at DESC, rowid DESC LIMIT ?''',
                 (self.root, self.session, limit)).fetchall()
-        return [json.loads(row['data_json']) for row in rows]
+        return [normalized(json.loads(row['data_json'])) for row in rows]
 
     def submit(self, spec: TaskSubmission, instruction: str, run_id: str):
+        """A new task; later changes go through preview_edit/apply_edit."""
+        data = spec.model_dump()
+        data.update(id='T' + uuid.uuid4().hex[:12], revision=1, source_messages=[dict(run_id=run_id, content=instruction)],
+                    status='running', observations=[], outputs=[], checks=[], reviews=[], references=[])
+        self.inherit_execution(data, None)
+        from agent.constraints import validate_spec
+        from safety.sandbox import Sandbox
+        validate_spec(data, Sandbox(self.root))
         with self.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            previous = None
-            if spec.task_id:
-                previous = self.get(spec.task_id)
-                if previous['revision'] != spec.expected_revision:
-                    raise ValueError('任务版本冲突，请读取最新状态后重新提交')
-            task_id = spec.task_id or 'T' + uuid.uuid4().hex[:12]
-            data = spec.model_dump(exclude={'task_id', 'expected_revision'})
-            if previous:
-                if previous.get('cancelled'):
-                    raise ValueError('任务已取消，恢复需通过任务编辑确认')
-                for goal in spec.goals:
-                    old = next((g for g in previous['goals'] if g['id'] == goal.id), None)
-                    if old and Goal.model_validate(old).model_dump() != goal.model_dump():
-                        raise ValueError('修改已有目标或完成条件必须先预览任务编辑并确认')
-                for constraint in spec.constraints:
-                    old = next((c for c in previous['constraints'] if c['id'] == constraint.id), None)
-                    if old and Constraint.model_validate(old).model_dump() != constraint.model_dump():
-                        raise ValueError('修改已有约束必须先预览任务编辑并确认')
-                for key in ('read_roots', 'write_roots', 'allowed_effects', 'unresolved_questions'):
-                    if key not in spec.model_fields_set:
-                        data[key] = previous[key]
-                if 'policy' not in spec.model_fields_set:
-                    data['policy'] = previous.get('policy', TaskPolicy().model_dump())
-                elif data['policy'] != previous.get('policy', TaskPolicy().model_dump()):
-                    raise ValueError('修改任务策略必须通过任务编辑确认')
-                # Patches add/update goals and add constraints. Relaxing an existing
-                # constraint requires a future explicit, reviewed editing protocol.
-                goals = {g['id']: g for g in previous['goals']}
-                goals.update({g['id']: g for g in data['goals']})
-                data['goals'] = list(goals.values())
-                constraints = {c['id']: c for c in data['constraints']}
-                constraints.update({c['id']: c for c in previous['constraints']})
-                data['constraints'] = list(constraints.values())
-                for key in ('read_roots', 'write_roots'):
-                    if any(not any(Path(p).is_relative_to(Path(r)) for r in previous[key])
-                           for p in data[key]):
-                        raise ValueError('扩大任务范围必须通过任务编辑确认')
-                if not set(data['allowed_effects']).issubset(previous['allowed_effects']):
-                    raise ValueError('增加允许副作用必须通过任务编辑确认')
-            data.update(id=task_id, revision=(previous['revision'] + 1 if previous else 1),
-                        source_messages=(previous['source_messages'] if previous else []) +
-                        [dict(run_id=run_id, content=instruction)], status='running',
-                        observations=[], outputs=[], checks=[], reviews=[])
-            data['references']=self.retained_references(previous)
-            data['observations']=self.retained_observations(previous, data, run_id)
-            self.inherit_execution(data, previous)
-            from agent.constraints import validate_spec
-            from safety.sandbox import Sandbox
-            validate_spec(data, Sandbox(self.root))
-            from agent.completion import capture_conditions
-            capture_conditions(data, Sandbox(self.root), previous)
-            from agent.completion import require_valid_snapshots
-            require_valid_snapshots(data)
             db.execute('''INSERT INTO task_revisions(id,revision,root,session,data_json)
-                VALUES(?,?,?,?,?)''', (task_id, data['revision'], self.root, self.session,
-                                      json.dumps(data, ensure_ascii=False)))
+                VALUES(?,?,?,?,?)''', (data['id'], 1, self.root, self.session, json.dumps(data, ensure_ascii=False)))
         return data
 
     def preview_edit(self, task_id, patch: TaskPatch):
         from copy import deepcopy
         before = self.get(task_id)
+        if is_legacy(before):
+            raise ValueError(LEGACY_NOTE)
         if before['revision'] != patch.expected_revision:
             raise ValueError('任务版本冲突')
         after = deepcopy(before)
@@ -375,15 +327,12 @@ class TaskStore:
                 value = getattr(patch, key)
                 after[key] = value.model_dump() if isinstance(value, BaseModel) else value
         # Reuse the creation schema for cardinality, IDs and nested validation.
-        fields = TaskSubmission.model_fields.keys() - {'task_id', 'expected_revision'}
+        fields = TaskSubmission.model_fields.keys()
         validated = TaskSubmission.model_validate({k: after[k] for k in fields if k in after})
-        after.update(validated.model_dump(exclude={'task_id', 'expected_revision'}))
+        after.update(validated.model_dump())
         from agent.constraints import validate_spec
         from safety.sandbox import Sandbox
         validate_spec(after, Sandbox(self.root))
-        from agent.completion import capture_conditions, require_valid_snapshots
-        capture_conditions(after, Sandbox(self.root), before)
-        require_valid_snapshots(after)
         changes = [dict(field=key, before=before.get(key), after=after[key]) for key in fields
                    if before.get(key, TaskPolicy().model_dump() if key == 'policy' else None) != after[key]]
         if before.get('cancelled', False) != after['cancelled']:
@@ -422,10 +371,6 @@ class TaskStore:
             data['references']=self.retained_references(before)
             data['observations']=self.retained_observations(before, data, run_id)
             self.inherit_execution(data, before)
-            from agent.completion import capture_conditions
-            capture_conditions(data, Sandbox(self.root), before)
-            from agent.completion import require_valid_snapshots
-            require_valid_snapshots(data)
             db.execute('INSERT INTO task_revisions(id,revision,root,session,data_json) VALUES(?,?,?,?,?)',
                        (data['id'], data['revision'], self.root, self.session, json.dumps(data, ensure_ascii=False)))
             db.execute("UPDATE task_edits SET status='applied' WHERE id=?", (edit_id,))

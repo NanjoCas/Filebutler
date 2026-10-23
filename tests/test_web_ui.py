@@ -89,7 +89,7 @@ def test_event_callback_reports_real_work_in_order(files):
     result = run_agent("读取", LLM({"model": "fake"}, client=FakeClient([
         [("read_file", {"path": "notes.md"})], "已读取。",
     ])), files, {}, Console(quiet=True), on_event=events.append)
-    assert result.stop_reason == "done"
+    assert result.stop_reason == "answered"
     assert [e["type"] for e in events] == ["llm_start", "llm_end", "tool_start", "tool_end", "llm_start", "llm_end"]
     assert events[2]["call_id"] == events[3]["call_id"]
     assert events[2]["args"] == {"path": "notes.md"} and events[3]["ok"]
@@ -101,7 +101,7 @@ def test_broken_status_observer_does_not_interrupt_agent(files):
         raise RuntimeError("display disconnected")
     result = run_agent("完成", LLM({"model": "fake"}, client=FakeClient(["完成"])), files,
                        {}, Console(quiet=True), on_event=broken)
-    assert result.final == "完成" and result.stop_reason == "done"
+    assert result.final == "完成" and result.stop_reason == "answered"
 
 
 def test_task_api_persists_revisions_and_isolates_conversations(ui, files):
@@ -110,41 +110,13 @@ def test_task_api_persists_revisions_and_isolates_conversations(ui, files):
     b = ui.post('/api/conversations').json()['id']
     store = TaskStore(files.root / '.oplog' / 'tasks.sqlite3', files.root, a)
     spec = TaskSubmission(goals=[dict(id='g', description='核对笔记',
-                                      conditions=[dict(kind='path_exists', path='notes.md')])])
+                                      conditions=[dict(kind='manual_review')])])
     task = store.submit(spec, '核对笔记', 'run-a')
     assert ui.get(f'/api/conversations/{a}/tasks').json()['items'][0]['id'] == task['id']
     assert ui.get(f'/api/conversations/{a}/tasks/{task["id"]}').json()['revision'] == 1
     assert ui.get(f'/api/conversations/{b}/tasks').json()['items'] == []
     assert ui.get(f'/api/conversations/{b}/tasks/{task["id"]}').status_code == 404
     assert ui.get('/api/conversations/missing/tasks').status_code == 404
-
-
-def test_web_v2_runs_through_controller_and_persists_verified_answer(ui, files, monkeypatch):
-    cfg = {**webapp._config(), 'local_runtime': True, 'task_runtime': True}
-    monkeypatch.setattr(webapp, '_config', lambda: dict(cfg))
-    task = dict(goals=[dict(id='count', description='统计文件',
-                            conditions=[dict(kind='tool_success', tool='inventory_files')])])
-    fake = FakeClient([[('set_task', task), ('inventory_files', {})], [('finish_task', {})]])
-    monkeypatch.setattr(webapp, 'LLM', lambda cfg: LLM({'model': 'fake'}, client=fake))
-    finished = threading.Event()
-    original_event = webapp._event
-    def notify(turn_id, event):
-        original_event(turn_id, event)
-        if event['type'] in {'completed', 'failed'}:
-            finished.set()
-    monkeypatch.setattr(webapp, '_event', notify)
-    cid = ui.post('/api/conversations').json()['id']
-    turn = ui.post(f'/api/conversations/{cid}/messages', json={'content': '统计文件'}).json()
-    assert finished.wait(5)
-    response = ui.get(f'/api/turns/{turn["turn_id"]}').json()
-    assert response['status'] == 'completed' and response['result']['stop_reason'] == 'needs_review'
-    assert len(fake.seen) == 2
-    assert any(e['type'] == 'task_updated' for e in response['events'])
-    tasks = ui.get(f'/api/conversations/{cid}/tasks').json()['items']
-    assert tasks[0]['status'] == 'needs_review'
-    conversation = ui.get(f'/api/conversations/{cid}').json()
-    assert '待核实' in conversation['messages'][-1]['content']
-    assert '最多两次查询' not in fake.seen[0][0]['content']
 
 
 def test_task_editor_api_previews_applies_and_reviews_without_model(ui, files):
@@ -169,42 +141,6 @@ def test_task_editor_api_previews_applies_and_reviews_without_model(ui, files):
     try:
         assert ui.post(base+'/edits',json=dict(expected_revision=2,cancel=True,reason='运行中修改')).status_code==409
     finally:webapp.ACTIVE_CONVERSATIONS.discard(cid)
-
-
-def test_operation_report_survives_reload_with_safe_previewable_details(ui, files, monkeypatch):
-    cfg={**webapp._config(),'local_runtime':True,'task_runtime':True,'confirm':'never'}
-    monkeypatch.setattr(webapp,'_config',lambda:dict(cfg))
-    (files.root/'文献/nested').mkdir();(files.root/'文献/nested/a.pdf').write_bytes(b'A')
-    task=dict(goals=[dict(id='g',description='归集 PDF',conditions=[
-        dict(kind='files_placed',path='文献',destination='文献',extensions=['pdf'])])],
-        write_roots=['文献'],allowed_effects=['move'])
-    fake=FakeClient([[('set_task',task),('inventory_files',{'path':'文献'}),
-        ('move',{'src':'文献/nested/a.pdf','dst_dir':'文献'}),('inventory_files',{'path':'文献'}),
-        ('finish_task',{'summary':'[查看文件](sandbox:/文献/a.pdf)\n\n<script>alert(1)</script>'})]])
-    monkeypatch.setattr(webapp,'LLM',lambda cfg:LLM({'model':'fake'},client=fake))
-    finished=threading.Event();original=webapp._event
-    def notify(tid,event):
-        original(tid,event)
-        if event['type'] in {'completed','failed'}:finished.set()
-    monkeypatch.setattr(webapp,'_event',notify)
-    cid=ui.post('/api/conversations').json()['id']
-    tid=ui.post(f'/api/conversations/{cid}/messages',json={'content':'归集 PDF'}).json()['turn_id']
-    assert finished.wait(5)
-    turn=ui.get(f'/api/turns/{tid}').json()
-    assert turn['result']['stop_reason']=='done'
-    webapp.TURN_STATES.clear()  # Reload solely from persisted state.
-    saved=ui.get(f'/api/conversations/{cid}').json()
-    reply=saved['messages'][-1]
-    assert reply['content']==turn['final'] and '已移动 1 个文件' in reply['content']
-    assert '<table>' not in reply['html'] and len(reply['content'])<120
-    sections=reply['report']['sections']
-    assert sum(s['title'].startswith('最终统计') for s in sections)==1
-    assert any('<table>' in s['html'] for s in sections)
-    assert any('data-file-path="文献/a.pdf"' in s['html'] for s in sections)
-    assert all('<script>' not in s['html'] for s in sections)
-    with webapp._db() as db:
-        history=json.loads(db.execute('SELECT history_json FROM conversations WHERE id=?',(cid,)).fetchone()[0])
-    assert all('report' not in message for message in history)
 
 
 def test_historical_verbose_report_is_only_compacted_for_display(ui):
@@ -284,9 +220,18 @@ def test_api_reports_model_start_before_completion_and_renders_saved_markdown(ui
     assert any(m["role"] == "tool" for m in history)
 
 
+def make_folder_plan(final):
+    """A v3 run whose file plan (new folder "blocked") stops at the confirmation."""
+    from tests.helpers import Replay, call, step
+    return Replay([step(call('start_task', dict(summary='建目录', parts=[dict(kind='organize', description='新建 blocked')])),
+                        call('prepare_file_plan', dict(description='新建 blocked', actions=[dict(effect='create', destination='blocked')]),
+                             alias='Xaaaaaaaaaaaa')),
+                   step(call('execute_file_plan', dict(plan_id='Xaaaaaaaaaaaa')))], final=final)
+
+
 def test_ui_confirmation_remains_interactive_with_live_steps(ui, monkeypatch, files):
     waiting, finished = threading.Event(), threading.Event()
-    fake = FakeClient([[("make_dir", {"path": "blocked"})], "操作已拒绝。"])
+    fake = make_folder_plan("操作已拒绝。")
     monkeypatch.setattr(webapp, "LLM", lambda cfg: LLM({"model": "fake"}, client=fake))
     original_event = webapp._event
     def notify(turn_id, event):
@@ -360,7 +305,7 @@ def test_delete_unknown_conversation_is_404(ui):
 
 def test_delete_refuses_running_or_pending_confirmation(ui, monkeypatch, files):
     waiting, finished = threading.Event(), threading.Event()
-    fake = FakeClient([[("make_dir", {"path": "blocked"})], "操作已拒绝。"])
+    fake = make_folder_plan("操作已拒绝。")
     monkeypatch.setattr(webapp, "LLM", lambda cfg: LLM({"model": "fake"}, client=fake))
     original_event = webapp._event
     def notify(turn_id, event):

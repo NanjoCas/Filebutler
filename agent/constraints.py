@@ -1,12 +1,10 @@
 """Declarative operation predicates, evaluated locally before each mutation."""
 from __future__ import annotations
 
-import fnmatch
 import json
 import os
 from pathlib import Path
 
-from agent.artifacts import digest
 from agent.policy import active_goals, applies
 
 
@@ -20,25 +18,6 @@ def validate_spec(task, sb):
         if any(p.startswith('.') for p in Path(root).parts if p != '.'):
             raise ValueError('任务范围不能包含内部或隐藏目录')
         sb.path(root, exact=True)
-    for goal in task['goals']:
-        for c in goal['conditions']:
-            if c.get('evaluation', 'current_state') == 'execution_fact' and c['kind'] not in {'plan_applied', 'receipt_verified'}:
-                raise ValueError('execution_fact 仅支持有本地执行回执的条件')
-            if c['kind'] in {'path_exists', 'path_absent', 'directory_empty', 'sha256', 'files_placed', 'empty_directories_removed'}:
-                if not c['path'] or not within(sb, c['path'], task['read_roots']):
-                    raise ValueError('完成条件路径超出读取范围')
-            if c['kind'] == 'files_placed':
-                if c.get('placement') == 'mapping':
-                    if not c.get('placements') or any(not within(sb, dst, task['read_roots']) for dst in c['placements'].values()):
-                        raise ValueError('路径映射必须提供读取范围内的完整目标')
-                elif not c.get('destination') or not within(sb, c['destination'], task['read_roots']):
-                    raise ValueError('全量归集必须提供读取范围内的 destination')
-            for excluded in c.get('exclude_paths', []): sb.path(excluded, exact=True)
-            if c['kind'] == 'tool_success':
-                from tools.registry import TOOLS
-                tool = TOOLS.get(c['tool'])
-                if tool and tool.writes:
-                    raise ValueError('写操作不能仅以 tool_success 作为完成条件；全量归集用 files_placed，空目录清理用 empty_directories_removed，或使用路径/哈希/执行回执条件')
     for constraint in task['constraints']:
         if set(constraint.get('goal_ids', [])) - {g['id'] for g in task['goals']}:
             raise ValueError('约束引用了不存在的目标')
@@ -87,7 +66,7 @@ def validate_operations(runtime, operations):
     if runtime.store.get(task['id'])['revision'] != task['revision']:
         raise ValueError('任务版本已改变，旧操作未执行')
     operations = list({(o['effect'], o.get('source'), o.get('destination')): o for o in operations}.values())
-    from agent.completion import attribute, enforce_cleanup_condition, require_receipt_producers
+    from agent.completion import attribute, require_receipt_producers
     goal_ids = active_goals(runtime)
     fallback = tuple(getattr(runtime, '_producers', ()) or ())
     # Each action carries its own goals; one step label never stands for all uses.
@@ -99,7 +78,6 @@ def validate_operations(runtime, operations):
         producers = tuple(op.get('producers') or fallback)
         bound.append((op, attribute(task, sb, op, candidates, producers), producers))
     require_receipt_producers(task, sb, bound)
-    enforce_cleanup_condition(task, sb, bound)
     for op, op_goals, _ in bound:
         constraints = [c for c in task['constraints'] if applies(c, op_goals)]
         # Text-only limits cannot be checked here. They are shown on the write's
@@ -151,9 +129,7 @@ def validate_operations(runtime, operations):
                         "若此上限来自用户要求，请向用户说明，不要自行放宽")
                 continue
             for op in selected:
-                members = _members(sb, op) if kind in {'within', 'outside', 'extensions', 'name_glob', 'content_unchanged'} else [op]
-                for member in members:
-                    source, dest = member.get('source'), member.get('destination')
+                for member in _members(sb, op):
                     path = member.get(rule['selector'])
                     ok = True
                     if kind in {'within', 'outside'}:
@@ -164,22 +140,8 @@ def validate_operations(runtime, operations):
                         ok = path is not None
                         if path and not sb.path(path, exact=True).is_dir():
                             ok = Path(path).suffix.lower().lstrip('.') in {v.lower().lstrip('.') for v in rule['values']}
-                    elif kind == 'name_glob':
-                        ok = path is not None and any(fnmatch.fnmatchcase(Path(path).name, v) for v in rule['values'])
-                    elif kind == 'empty_directory':
-                        p = sb.path(source, exact=True) if source else None
-                        ok = p is not None and p.is_dir() and not any(p.iterdir())
-                    elif kind == 'same_extension':
-                        ok = bool(source and dest) and Path(source).suffix.lower() == Path(dest).suffix.lower()
-                    elif kind == 'content_unchanged' and source:
-                        p = sb.path(source, exact=True)
-                        if p.is_file():
-                            actual = digest(p)
-                            if source in runtime._content_fingerprints and runtime._content_fingerprints[source] != actual:
-                                raise ValueError('确认期间源文件内容改变，操作未执行')
-                            runtime._content_fingerprints.setdefault(source, actual)
                     if not ok:
-                        raise ValueError(f"约束 {constraint['id']} 未满足：{kind}，对象 {path or source or dest}；"
+                        raise ValueError(f"约束 {constraint['id']} 未满足：{kind}，对象 {path or member.get('source') or member.get('destination')}；"
                                          f"规则含义：{rule_meaning(rule)}")
     return bound
 
@@ -194,11 +156,7 @@ def rule_meaning(rule):
     values = '、'.join(rule.get('values', []))
     return {'within': f'{who}必须位于 {values} 之内',
             'outside': f'{who}不得位于 {values} 之内',
-            'extensions': f'{who}的后缀必须是 {values}',
-            'name_glob': f'{who}的文件名必须匹配 {values}（只比较文件名，不含目录）',
-            'empty_directory': '只能回收空文件夹',
-            'same_extension': '移动或改名后后缀不变',
-            'content_unchanged': '文件内容不得改变'}.get(rule['predicate'], rule['predicate'])
+            'extensions': f'{who}的后缀必须是 {values}'}.get(rule['predicate'], rule['predicate'])
 
 
 def op_key(effect, source=None, destination=None):
