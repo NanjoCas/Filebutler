@@ -20,7 +20,7 @@ from pydantic import Field, model_validator
 from agent.artifacts import digest, signature, label
 from agent import choices
 from agent.completion import selected, walk_selection, is_package, attribute, claimed
-from agent.task import StrictModel, TaskSubmission
+from agent.task import StrictModel
 
 
 class Action(StrictModel):
@@ -328,7 +328,10 @@ def _key(path):
 
 
 def prepare(runtime, args):
-    sb = runtime.sb
+    """A plan for the current task (the controller requires start_task, or a task_id to continue)."""
+    sb, task = runtime.sb, runtime.current
+    if not task:
+        raise ValueError('文件计划必须属于已登记的任务')
     actions = [a.model_dump() for a in args.actions]
     classification = None
     if args.classification_plan_id:
@@ -346,10 +349,9 @@ def prepare(runtime, args):
         sel = args.selection.model_dump()
         if sel['effect'] == 'move' and not sel['destination']:
             raise ValueError('移动选择集需要 destination 目标目录')
-        if runtime.current:
-            from agent.constraints import within
-            if not within(sb, sel['path'], runtime.current['read_roots']):
-                raise ValueError('选择集超出已有任务读取范围：'+sel['path'])
+        from agent.constraints import within
+        if not within(sb, sel['path'], task['read_roots']):
+            raise ValueError('选择集超出已有任务读取范围：'+sel['path'])
         files, _, _, packages = walk_selection(sb, sel)
         for src in files + packages:  # a package (.pages, .app) moves whole
             dst = None
@@ -361,7 +363,7 @@ def prepare(runtime, args):
     chosen = getattr(runtime, 'chosen_option', None)
     if chosen is not None:
         _within_choice(runtime, chosen, actions)  # before any other check, so the reason is this one
-    if not actions and args.selection and not args.actions and runtime.current:
+    if not actions and args.selection and not args.actions:
         return _empty_selection(runtime, args)
     if not actions or len(actions) > 500:
         raise ValueError('计划必须包含 1–500 项明确操作，请缩小选择范围')
@@ -372,11 +374,10 @@ def prepare(runtime, args):
     for action in actions:
         effect, src, dst = action['effect'], action['source'], action['destination']
         src = on_disk(sb, runtime._resolve(src)) if src else None
-        if runtime.current:
-            from agent.constraints import within
-            for value in (src, dst):
-                if value and not within(sb, value, runtime.current['read_roots']):
-                    raise ValueError('计划对象超出已有任务读取范围：'+value)
+        from agent.constraints import within
+        for value in (src, dst):
+            if value and not within(sb, value, task['read_roots']):
+                raise ValueError('计划对象超出已有任务读取范围：'+value)
         source = _visible(sb, src, write=True) if src else None
         target = _visible(sb, dst, write=True) if dst else None
         if source is not None and (source.exists() or source.is_symlink()):
@@ -469,26 +470,8 @@ def prepare(runtime, args):
     for i, row in enumerate(steps): row['id'] = f'{pid}:{i}'
     producers = ['file_plans'] + (['classification_plans'] if classification else [])
     # For an existing task, bindings are explicit or locally derived; neither grants access.
-    task = runtime.current
-    additions = {}
-    if task:
-        goal_ids = _attribute_steps(runtime, task, steps, args.goal_ids, producers)
-        additions = _additions(runtime, task, steps)
-    else:
-        if args.goal_ids: raise ValueError('新计划的目标 ID 由本地生成，请省略 goal_ids')
-        goal_ids = ['files']
-        roots = list(dict.fromkeys(p for s in steps for p in (s['source'], s['destination'] if s['effect'] != 'trash' else None) if p))
-        spec = TaskSubmission.model_validate(dict(
-            goals=[dict(id='files', description=args.description, semantic_review=args.semantic_review or bool(classification),
-                        conditions=[dict(kind='file_plan_verified', reference=pid)])],
-            read_roots=roots or ['.'], write_roots=roots,
-            allowed_effects=sorted({s['effect'] for s in steps})))
-        task = runtime.store.submit(spec, runtime.instruction, runtime.run_id)
-        runtime.current = task
-        task['compiled_file_plan'] = pid
-        runtime.adopt_observations()
-        for row in steps: row['goal_ids'] = goal_ids
-        runtime.store.checkpoint(task)
+    goal_ids = _attribute_steps(runtime, task, steps, args.goal_ids, producers)
+    additions = _additions(runtime, task, steps)
     payload = dict(task_id=task['id'], revision=task['revision'], goal_ids=goal_ids,
                    description=args.description, steps=steps, classification=classification)
     if additions: payload['scope_additions'] = additions

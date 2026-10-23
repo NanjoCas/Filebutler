@@ -72,12 +72,12 @@ def test_recycle_the_occupant_then_take_its_name(tmp_path):
     [dict(effect='rename', source='A.txt', destination='B.txt'), dict(effect='rename', source='B.txt', destination='C.txt'),
      dict(effect='rename', source='C.txt', destination='A.txt')],
 ])
-def test_swap_or_cycle_is_refused_before_any_task_or_write(tmp_path, actions):
+def test_swap_or_cycle_is_refused_before_any_plan_or_write(tmp_path, actions):
     write(tmp_path, {'A.txt': 'a', 'B.txt': 'b', 'C.txt': 'c'})
     r = runtime(tmp_path)
     with pytest.raises(ValueError, match='互相依赖'):
         prepare(r, proposal(actions=actions))
-    assert not r.store.recent() and names(tmp_path) == ['A.txt', 'B.txt', 'C.txt']
+    assert not r.current.get('file_plan_bindings') and names(tmp_path) == ['A.txt', 'B.txt', 'C.txt']
 
 
 def test_occupied_target_not_vacated_is_still_refused(tmp_path):
@@ -155,7 +155,7 @@ def test_interrupted_case_only_rename_is_reconciled_from_the_journal(tmp_path, m
     monkeypatch.setattr(r.store, 'save_file_plan', crash_after_journal)
     with pytest.raises(KeyboardInterrupt):
         execute(r, plan['id'], OpLog(r.sb, 'one'), Confirmer('never'))
-    new = runtime(tmp_path, run='two')
+    new = runtime(tmp_path, run='two', task=False)
     assert execute(new, plan['id'], OpLog(new.sb, 'two'), Confirmer('never')).startswith('OK')
     assert names(tmp_path) == ['a.jpg'] and not (tmp_path/'.oplog/two.jsonl').exists()
     assert len([json.loads(x) for x in (tmp_path/'.oplog/one.jsonl').read_text().splitlines()]) == 1
@@ -176,7 +176,7 @@ def test_resume_after_first_step_of_a_chain(tmp_path, monkeypatch):
         execute(r, plan['id'], OpLog(r.sb, 'one'), Confirmer('never'))
     assert names(tmp_path) == ['A.txt', 'C.txt']
     monkeypatch.setattr(atomic, 'rename_no_replace', original)
-    new = runtime(tmp_path, run='two')
+    new = runtime(tmp_path, run='two', task=False)
     assert execute(new, plan['id'], OpLog(new.sb, 'two'), Confirmer('never')).startswith('OK')
     assert (tmp_path/'B.txt').read_text() == 'a' and (tmp_path/'C.txt').read_text() == 'b'
 

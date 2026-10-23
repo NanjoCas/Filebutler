@@ -395,7 +395,6 @@ class TaskStore:
         for b in data['blockers']:
             if b.get('status', 'open') == 'open':
                 b.update(status='superseded', resolved_by=f"任务已修订为第 {data['revision']} 版")
-        if previous.get('compiled_file_plan'): data['compiled_file_plan'] = previous['compiled_file_plan']
         data['steps'] = deepcopy(previous.get('steps', []))
         data['operation_history'] = deepcopy(previous.get('operation_history', []) + previous.get('operations', []))
         data['operations'] = []
