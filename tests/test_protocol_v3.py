@@ -273,6 +273,81 @@ def test_only_the_named_part_is_completed_by_its_plan(tmp_path):
     assert checks == {'g1': True, 'g2': False} and result.runtime['task_status'] != 'completed'
 
 
+ARCHIVE_AND_RENAME = [dict(effect='move', source='Inbox/a.txt', destination='Archive', part='g1'),
+                      dict(effect='rename', source='Inbox/b.txt', destination='Inbox/c.txt', part='g2')]
+
+
+def two_part_runtime(tmp_path, parts=TWO_ORGANIZE):
+    from agent.artifacts import ArtifactStore
+    from safety.sandbox import Sandbox
+    files_fixture(tmp_path)
+    sb = Sandbox(tmp_path); sb.artifacts = ArtifactStore(sb)
+    r = TaskRuntime('归档 a，并把 b 改名为 c.txt', {}, sb, 'one'); sb.runtime = r
+    r.dispatch('start_task', json.dumps(dict(summary='s', parts=parts)), sb, None, None)
+    return r, sb
+
+
+def part_checks(r, sb):
+    return {c['goal_id']: c for c in verify_task(r.current, sb)}
+
+
+def test_one_plan_proves_each_part_by_its_own_actions(tmp_path):
+    from agent.file_plans import PrepareFilePlan, prepare, execute
+    r, sb = two_part_runtime(tmp_path)
+    plan = prepare(r, PrepareFilePlan(description='归档并改名', actions=ARCHIVE_AND_RENAME))
+    assert {s['source']: s['goal_ids'] for s in plan['payload']['steps']} == {'Inbox/a.txt': ['g1'], 'Inbox/b.txt': ['g2']}
+    execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
+    checks = part_checks(r, sb)
+    assert checks['g1']['passed'] and checks['g2']['passed']
+    # Undoing one part's action fails that part only.
+    (tmp_path / 'Inbox/c.txt').rename(tmp_path / 'Inbox/b.txt')
+    checks = part_checks(r, sb)
+    assert checks['g1']['passed'] and not checks['g2']['passed']
+
+
+def test_an_interrupted_plan_settles_each_part_by_its_own_steps(tmp_path, monkeypatch):
+    from agent import file_plans
+    r, sb = two_part_runtime(tmp_path)
+    plan = file_plans.prepare(r, file_plans.PrepareFilePlan(description='归档并改名', actions=ARCHIVE_AND_RENAME))
+    run_step = file_plans._run_step
+    def interrupted(runtime, plan, s, oplog):
+        if s['source'] == 'Inbox/b.txt': raise ValueError('模拟中断')
+        run_step(runtime, plan, s, oplog)
+    monkeypatch.setattr(file_plans, '_run_step', interrupted)
+    with pytest.raises(ValueError, match='模拟中断'):
+        file_plans.execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
+    assert (tmp_path / 'Archive/a.txt').is_file() and (tmp_path / 'Inbox/b.txt').is_file()
+    checks = part_checks(r, sb)
+    assert checks['g1']['passed']
+    assert not checks['g2']['passed'] and '部分执行后未完成' in checks['g2']['conditions'][0]['detail']
+    # The executed steps survive a revision that leaves g1 unchanged.
+    task = r.store.get(r.current['id'])
+    edit = r.store.preview_edit(task['id'], compile_revision(ReviseTask(
+        task_id=task['id'], expected_revision=task['revision'], reason='补充：不回收', limits=dict(no_effects=['trash'])), task))
+    r.current = r.store.apply_edit(edit['id'], '不回收', 'two', actor='test')
+    checks = part_checks(r, sb)
+    assert checks['g1']['passed'] and not checks['g2']['passed']
+
+
+def test_a_part_must_be_one_the_plan_can_prove(tmp_path):
+    from agent.file_plans import PrepareFilePlan, prepare
+    r, sb = two_part_runtime(tmp_path, TWO_ORGANIZE + [dict(id='f', kind='find', description='找报告')])
+    with pytest.raises(ValueError, match='部分 f 的完成条件'):
+        prepare(r, PrepareFilePlan(description='m', actions=[dict(ARCHIVE_A[0], part='f')]))
+    with pytest.raises(ValueError, match='不存在的部分：nope'):
+        prepare(r, PrepareFilePlan(description='m', actions=[dict(ARCHIVE_A[0], part='nope')]))
+
+
+def test_untagged_actions_serve_the_parts_no_action_names(tmp_path):
+    from agent.file_plans import PrepareFilePlan, prepare
+    flatten_fixture(tmp_path)
+    r, sb = tree_runtime(tmp_path)
+    plan = prepare(r, PrepareFilePlan(description='平铺并回收', selection=MOVE_ALL,
+                                      actions=[dict(effect='trash', source='文献', include_metadata=True, part='organize_2')]))
+    owners = {s['effect']: s['goal_ids'] for s in plan['payload']['steps']}
+    assert owners == {'move': ['organize_1'], 'trash': ['organize_2']}
+
+
 def test_unstarted_plan_is_rebased_after_a_revision(tmp_path):
     files_fixture(tmp_path)
     session = Session(tmp_path)

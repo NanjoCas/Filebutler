@@ -42,10 +42,22 @@ def _later(receipts, pid):
             for s in r['payload']['steps'] if s['id'] in r.get('progress', {})]
 
 
+def _goal_steps(plan, goal_id):
+    """The steps attributed to this goal; a parent directory serves its actions' goals."""
+    return {s['id'] for s in plan['payload']['steps'] if goal_id in (s.get('goal_ids') or plan['payload']['goal_ids'])}
+
+
 def verify_bound_plans(task, goal_id, condition, sb):
-    """file_plan_verified: an explicit X, or every plan locally bound to this goal."""
+    """file_plan_verified: an explicit X, or this goal's own steps in the plans bound to it.
+
+    A plan serving several goals proves each one only by the steps attributed to
+    it, so one goal's finished steps pass even when another goal's steps in the
+    same plan stopped; a goal with no executed step of its own does not pass.
+    """
     from agent.file_plans import verify_plan
     receipts = task.get('file_plan_receipts', {})
+    # Plans that stopped midway keep their executed steps; a completed receipt supersedes them.
+    executed = {**task.get('file_plan_partials', {}), **receipts}
     bindings = task.get('file_plan_bindings', {})
     if condition.get('reference'):
         plan = receipts.get(condition['reference'])
@@ -53,21 +65,35 @@ def verify_bound_plans(task, goal_id, condition, sb):
             return False, '尚无此计划的完整执行回执：'+condition['reference']
         return verify_plan(plan, sb, later=_later(receipts, condition['reference']))
     bound = [pid for pid, b in bindings.items() if goal_id in b['goal_ids']]
-    done = [pid for pid in bound if pid in receipts]
-    if not done:
-        waiting = [pid for pid in bound if pid not in receipts]
+    # A step a later plan of this task carried out counts as done.
+    covered = {_step_key(s) for p in executed.values() for s in p['payload']['steps'] if s['id'] in p.get('progress', {})}
+    checked, waiting = 0, []
+    for pid in bound:
+        plan = executed.get(pid)
+        if plan is None:
+            waiting.append(pid)
+            continue
+        if plan['payload'].get('empty_selection'):
+            ok, detail = verify_plan(plan, sb)
+            if not ok: return False, detail
+            checked += 1
+            continue
+        mine = _goal_steps(plan, goal_id)
+        if not mine: continue
+        if plan.get('inflight') in mine:
+            return False, f"计划 {pid} 的一项操作中断，结果不明：{plan['inflight']}"
+        missing = [s for s in plan['payload']['steps'] if s['id'] in mine and s['id'] not in plan['progress']
+                   and _step_key(s) not in covered]
+        if missing:
+            return False, f'计划 {pid} 部分执行后未完成：'+'、'.join(str(s['source'] or s['destination']) for s in missing[:3])
+        ok, detail = verify_plan(plan, sb, partial=True, later=_later(executed, pid),
+                                 only=mine & set(plan['progress']))
+        if not ok: return False, detail
+        checked += 1
+    if not checked:
         return False, ('已准备的计划尚未执行完成：'+'、'.join(waiting[:3]) if waiting
                        else '本目标尚无已执行的文件计划')
-    for pid in done:
-        ok, detail = verify_plan(receipts[pid], sb, later=_later(receipts, pid))
-        if not ok: return False, detail
-    # A started plan that stopped midway must be finished by a later bound plan.
-    covered = {_step_key(s) for pid in done for s in receipts[pid]['payload']['steps']}
-    for pid in bound:
-        missing = [k for k in bindings[pid].get('pending', []) if tuple(k) not in covered]
-        if pid not in receipts and missing:
-            return False, f'计划 {pid} 部分执行后未完成：'+'、'.join(str(k[1] or k[2]) for k in missing[:3])
-    return True, f"本目标 {len(done)} 个文件计划的位置与内容核验通过"
+    return True, f"本目标在 {checked} 个文件计划中的操作，位置与内容核验通过"
 
 
 def _followed(task, receipt, path):

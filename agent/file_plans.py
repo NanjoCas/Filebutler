@@ -30,6 +30,7 @@ class Action(StrictModel):
     include_metadata: bool = Field(False, description='仅 trash 文件夹：同意连同其中的系统元数据（.DS_Store 等）一起回收')
     include_hidden: list[str] = Field(default_factory=list, max_length=20,
         description='仅 trash 文件夹：用户已通过 ask_user 同意一起回收的其他隐藏文件，逐个写出完整路径')
+    part: str = Field('', description='此动作完成的部分 ID；一个计划完成多个同类部分时填写')
 
     @model_validator(mode='after')
     def endpoints(self):
@@ -427,7 +428,8 @@ def prepare(runtime, args):
                     dirs.setdefault(sb.rel(p), dict(effect='create', source=None, destination=sb.rel(p), snapshot=None))
         if effect != 'create':
             if effect == 'trash': dst = f'.trash/{pid}_{len(steps)}_{source.name}'
-            steps.append(dict(effect=effect, source=src, destination=dst, snapshot=snap))
+            steps.append(dict(effect=effect, source=src, destination=dst, snapshot=snap,
+                              **({'part': action['part']} if action.get('part') else {})))
     # A folder recycled whole carries its nested folders: a separate trash of one
     # of them is the same effect, merged. Recycled folders go last, after the
     # moves that empty them.
@@ -767,15 +769,25 @@ def _attribute_steps(runtime, task, steps, requested, producers):
     known = {g['id'] for g in task['goals']}
     if set(requested) - known:
         raise ValueError('goal_ids 引用了任务中不存在的目标：'+'、'.join(sorted(set(requested) - known)))
-    candidates = requested or [g['id'] for g in task['goals']]
-    explicit = bool(requested) or len(candidates) == 1
+    named = {row['part'] for row in steps if row.get('part')}
+    if named - known:
+        raise ValueError('part 引用了任务中不存在的部分：'+'、'.join(sorted(named - known)) + '。当前部分：' + intent.parts_text(task))
+    candidates = list(dict.fromkeys(requested + sorted(named))) if requested else [g['id'] for g in task['goals']]
+    # An action naming its part serves that part alone; the others serve the plan's remaining parts.
+    rest = [g for g in candidates if g not in named] or candidates
+    explicit = bool(requested) or len(rest) == 1
     unresolved, shared = [], []
     for row in steps:
         if row['effect'] == 'create': continue
         op = dict(effect=row['effect'], source=row['source'],
                   destination=row['destination'] if row['effect'] != 'trash' else None)
-        served = claimed(task, runtime.sb, op, candidates, producers)
-        row['goal_ids'] = served or list(candidates)
+        if row.get('part'):
+            if not claimed(task, runtime.sb, op, [row['part']], producers):
+                raise ValueError(f"部分 {row['part']} 的完成条件不能由文件计划的 {row['effect']} 满足：{row['source']}")
+            row['goal_ids'] = [row['part']]
+            continue
+        served = claimed(task, runtime.sb, op, rest, producers)
+        row['goal_ids'] = served or list(rest)
         if not explicit and not served:
             unresolved.append(row['source'])
         # Parts with the same condition all "claim" an action; one plan proving
@@ -784,7 +796,8 @@ def _attribute_steps(runtime, task, steps, requested, producers):
             shared.append(row['source'])
     if shared:
         raise ValueError('以下动作可能属于多个部分，本地无法确定是哪一个：' + '、'.join(shared[:8]) +
-                         '；请在 goal_ids 写明本计划完成的部分。当前部分：' + intent.parts_text(task))
+                         '；请在 goal_ids 写明本计划完成的部分（一个计划完成多个部分时，在动作上写 part）。当前部分：'
+                         + intent.parts_text(task))
     for row in steps:
         if row['effect'] != 'create': continue
         # A parent directory serves the actions placed inside it.
@@ -1086,6 +1099,7 @@ def _finish_plan(runtime, plan, task):
             created=[s['destination'] for s in plan['payload']['steps'] if s['effect']=='create'], error='')
         artifacts._save()
     runtime.current.setdefault('file_plan_receipts', {})[plan_id] = copy.deepcopy(plan)
+    runtime.current.get('file_plan_partials', {}).pop(plan_id, None)
     _binding(runtime.current, plan)['pending'] = []
     runtime.store.checkpoint(runtime.current)
     rebased = f"（任务已修订，原计划 {plan['rebased_from']} 已按第 {task['revision']} 版重新生成）" if plan.get('rebased_from') else ''
@@ -1103,6 +1117,8 @@ def _blocked(runtime, plan, exc):
         from agent.verifier import _step_key
         _binding(runtime.current, plan)['pending'] = [
             list(_step_key(s)) for s in plan['payload']['steps'] if s['id'] not in plan['progress']]
+        # Each goal is verified by its own executed steps (verifier.verify_bound_plans).
+        runtime.current.setdefault('file_plan_partials', {})[plan['id']] = copy.deepcopy(plan)
     # The controller records the blocker with this plan as its object.
     runtime.store.checkpoint(runtime.current)
     raise ValueError(str(exc)) from exc
@@ -1162,8 +1178,9 @@ def _handed_on(plan, step, later):
     return False
 
 
-def verify_plan(plan, sb, partial=False, later=()):
-    """``later``: executed steps of the task's other plans; see _handed_on."""
+def verify_plan(plan, sb, partial=False, later=(), only=None):
+    """``later``: executed steps of the task's other plans; see _handed_on.
+    ``only``: check just these step IDs (one goal's share of the plan)."""
     sel = plan['payload'].get('empty_selection')
     if sel:
         count = _selection_count(sb, sel)
@@ -1181,6 +1198,7 @@ def verify_plan(plan, sb, partial=False, later=()):
         return rel
     refilled = [sb.path(x['destination'], exact=True) for x in [*done, *later] if x['effect'] != 'trash']
     for s in done:
+        if only is not None and s['id'] not in only: continue
         if s['effect'] == 'trash' and (sb.root/'.trash').is_symlink():
             raise ValueError('回收区不能是符号链接')
         if s['effect'] != 'trash' and _handed_on(plan, s, later):
