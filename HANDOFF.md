@@ -8,7 +8,8 @@
 
 - **2026-10-23 起只有协议 v3。** v2 协议、旧控制器（LocalRuntime）、自检、上下文压缩、单步写工具（move/rename/make_dir/trash）、apply_classification 和旧评测 runner 已退役，代码保留在本地标签 `archive-v2-legacy-20261023`（未推送）。删掉的测试和覆盖缺口见 `docs/v2-retirement-coverage-2026-10-23.md`。
 - 模型可见的提示 + 工具定义有绝对上限 31,311 字符，只减不增（`tests/test_protocol_v3.py` 的 `PROMPT_CAP`）。
-- 离线测试 391 passed（2026-10-23，v2 退役后；退役前 699）。
+- 离线测试 395 passed（2026-10-23，v2 退役后；退役前 699）。
+- **2026-10-23 `revise_task` 权限重算**（`43b884e`）：修改任务后，允许操作和写入范围按修改后的全部部分与限制重新推导（`agent/intent.py` 的 `authority`），不再只在新增写入部分时叠加。修复前，用户确认放宽"不许回收"后回收仍被拦；替换或删除部分后旧范围仍保留。第 32 轮真实复验 8/8（见第 7 节）。
 - **第 20 轮：两套盲测各 3 次 + v2 对照**：v3 47/48 = 97.9%（95% 区间 89.1%–99.6%），v2 35/48 = 72.9%（59.0%–83.4%）；费用 ¥0.575 对 ¥0.978。
 - 其余真实复验（DeepSeek `deepseek-flash`，每组 1 次）：
   - 第 08 轮：回归 + holdout 13/13，¥0.23。同一套场景的 v2（第 05 轮）是 11/13、¥0.52。
@@ -180,7 +181,8 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | `policy_live_20261022_25_r{1,2,3}_v3_newdir/` | 目标文件夹不存在：2/4、3/4、4/4；一次看到提示仍执行，两次缺"取消"。 |
 | `policy_live_20261022_26_r{1,2,3}_v3_newdir/` | 改回软规则后：相近文件夹 1/3 提问、无相近 2/3、明确新建 3/3、对照 2/2；规则当时未进系统提示 |
 | `policy_live_20261022_27_r{1,2,3}_v3_newdir/` | 规则补进系统提示后：12/12，约 ¥0.098 |
-| `policy_live_20261022_28_r{1,2,3}_v3_overreach/`、`_29_*` | 规则误伤测试：有效运行中误伤 0 次；发现"移到不存在的无扩展名路径变成改名"的 bug 并修复，复测 3/3（最新） |
+| `policy_live_20261022_28_r{1,2,3}_v3_overreach/`、`_29_*` | 规则误伤测试：有效运行中误伤 0 次；发现"移到不存在的无扩展名路径变成改名"的 bug 并修复，复测 3/3 |
+| `policy_live_20261023_32_v3_revise_{1,2,3}/`、`_32_v3_cross/`、`_32_v3_holdout_rev/` | `revise_task` 权限重算后：新场景 `--suite revise`（先禁后放回收、更正目标文件夹）各 3 次 6/6，`cross_turn_correction`、`holdout_cross_turn_revision` 各 1/1；被拒绝调用 0，约 ¥0.21。新场景修复后才写，不是盲测（最新） |
 
 每个目录有 `manifest.json`（配置、输入、代码与原论文哈希）、`report.json`（含旧口径 `passed_local`）、`judgement.json`（新判定）和逐场景脱敏历史、trace、事件、确认记录。**总验收看 `overall_accepted` 和退出码，不看 `passed_local`。**
 
@@ -204,6 +206,7 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 - 以下改动在 v2 下也生效：范围推导、按 `mv` 语义理解目录 destination、计划变基、按回执自动归属、文本限制改为在确认卡片上列出。
 - 之后又加了 `finish_task.reply`、`finish_task.unfinished` 和 `ask_user`，都只在 v3 下生效。
 - 真实复验结果：第 08 轮 13/13；两套盲测各 8/8。但每组只跑了一次。
+- 2026-10-23：`revise_task` 每次都重算 `allowed_effects` / `write_roots`。任务的每个部分保存自己的 `scope`（`Goal.scope`）；之前登记、没有 `scope` 的部分按原任务写入范围处理，修改时不会被放大成整个资料库。此前计划确认时追加的范围在修改后作废，未执行的计划变基时会在卡片上重新列出。
 
 NoProgressGuard 仍可能漏过跨工具、伴随证据变化的长修复链，应结合失败语义和实际进展改进，不靠缩小 max_steps 或扩大权限。
 
