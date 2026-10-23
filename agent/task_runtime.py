@@ -66,6 +66,7 @@ class TaskRuntime(Asking, Finishing):
         self._pretask = []  # read-only facts observed before any task existed in this run
         self.pending_choice = None
         self.answered_choice = self._answered_choice(instruction)
+        self._resume_asked_task()
         # Folders whose hidden files the user agreed, last turn, to recycle.
         # Consent to recycle hidden files: a chosen consent option, or (user choice
         # 2026-10-22, option C) a free-text reply, which the confirmation card must

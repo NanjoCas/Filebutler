@@ -65,8 +65,11 @@ class Finishing:
         # "Do nothing" was the choice (no actions): a part that only records it (an answer
         # part, reviewed by hand) is settled by the choice too, not left for review.
         nothing = not [a for a in chosen['actions'] if a['effect'] != 'read']
+        # Empty actions cannot tell "do nothing at all" from "leave b alone", so a write
+        # part is left out by such a choice only when the model names it as not done.
+        named = {u['part_id'] for key in ('items', 'not_needed') for u in self.current['declared_unfinished'][key]}
         excluded = [g['id'] for g in self.current['goals'] if g['id'] not in touched
-                    and (any(c['kind'] in self.WRITE_CONDITIONS for c in g['conditions'])
+                    and (any(c['kind'] in self.WRITE_CONDITIONS for c in g['conditions']) and (not nothing or g['id'] in named)
                          or nothing and all(c['kind'] == 'manual_review' for c in g['conditions']))]
         choices.record_choice(self.current, chosen['key'], chosen['label'], excluded)
 
