@@ -48,6 +48,9 @@ def normalized(task):
     if is_legacy(task): return task
     for g in task.get('goals', []):
         g['conditions'] = [{k: c[k] for k in ('kind', 'reference') if k in c} for c in g['conditions']]
+        # Goals stored before parts kept their scope fall back to the task's
+        # write roots, so a revision never widens them to the whole library.
+        g.setdefault('scope', list(task.get('write_roots', [])))
     return task
 
 
@@ -56,6 +59,7 @@ class Goal(StrictModel):
     description: str = Field(min_length=1, max_length=800)
     conditions: list[CompletionCondition] = Field(min_length=1, max_length=12)
     semantic_review: bool = Field(False, description='分类正确性等语义结论须为 true，本地不能证明')
+    scope: list[str] = Field(default_factory=list, max_length=20, description='该部分涉及的目录；修订时据此重算写入范围')
 
 
 class Constraint(StrictModel):

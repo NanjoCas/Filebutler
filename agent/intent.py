@@ -79,9 +79,15 @@ class ReviseTask(StrictModel):
     cancel: bool | None = None
 
 
-def _effects(part):
-    effects = TEMPLATES[part.kind][2]
-    return ['create', 'move'] if part.kind == 'classify' and part.execute else effects
+KIND_OF = {'evidence_valid': 'find', 'receipt_verified': 'dedup', 'file_plan_verified': 'organize',
+           'plan_ready': 'classify', 'plan_applied': 'classify', 'manual_review': 'answer'}
+
+
+def _effects(goal):
+    """Effects a stored part may need, read back from its completion condition."""
+    kinds = [c['kind'] for c in goal['conditions']]
+    if 'plan_applied' in kinds: return ['create', 'move']
+    return next((TEMPLATES[KIND_OF[k]][2] for k in kinds if k in KIND_OF), [])
 
 
 def compile_goal(part, index):
@@ -89,7 +95,7 @@ def compile_goal(part, index):
     if part.kind == 'classify' and part.execute:
         conditions = [dict(kind='plan_applied')]
     return dict(id=part.id or f'{part.kind}_{index}', description=part.description,
-                conditions=[dict(c) for c in conditions], semantic_review=review)
+                conditions=[dict(c) for c in conditions], semantic_review=review, scope=list(part.scope))
 
 
 def compile_limits(limits):
@@ -125,21 +131,25 @@ def describe_limits(limits):
     return '；'.join(parts) or '用户限制'
 
 
-def _write_roots(parts):
-    writing = [p for p in parts if _effects(p)]
-    if not writing: return []
+def authority(goals, forbidden):
+    """Allowed effects and write roots follow from the current parts and limits.
+    A revision recomputes both, so a relaxed limit takes effect and a dropped
+    or narrowed part takes its access with it."""
+    writing = [g for g in goals if _effects(g)]
+    effects = sorted({e for g in writing for e in _effects(g)} - set(forbidden))
+    if not effects: return effects, []
     # An unscoped writing part is the whole library; plans narrow it to exact objects.
-    if any(not p.scope for p in writing): return ['.']
-    return list(dict.fromkeys(s for p in writing for s in p.scope))
+    if any(not g['scope'] for g in writing): return effects, ['.']
+    return effects, list(dict.fromkeys(s for g in writing for s in g['scope']))
 
 
 def compile_start(args: StartTask) -> TaskSubmission:
     goals = [compile_goal(p, i) for i, p in enumerate(args.parts, 1)]
     if len({g['id'] for g in goals}) != len(goals):
         raise ValueError('parts 的 ID 重复')
-    effects = sorted({e for p in args.parts for e in _effects(p)} - set(args.limits.no_effects))
+    effects, roots = authority(goals, args.limits.no_effects)
     return TaskSubmission.model_validate(dict(
-        goals=goals, read_roots=['.'], write_roots=_write_roots(args.parts) if effects else [],
+        goals=goals, read_roots=['.'], write_roots=roots,
         allowed_effects=effects, constraints=compile_limits(args.limits),
         unresolved_questions=args.questions,
         policy=dict(criteria=args.criteria, output=dict(detail=args.detail))))
@@ -157,7 +167,6 @@ def compile_revision(args: ReviseTask, task) -> TaskPatch:
     goals = [compile_goal(p, len(task['goals']) + i) for i, p in enumerate(args.parts, 1)]
     patch = dict(expected_revision=args.expected_revision, reason=args.reason,
                  upsert_goals=goals, remove_goal_ids=args.remove_part_ids)
-    added = {e for p in args.parts for e in _effects(p)}
     if args.limits is not None:
         old = [c['id'] for c in task['constraints'] if c['id'] == LIMITS_ID or c['id'].startswith('note_')]
         new = compile_limits(args.limits)
@@ -166,11 +175,11 @@ def compile_revision(args: ReviseTask, task) -> TaskPatch:
         forbidden = set(args.limits.no_effects)
     else:
         forbidden = {e for c in task['constraints'] if c['id'] == LIMITS_ID for e in c['forbidden_effects']}
-    if added:
-        effects = sorted((set(task['allowed_effects']) | added) - forbidden)
-        if effects != sorted(task['allowed_effects']): patch['allowed_effects'] = effects
-        roots = list(dict.fromkeys(task['write_roots'] + _write_roots(args.parts)))
-        if roots != task['write_roots']: patch['write_roots'] = roots
+    revised = {g['id']: g for g in task['goals'] if g['id'] not in args.remove_part_ids} | {g['id']: g for g in goals}
+    # Roots granted by earlier plan confirmations are dropped; a rebased plan lists them again.
+    effects, roots = authority(list(revised.values()), forbidden)
+    if effects != sorted(task['allowed_effects']): patch['allowed_effects'] = effects
+    if roots != task['write_roots']: patch['write_roots'] = roots
     if args.questions is not None: patch['unresolved_questions'] = args.questions
     if args.cancel is not None: patch['cancel'] = args.cancel
     return TaskPatch.model_validate(patch)
@@ -182,9 +191,7 @@ def parts_text(task):
 
 def project(task):
     """The v3 view of a stored task: parts, limits and state, not raw conditions."""
-    kinds = {'evidence_valid': 'find', 'receipt_verified': 'dedup', 'file_plan_verified': 'organize',
-             'plan_ready': 'classify', 'plan_applied': 'classify', 'manual_review': 'answer'}
-    parts = [dict(id=g['id'], kind=next((kinds[c['kind']] for c in g['conditions'] if c['kind'] in kinds), 'other'),
+    parts = [dict(id=g['id'], kind=next((KIND_OF[c['kind']] for c in g['conditions'] if c['kind'] in KIND_OF), 'other'),
                   description=g['description']) for g in task['goals']]
     limits = [c['description'] for c in task['constraints']]
     plans = list(task.get('file_plan_bindings', {}))
