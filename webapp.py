@@ -191,7 +191,6 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
     with _conversation_lock(state.conversation_id):
         confirmer = None
         terminal_status = "failed"
-        working_history=history
 
         def ask_in_browser(request: dict) -> str:
             action = build_confirmation(request, Sandbox(cfg["sandbox"]))
@@ -260,7 +259,7 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
             # Save the complete tool-call history for the next turn, while the UI gets a filtered view.
             with _db() as db:
                 db.execute("UPDATE conversations SET history_json=?, updated_at=? WHERE id=?",
-                           (json.dumps(history + result.messages[len(working_history):], ensure_ascii=False), _now(), state.conversation_id))
+                           (json.dumps(history + result.added_messages, ensure_ascii=False), _now(), state.conversation_id))
             terminal_status = "completed"
         except (Exception, SystemExit) as exc:
             state.result = {**_clock(state), **state.result}
@@ -271,7 +270,7 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
             state.error=state.final
             state.result.update({k:v for k,v in failure.items() if k!='messages'})
             state.result.update(report=report,stop_reason=failure.get('stop_reason','exception'))
-            failed_history=history+failure['messages'][len(working_history):] if failure.get('messages') else history+[dict(role='assistant',content=state.final)]
+            failed_history=history+failure['added_messages'] if failure.get('added_messages') else history+[dict(role='assistant',content=state.final)]
             with _db() as db:
                 db.execute('UPDATE conversations SET history_json=?,updated_at=? WHERE id=?',
                            (json.dumps(failed_history,ensure_ascii=False),_now(),state.conversation_id))

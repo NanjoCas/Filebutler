@@ -87,7 +87,8 @@ FIELD_DOCS = {
 
 # Protocol guidance sent as a system message each run, before the dynamic state
 # (the user's last answer, the last run's outcome, recent tasks).
-TASK_GUIDANCE = ('【任务协议 v3】\n'
+GUIDANCE_MARK = '【任务协议 v3】'
+TASK_GUIDANCE = (GUIDANCE_MARK + '\n'
                  '先区分询问与执行：解释、方案讨论直接回答；查询历史运行原因用 inspect_run。\n'
                  '要求执行时用 start_task 说明用户要做的事：parts 按部分列出（find/dedup/organize/classify/answer），'
                  'limits 只填用户明确说出的限制，不要自行添加数量上限或规则；notes 通常留空，每条都会让结果进入人工复核。无法确定的事放 questions，等待用户回答。'

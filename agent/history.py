@@ -2,6 +2,8 @@
 import copy
 import json
 
+from agent.prompts import GUIDANCE_MARK
+
 ARCHIVE_NOTE = "[本地历史归档] 较早的工具调用明细已归档；用户指令、助手文字结论与文件状态更新仍保留。旧文件快照不能代表当前状态；需要原文细节时使用工具核实。"
 UNDO_MARK = "[本地撤销状态 run="
 
@@ -84,8 +86,11 @@ def prepare_history(history, cfg, artifacts=None):
     """
     full = copy.deepcopy(history)
     before = len(json.dumps(full, ensure_ascii=False))
-    full = [m for m in full if not (m.get('role') == 'system' and
-            m.get('content', '').startswith('【任务控制 V2，优先于旧版流程说明】'))]
+    # Each run adds one snapshot (protocol rules + current task state); older ones
+    # would show the model several states at once. The V2 one is the retired form.
+    kept = [m for m in full if not (m.get('role') == 'system' and
+            m.get('content', '').startswith(('【任务控制 V2，优先于旧版流程说明】', GUIDANCE_MARK)))]
+    dropped, full = len(full) - len(kept), kept
     boundary = max((i for i, m in enumerate(full) if m.get('role') == 'user'), default=0)
     legacy = [(s, e) for s, e in _exchanges(full, boundary)
               if any(tc['function']['name'] in LEGACY_TOOLS for tc in full[s]['tool_calls'])]
@@ -97,4 +102,5 @@ def prepare_history(history, cfg, artifacts=None):
     after = len(json.dumps(full, ensure_ascii=False))
     stats = {"before_chars": before, "after_chars": after, "archived_messages": 0}
     if legacy: stats["legacy_folded"] = len(legacy)
+    if dropped: stats["snapshots_dropped"] = dropped
     return full, stats

@@ -45,7 +45,8 @@ class RunResult:
     active_seconds: float = 0.0
     tool_seconds: float = 0.0
     runtime: dict = field(default_factory=dict)
-    messages: list = field(default_factory=list)
+    messages: list = field(default_factory=list)   # what the last request saw, snapshot included
+    added_messages: list = field(default_factory=list)  # this run's messages to keep; the snapshot is rebuilt next run
     report: dict = field(default_factory=dict)
 
 
@@ -99,7 +100,10 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
     sandbox.artifacts = artifacts
     artifacts.run_id = oplog.path.stem if oplog else str(time.time_ns())
     runtime = TaskRuntime(instruction, cfg, sandbox, artifacts.run_id)
-    messages.append({'role': 'system', 'content': names.shield(runtime.guidance(), sandbox)})
+    kept_from = len(history) if history else 0
+    snapshot = {'role': 'system', 'content': names.shield(runtime.guidance(), sandbox)}
+    messages.append(snapshot)
+    added = lambda: [m for m in messages[kept_from:] if m is not snapshot]
     sandbox.runtime = runtime
     sandbox.progress = lambda message: emit('local_step', message=message)
     retrieval = cfg.get("retrieval", True)
@@ -261,7 +265,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                            violations=sandbox.violations,
                            rejections=confirmer.rejections if confirmer else 0,
                            cost=llm.cost, cache_hit_tokens=llm.cache_hit_tokens,
-                           llm_seconds=llm_seconds, runtime=runtime.stats(), messages=messages,
+                           llm_seconds=llm_seconds, runtime=runtime.stats(), messages=messages, added_messages=added(),
                            report=runtime.report or terminal_report)
         if trace:
             trace.write(json.dumps({"event": "end", "final": final, "stop_reason": stop_reason,
@@ -290,7 +294,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                      error_stage=failure_stage,
                      runtime=runtime.stats(),cost=llm.cost,tokens=llm.total_tokens,
                      tool_calls=n_calls,steps=step,**metrics)
-        exc.filebutler_outcome={**failure,'messages':messages}
+        exc.filebutler_outcome={**failure,'messages':messages,'added_messages':added()}
         emit("run_failed", **failure)
         if trace:
             trace.write(json.dumps({"event": "failed", **failure},ensure_ascii=False) + "\n")

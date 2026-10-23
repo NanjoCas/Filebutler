@@ -138,10 +138,9 @@ class Session:
 
     def run(self, instruction, steps, final=''):
         self.turn += 1
-        if self.history:
-            history, _ = prepare_history(self.history + [dict(role='user', content=instruction)], CFG, self.store)
-        else:
-            history = [dict(role='system', content=SYSTEM_PROMPT), dict(role='user', content=instruction)]
+        # As webapp.py: the full history is kept, and each run sees its projection.
+        full = (self.history or [dict(role='system', content=SYSTEM_PROMPT)]) + [dict(role='user', content=instruction)]
+        history, _ = prepare_history(full, CFG, self.store)
         client = Replay(steps, self.ids, final)
         approve = lambda request: self.approvals.append(request) or self.answer
         result = run_agent(instruction, LLM({'model': 'fake'}, client=client), self.sb, CFG,
@@ -149,7 +148,7 @@ class Session:
                            oplog=OpLog(self.sb, f'v3_{self.turn}'),
                            confirmer=Confirmer('always', ask_action=approve))
         client.absorb(result.messages)
-        self.history = result.messages
+        self.history = full + result.added_messages
         return result, client
 
 
