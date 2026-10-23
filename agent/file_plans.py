@@ -916,157 +916,207 @@ def _recover_inflight(runtime, plan):
 
 
 def execute(runtime, plan_id, oplog, confirmer):
+    """Run a saved plan: reconcile, check, confirm, check again, run each step, verify.
+
+    The objects are checked at three points, because the user may take minutes to
+    confirm and files can change meanwhile: before the confirmation, after it, and
+    immediately before each step. Any difference stops the plan; completed steps
+    stay journalled and undoable.
+    """
     if not oplog or not confirmer: raise ValueError('执行计划需要日志和明确的确认策略')
     with library_lock(runtime.sb):
-        plan = runtime.store.file_plan(plan_id)
-        task = runtime.store.get(plan['payload']['task_id'])
-        if runtime.current and runtime.current['id'] != task['id']:
-            raise ValueError('计划不属于当前任务，不能切换任务绕过约束')
-        runtime.current = task
-        if task['revision'] != plan['payload']['revision'] and _rebasable(plan):
-            plan = _rebase(runtime, plan, task)
-            plan_id = plan['id']
-        known = {row.get('action_id') for row in task.get('operation_history', [])+task.get('operations', [])+runtime.operations if row.get('action_id')}
-        for step in plan['payload']['steps']:
-            progress = plan['progress'].get(step['id'])
-            if not progress or step['id'] in known: continue
-            row = dict(op='make_dir' if step['effect']=='create' else step['effect'],
-                       src=step['source'] or step['destination'], dst=step['destination'],
-                       action_id=step['id'], run_id=progress['run_id'], goal_ids=step.get('goal_ids') or plan['payload']['goal_ids'],
-                       step_id=step['id'], kind='文件夹' if step['effect']=='create' or step['snapshot']['kind'] in FOLDER_KINDS else '文件')
-            task.setdefault('operations', []).append(row)
-        history = task.setdefault('operation_history', [])
-        def identity(row):
-            return row.get('action_id') or (row.get('run_id'), row.get('seq'), row['op'], row['src'], row['dst'])
-        history_ids = {identity(row) for row in history}
-        current_ids = {identity(row) for row in runtime.operations}
-        for row in task.get('operations', []):
-            if row.get('run_id') != runtime.run_id:
-                if identity(row) not in history_ids:
-                    history.append(row); history_ids.add(identity(row))
-            elif identity(row) not in current_ids:
-                runtime.operations.append(row); current_ids.add(identity(row))
-        task['operations'] = runtime.operations
+        plan, task = _reconcile(runtime, plan_id)
+        plan_id = plan['id']
         try:
-            if task['revision'] != plan['payload']['revision']:
-                # Unstarted plans were rebased above; this one already ran in part.
-                raise ValueError(f"任务版本已变化（计划基于第 {plan['payload']['revision']} 版，当前第 {task['revision']} 版），"
-                                 f"且此计划已执行 {len(plan['progress'])}/{len(plan['payload']['steps'])} 项，不能自动迁移。"
-                                 '请用 inspect_file_plan 查看已完成项，只为剩余对象准备新计划，不要重复已完成的操作')
-            if checksum(plan['payload']) != plan['digest']:
-                raise ValueError('计划内容摘要不一致')
-            if plan.get('inflight'):
-                _recover_inflight(runtime, plan)
-            remaining = [s for s in plan['payload']['steps'] if s['id'] not in plan['progress']]
+            remaining = _loaded(runtime, plan, task)
             _validate(runtime, plan, remaining)
             if plan['status'] == 'completed':
-                ok, detail = verify_plan(plan, runtime.sb)
-                if not ok: raise ValueError(detail)
-                task.setdefault('file_plan_receipts', {})[plan_id] = copy.deepcopy(plan)
-                runtime.store.checkpoint(task)
-                return 'OK: 此计划已经执行并核验，无重复操作'
-            _check_remaining(runtime, plan)
-            # Completed actions must still match before resuming the rest.
-            ok, detail = verify_plan(plan, runtime.sb, partial=True)
-            if not ok: raise ValueError(detail)
-            review = dict(plan_id=plan_id, digest=plan['digest'], steps=[
-                {k:s[k] for k in ('effect','source','destination')} for s in remaining])
-            if plan['payload'].get('scope_additions'):
-                review['scope_additions'] = plan['payload']['scope_additions']
-            if plan['payload'].get('overwrites'):
-                review['overwrites'] = plan['payload']['overwrites']
-            if plan['payload'].get('new_folders'):
-                review['new_folders'] = plan['payload']['new_folders']
-            whole = [dict(source=s['source'], destination=s['destination'], files=sorted(s['snapshot']['after']))
-                     for s in remaining if s['snapshot'] and s['snapshot']['kind'] == 'folder']
-            if whole:
-                review['folders'] = whole
-            trees = [s for s in remaining if s['effect'] == 'trash' and s['snapshot'] and s['snapshot']['kind'] == 'directory_tree'
-                     and (s['snapshot']['metadata'] or s['snapshot']['hidden'])]
-            if trees:
-                review['hidden_contents'] = [dict(folder=s['source'], metadata=s['snapshot']['metadata'],
-                                                  hidden=s['snapshot']['hidden'], sensitive=s['snapshot'].get('sensitive', {}),
-                                                  notes=s['snapshot'].get('notes', {}),
-                                                  consent_source=s['snapshot'].get('consent_source'))
-                                             for s in trees]
-            if not confirmer.allow('file_plan', review, file_count=len(remaining), force=True,
-                                   **({'notes': runtime.text_limits()} if runtime.text_limits() else {})):
-                raise ValueError('用户拒绝执行此计划，未执行剩余操作')
+                return _verified_again(runtime, plan, task)
+            _recheck(runtime, plan)                      # 1. before the confirmation
+            _confirm(runtime, plan, remaining, confirmer)
             _grant(task, plan, runtime.run_id)
             runtime.store.checkpoint(task)
             _validate(runtime, plan, remaining)
-            _check_remaining(runtime, plan)
-            ok, detail = verify_plan(plan, runtime.sb, partial=True)
-            if not ok: raise ValueError(detail)
+            _recheck(runtime, plan)                      # 2. after it: the user may have taken minutes
             plan['status'] = 'executing'; plan['error'] = ''
             runtime.store.save_file_plan(plan)
             for s in remaining:
-                _validate(runtime, plan, [s])
-                # Recheck immediately before each mutation, after any user wait.
-                if s['source'] and not _same(_visible(runtime.sb, s['source'], write=True), s['snapshot']):
-                    raise ValueError('执行期间源文件发生变化：'+s['source'])
-                if s['effect'] == 'trash' and (runtime.sb.root/'.trash').is_symlink():
-                    raise ValueError('回收区不能是符号链接')
-                target = runtime.sb.path(s['destination'], exact=True)
-                if s['effect'] != 'trash': _visible(runtime.sb, s['destination'], write=True)
-                if target.exists() and not _case_only(runtime.sb, s):
-                    raise ValueError('目标被其他操作占用：'+s['destination'])
-                plan['inflight'] = s['id']
-                plan['inflight_log'] = str(oplog.path)
-                plan['inflight_run'] = runtime.run_id
-                runtime.store.save_file_plan(plan)
-                if s['effect'] == 'create': target.mkdir()
-                else:
-                    if s['effect'] == 'trash': target.parent.mkdir(exist_ok=True)
-                    from safety.atomic import rename_no_replace
-                    rename_no_replace(runtime.sb.path(s['source'], exact=True), target)
-                _record(oplog, s)
-                progress = dict(run_id=runtime.run_id, log_path=str(oplog.path), stat=signature(target))
-                plan['progress'][s['id']] = progress
-                plan.pop('inflight', None)
-                runtime.store.save_file_plan(plan)
-                row = dict(op='make_dir' if s['effect']=='create' else s['effect'],
-                           src=s['source'] or s['destination'], dst=s['destination'],
-                           run_id=runtime.run_id, action_id=s['id'], goal_ids=s.get('goal_ids') or plan['payload']['goal_ids'], step_id=s['id'],
-                           kind='文件夹' if s['effect']=='create' or s['snapshot']['kind'] in FOLDER_KINDS else '文件')
-                runtime.operations.append(row)
-                runtime.current['operations'] = runtime.operations
-                runtime.store.checkpoint(runtime.current)
-                if s['source'] and getattr(runtime.sb, 'artifacts', None):
-                    runtime.sb.artifacts.relocate(s['source'], s['destination'])
-            ok, detail = verify_plan(plan, runtime.sb)
-            if not ok: raise ValueError(detail)
-            plan['status'] = 'completed'
-            runtime.store.save_file_plan(plan)
-            classification = plan['payload'].get('classification')
-            artifacts = getattr(runtime.sb,'artifacts',None)
-            if classification and artifacts and classification['id'] in artifacts.data['classification_plans']:
-                original = artifacts.data['classification_plans'][classification['id']]
-                original['status'] = 'applied'
-                original['last_execution'] = dict(run_id=runtime.run_id, verified=True,
-                    manifest=classification['manifest'],
-                    moved=[(s['source'],s['destination']) for s in plan['payload']['steps'] if s['effect']=='move'],
-                    created=[s['destination'] for s in plan['payload']['steps'] if s['effect']=='create'], error='')
-                artifacts._save()
-
-            runtime.current.setdefault('file_plan_receipts', {})[plan_id] = copy.deepcopy(plan)
-            _binding(runtime.current, plan)['pending'] = []
-            runtime.store.checkpoint(runtime.current)
-            rebased = f"（任务已修订，原计划 {plan['rebased_from']} 已按第 {task['revision']} 版重新生成）" if plan.get('rebased_from') else ''
-            return f"OK: plan_id={plan_id}{rebased}；本地完成并核验 {len(plan['progress'])} 项操作，无需逐文件重新调用工具"
+                _run_step(runtime, plan, s, oplog)       # 3. each step checks its object first
+            return _finish_plan(runtime, plan, task)
         except (ValueError, OSError) as exc:
-            if isinstance(exc, OSError) and exc.errno:
-                exc = ValueError(os_reason(exc, runtime.sb))
-            plan['status'] = 'blocked'; plan['error'] = str(exc)
-            runtime.store.save_file_plan(plan)
-            if plan['progress'] or plan.get('inflight'):
-                # A half-executed plan cannot satisfy its goals until the rest is done.
-                from agent.verifier import _step_key
-                _binding(runtime.current, plan)['pending'] = [
-                    list(_step_key(s)) for s in plan['payload']['steps'] if s['id'] not in plan['progress']]
-            # The controller records the blocker with this plan as its object.
-            runtime.store.checkpoint(runtime.current)
-            raise ValueError(str(exc)) from exc
+            _blocked(runtime, plan, exc)
+
+
+def _reconcile(runtime, plan_id):
+    """(plan, task): the saved plan, rebased if the task was revised before it started,
+    and the task's ledger completed with steps an interrupted run recorded only in the plan."""
+    plan = runtime.store.file_plan(plan_id)
+    task = runtime.store.get(plan['payload']['task_id'])
+    if runtime.current and runtime.current['id'] != task['id']:
+        raise ValueError('计划不属于当前任务，不能切换任务绕过约束')
+    runtime.current = task
+    if task['revision'] != plan['payload']['revision'] and _rebasable(plan):
+        plan = _rebase(runtime, plan, task)
+    known = {row.get('action_id') for row in task.get('operation_history', [])+task.get('operations', [])+runtime.operations if row.get('action_id')}
+    for step in plan['payload']['steps']:
+        progress = plan['progress'].get(step['id'])
+        if not progress or step['id'] in known: continue
+        row = dict(op='make_dir' if step['effect']=='create' else step['effect'],
+                   src=step['source'] or step['destination'], dst=step['destination'],
+                   action_id=step['id'], run_id=progress['run_id'], goal_ids=step.get('goal_ids') or plan['payload']['goal_ids'],
+                   step_id=step['id'], kind='文件夹' if step['effect']=='create' or step['snapshot']['kind'] in FOLDER_KINDS else '文件')
+        task.setdefault('operations', []).append(row)
+    history = task.setdefault('operation_history', [])
+    def identity(row):
+        return row.get('action_id') or (row.get('run_id'), row.get('seq'), row['op'], row['src'], row['dst'])
+    history_ids = {identity(row) for row in history}
+    current_ids = {identity(row) for row in runtime.operations}
+    for row in task.get('operations', []):
+        if row.get('run_id') != runtime.run_id:
+            if identity(row) not in history_ids:
+                history.append(row); history_ids.add(identity(row))
+        elif identity(row) not in current_ids:
+            runtime.operations.append(row); current_ids.add(identity(row))
+    task['operations'] = runtime.operations
+    return plan, task
+
+
+def _loaded(runtime, plan, task):
+    """The steps still to run, once the plan is known intact and an interrupted step settled."""
+    if task['revision'] != plan['payload']['revision']:
+        # Unstarted plans were rebased above; this one already ran in part.
+        raise ValueError(f"任务版本已变化（计划基于第 {plan['payload']['revision']} 版，当前第 {task['revision']} 版），"
+                         f"且此计划已执行 {len(plan['progress'])}/{len(plan['payload']['steps'])} 项，不能自动迁移。"
+                         '请用 inspect_file_plan 查看已完成项，只为剩余对象准备新计划，不要重复已完成的操作')
+    if checksum(plan['payload']) != plan['digest']:
+        raise ValueError('计划内容摘要不一致')
+    if plan.get('inflight'):
+        _recover_inflight(runtime, plan)
+    remaining = [s for s in plan['payload']['steps'] if s['id'] not in plan['progress']]
+    return remaining
+
+
+def _verified_again(runtime, plan, task):
+    """A plan already completed: verify it again and hand out its receipt, writing nothing."""
+    plan_id = plan['id']
+    ok, detail = verify_plan(plan, runtime.sb)
+    if not ok: raise ValueError(detail)
+    task.setdefault('file_plan_receipts', {})[plan_id] = copy.deepcopy(plan)
+    runtime.store.checkpoint(task)
+    return 'OK: 此计划已经执行并核验，无重复操作'
+
+
+def _recheck(runtime, plan):
+    """The remaining objects are as planned, and the completed steps' results still in place."""
+    _check_remaining(runtime, plan)
+    # Completed actions must still match before resuming the rest.
+    ok, detail = verify_plan(plan, runtime.sb, partial=True)
+    if not ok: raise ValueError(detail)
+
+
+def _confirm(runtime, plan, remaining, confirmer):
+    """One confirmation card for the remaining steps, with what needs the user's attention."""
+    plan_id = plan['id']
+    review = dict(plan_id=plan_id, digest=plan['digest'], steps=[
+        {k:s[k] for k in ('effect','source','destination')} for s in remaining])
+    if plan['payload'].get('scope_additions'):
+        review['scope_additions'] = plan['payload']['scope_additions']
+    if plan['payload'].get('overwrites'):
+        review['overwrites'] = plan['payload']['overwrites']
+    if plan['payload'].get('new_folders'):
+        review['new_folders'] = plan['payload']['new_folders']
+    whole = [dict(source=s['source'], destination=s['destination'], files=sorted(s['snapshot']['after']))
+             for s in remaining if s['snapshot'] and s['snapshot']['kind'] == 'folder']
+    if whole:
+        review['folders'] = whole
+    trees = [s for s in remaining if s['effect'] == 'trash' and s['snapshot'] and s['snapshot']['kind'] == 'directory_tree'
+             and (s['snapshot']['metadata'] or s['snapshot']['hidden'])]
+    if trees:
+        review['hidden_contents'] = [dict(folder=s['source'], metadata=s['snapshot']['metadata'],
+                                          hidden=s['snapshot']['hidden'], sensitive=s['snapshot'].get('sensitive', {}),
+                                          notes=s['snapshot'].get('notes', {}),
+                                          consent_source=s['snapshot'].get('consent_source'))
+                                     for s in trees]
+    if not confirmer.allow('file_plan', review, file_count=len(remaining), force=True,
+                           **({'notes': runtime.text_limits()} if runtime.text_limits() else {})):
+        raise ValueError('用户拒绝执行此计划，未执行剩余操作')
+
+
+def _run_step(runtime, plan, s, oplog):
+    """One step: recheck its object, mark it in flight, rename without replacing, journal it."""
+    _validate(runtime, plan, [s])
+    # Recheck immediately before each mutation, after any user wait.
+    if s['source'] and not _same(_visible(runtime.sb, s['source'], write=True), s['snapshot']):
+        raise ValueError('执行期间源文件发生变化：'+s['source'])
+    if s['effect'] == 'trash' and (runtime.sb.root/'.trash').is_symlink():
+        raise ValueError('回收区不能是符号链接')
+    target = runtime.sb.path(s['destination'], exact=True)
+    if s['effect'] != 'trash': _visible(runtime.sb, s['destination'], write=True)
+    if target.exists() and not _case_only(runtime.sb, s):
+        raise ValueError('目标被其他操作占用：'+s['destination'])
+    plan['inflight'] = s['id']
+    plan['inflight_log'] = str(oplog.path)
+    plan['inflight_run'] = runtime.run_id
+    runtime.store.save_file_plan(plan)
+    if s['effect'] == 'create': target.mkdir()
+    else:
+        if s['effect'] == 'trash': target.parent.mkdir(exist_ok=True)
+        from safety.atomic import rename_no_replace
+        rename_no_replace(runtime.sb.path(s['source'], exact=True), target)
+    _record(oplog, s)
+    progress = dict(run_id=runtime.run_id, log_path=str(oplog.path), stat=signature(target))
+    plan['progress'][s['id']] = progress
+    plan.pop('inflight', None)
+    runtime.store.save_file_plan(plan)
+    row = dict(op='make_dir' if s['effect']=='create' else s['effect'],
+               src=s['source'] or s['destination'], dst=s['destination'],
+               run_id=runtime.run_id, action_id=s['id'], goal_ids=s.get('goal_ids') or plan['payload']['goal_ids'], step_id=s['id'],
+               kind='文件夹' if s['effect']=='create' or s['snapshot']['kind'] in FOLDER_KINDS else '文件')
+    runtime.operations.append(row)
+    runtime.current['operations'] = runtime.operations
+    runtime.store.checkpoint(runtime.current)
+    if s['source'] and getattr(runtime.sb, 'artifacts', None):
+        runtime.sb.artifacts.relocate(s['source'], s['destination'])
+
+
+def _finish_plan(runtime, plan, task):
+    """Verify every step's result, write the receipt, and update a bridged classification plan."""
+    plan_id = plan['id']
+    ok, detail = verify_plan(plan, runtime.sb)
+    if not ok: raise ValueError(detail)
+    plan['status'] = 'completed'
+    runtime.store.save_file_plan(plan)
+    classification = plan['payload'].get('classification')
+    artifacts = getattr(runtime.sb,'artifacts',None)
+    if classification and artifacts and classification['id'] in artifacts.data['classification_plans']:
+        original = artifacts.data['classification_plans'][classification['id']]
+        original['status'] = 'applied'
+        original['last_execution'] = dict(run_id=runtime.run_id, verified=True,
+            manifest=classification['manifest'],
+            moved=[(s['source'],s['destination']) for s in plan['payload']['steps'] if s['effect']=='move'],
+            created=[s['destination'] for s in plan['payload']['steps'] if s['effect']=='create'], error='')
+        artifacts._save()
+    runtime.current.setdefault('file_plan_receipts', {})[plan_id] = copy.deepcopy(plan)
+    _binding(runtime.current, plan)['pending'] = []
+    runtime.store.checkpoint(runtime.current)
+    rebased = f"（任务已修订，原计划 {plan['rebased_from']} 已按第 {task['revision']} 版重新生成）" if plan.get('rebased_from') else ''
+    return f"OK: plan_id={plan_id}{rebased}；本地完成并核验 {len(plan['progress'])} 项操作，无需逐文件重新调用工具"
+
+
+def _blocked(runtime, plan, exc):
+    """Record why the plan stopped and which steps are still owed; re-raise for the model."""
+    if isinstance(exc, OSError) and exc.errno:
+        exc = ValueError(os_reason(exc, runtime.sb))
+    plan['status'] = 'blocked'; plan['error'] = str(exc)
+    runtime.store.save_file_plan(plan)
+    if plan['progress'] or plan.get('inflight'):
+        # A half-executed plan cannot satisfy its goals until the rest is done.
+        from agent.verifier import _step_key
+        _binding(runtime.current, plan)['pending'] = [
+            list(_step_key(s)) for s in plan['payload']['steps'] if s['id'] not in plan['progress']]
+    # The controller records the blocker with this plan as its object.
+    runtime.store.checkpoint(runtime.current)
+    raise ValueError(str(exc)) from exc
 
 
 def _rebasable(plan):
