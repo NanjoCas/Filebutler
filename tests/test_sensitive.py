@@ -1,5 +1,6 @@
 """Sensitive files (user decision 2026-10-22): contents are withheld from the model
 unless the user granted reading that file, by choosing an option, in this task."""
+from agent import choices
 import json
 
 import pytest
@@ -55,14 +56,14 @@ def test_read_file_withholds_sensitive_contents_until_granted(tmp_path, name, te
     r, sb = runtime(tmp_path)
     refused = read(sb, name)
     assert '敏感文件' in refused and 'ask_user' in refused and text not in refused
-    r.read_grants = [name]
+    r.decisions = [choices.row('read', name, 'option')]
     assert text in read(sb, name)
 
 
 def test_grant_covers_only_the_named_file(tmp_path):
     (tmp_path / '合同A.txt').write_text('A'); (tmp_path / '合同B.txt').write_text('B')
     r, sb = runtime(tmp_path)
-    r.read_grants = ['合同A.txt']
+    r.decisions = [choices.row('read', '合同A.txt', 'option')]
     assert '<file_content>' in read(sb, '合同A.txt') and '敏感文件' in read(sb, '合同B.txt')
 
 
@@ -92,7 +93,7 @@ def test_choosing_the_read_option_grants_it_for_the_task(tmp_path):
                                             call('read_file', dict(path='合同.txt')))], final='三十天')
     assert errors(client) == [] and '付款期限三十天' in client.calls('read_file')[0]['text']
     task = session.sb.runtime.store.get(session.sb.runtime.current['id'])
-    assert task['sensitive_grants'] == ['合同.txt']
+    assert choices.of(task['decisions'], 'read') == {'合同.txt': 'option'}
 
 
 @pytest.mark.parametrize('reply', ['B', '可以读'])

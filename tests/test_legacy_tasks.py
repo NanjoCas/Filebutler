@@ -102,3 +102,18 @@ def test_v2_tool_calls_in_an_old_conversation_reach_the_model_as_notes():
     assert notes == ['[旧版本工具记录] set_task {"goals": []}\n成功（历史结果；当前位置需核实）',
                      '[旧版本工具记录] move {"src": "x.txt", "dst_dir": "\\u5f52\\u6863"}\n成功（历史结果；当前位置需核实）']
     assert projected[-1] == dict(role='user', content='再看看')
+
+
+def test_decisions_saved_before_the_table_are_migrated_on_load(runtime):
+    stored(runtime.store, 'Tv3000000002', [goal('file_plan_verified')])
+    with runtime.store.connect() as db:
+        row = db.execute('SELECT data_json FROM task_revisions WHERE id=?', ('Tv3000000002',)).fetchone()
+        data = json.loads(row['data_json'])
+        data.update(sensitive_grants=['合同.txt'], chosen_scope=dict(revision=1, key='B', label='只移 a', excluded=['g0']))
+        db.execute('UPDATE task_revisions SET data_json=? WHERE id=?', (json.dumps(data, ensure_ascii=False), 'Tv3000000002'))
+    task = runtime.store.get('Tv3000000002')
+    assert 'chosen_scope' not in task and 'sensitive_grants' not in task
+    [check] = verify_task(task, runtime.sb)
+    assert check['passed'] and check['conditions'][0]['detail'] == '按你选择的选项 B（只移 a），此部分不执行'
+    runtime.current = task
+    assert runtime.sensitive_grants() == {'合同.txt'}

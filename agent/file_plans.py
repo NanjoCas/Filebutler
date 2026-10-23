@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from agent.artifacts import digest, signature, label
+from agent import choices
 from agent.completion import selected, walk_selection, is_package, attribute, claims
 from agent.task import StrictModel, TaskSubmission
 
@@ -367,7 +368,7 @@ def prepare(runtime, args):
     pid = 'X'+uuid.uuid4().hex[:12]
     steps, dirs, sources, destinations = [], {}, set(), set()
     moved_out = {on_disk(sb, runtime._resolve(a['source'])) for a in actions if a['effect'] in {'move', 'rename'} and a['source']}
-    consent = getattr(runtime, 'hidden_consent', set())
+    consent = choices.of(runtime.decisions, 'hidden')
     for action in actions:
         effect, src, dst = action['effect'], action['source'], action['destination']
         src = on_disk(sb, runtime._resolve(src)) if src else None
@@ -407,8 +408,7 @@ def prepare(runtime, args):
             snap = tree_snapshot(source, src, moved_out, action, consent)
             if snap['hidden']:
                 # Where the consent came from decides what the confirmation card says.
-                consent_sources = getattr(runtime, 'consent_source', {})
-                snap['consent_source'] = next((v for f, v in consent_sources.items()
+                snap['consent_source'] = next((v for f, v in consent.items()
                                                if Path(src) == Path(f) or Path(src).is_relative_to(f)), None)
         elif effect in {'move', 'rename'} and source.is_dir() and not source.is_symlink():
             snap = dict(kind='folder')  # filled in below, once every step of the plan is known
@@ -460,7 +460,7 @@ def prepare(runtime, args):
     # meant one is the model's judgement (asked to ask), not a local refusal.
     fresh = [d for d in dirs if not any(d != o and Path(d).is_relative_to(o) for o in dirs)]
     replaced = overwrites(sb, steps)
-    agreed = getattr(runtime, 'overwrite_consent', {})
+    agreed = choices.of(runtime.decisions, 'overwrite')
     refused = [d for d in replaced if not any(_key(d) == _key(runtime._resolve(c)) for c in agreed)]
     if refused:
         raise ValueError(f"此计划会覆盖 {_names(refused)}：旧文件移入回收区，再放入新文件。覆盖必须由用户选择："

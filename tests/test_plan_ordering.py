@@ -1,5 +1,6 @@
 """Plans whose steps depend on each other: each source names an object as it is
 now, and the steps run in an order where every target is free when written."""
+from agent import choices
 import json
 import pytest
 
@@ -58,7 +59,7 @@ def test_recycle_the_occupant_then_take_its_name(tmp_path):
     with pytest.raises(ValueError, match='覆盖必须由用户选择'):
         prepare(r, proposal(actions=actions))
     assert (tmp_path/'report.txt').read_text() == 'draft'
-    r.overwrite_consent = {'report.txt': 'option'}
+    r.decisions = [choices.row('overwrite', 'report.txt', 'option')]
     plan = run(r, actions)
     assert plan['payload']['overwrites'] == [dict(target='report.txt', consent_source='option')]
     assert (tmp_path/'report.txt').read_text() == 'final' and not (tmp_path/'final.txt').exists()

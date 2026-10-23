@@ -17,6 +17,7 @@ from agent.policy import active_goals
 from safety.sandbox import SandboxError
 from tools import registry
 from agent.file_plans import PrepareFilePlan, ExecuteFilePlan
+from agent import choices
 from agent.intent import StartTask, ReviseTask, compile_start, compile_revision, project, parts_text
 
 
@@ -167,24 +168,11 @@ class TaskRuntime:
         # Consent to recycle hidden files: a chosen consent option, or (user choice
         # 2026-10-22, option C) a free-text reply, which the confirmation card must
         # then confirm. A chosen option without consent grants nothing.
-        answered = self.answered_choice or {}
-        chosen = answered.get('chosen') or {}
-        source = 'option' if chosen.get('consent') == 'include_hidden' else 'text' if answered and not chosen else None
-        self.consent_source = {f: source for f in answered.get('subject', [])} if source else {}
-        self.hidden_consent = set(self.consent_source)
+        # What the user decided in that reply (hidden files, overwrites, reads): agent/choices.py.
+        self.decisions = choices.from_answer(self.answered_choice)
+        chosen = (self.answered_choice or {}).get('chosen') or {}
         # The chosen option's declared actions bound the next plan (None: not declared).
         self.chosen_option = chosen if chosen.get('actions') is not None else None
-        # Files the user agreed to overwrite (user decision 2026-10-22: a same-name
-        # target is the user's call). An option grants exactly the targets its actions
-        # overwrite; a free-text reply grants the question's subject, and the card confirms.
-        # Sensitive files the user agreed to have read (decision 2026-10-22: per file,
-        # this task only). Only a chosen option grants it: a read has no confirmation
-        # card to catch a misread free-text reply.
-        self.read_grants = list(chosen.get('read_grant') or [])
-        if chosen:
-            self.overwrite_consent = {t: 'option' for t in chosen.get('overwrite') or []}
-        else:
-            self.overwrite_consent = {f: 'text' for f in answered.get('subject', [])} if answered else {}
 
     def _last_outcome(self):
         try: last = self.store.outcome()
@@ -345,15 +333,15 @@ class TaskRuntime:
         excluded = [g['id'] for g in self.current['goals'] if g['id'] not in touched
                     and (any(c['kind'] in self.WRITE_CONDITIONS for c in g['conditions'])
                          or nothing and all(c['kind'] == 'manual_review' for c in g['conditions']))]
-        self.current['chosen_scope'] = dict(revision=self.current['revision'], key=chosen['key'], label=chosen['label'], excluded=excluded)
+        choices.record_choice(self.current, chosen['key'], chosen['label'], excluded)
 
     def sensitive_grants(self):
         """Granted sensitive paths for the current task; a fresh grant is kept with the task."""
-        grants = set(self.read_grants)
+        grants = set(choices.of(self.decisions, 'read'))
         if self.current is not None:
-            kept = set(self.current.get('sensitive_grants', []))
+            kept = set(choices.of(self.current.get('decisions', []), 'read'))
             if grants - kept:
-                self.current['sensitive_grants'] = sorted(kept | grants)
+                self.current.setdefault('decisions', []).extend(choices.row('read', g, 'option') for g in sorted(grants - kept))
                 self.store.checkpoint(self.current)
             grants |= kept
         return grants
