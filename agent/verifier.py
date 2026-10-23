@@ -92,11 +92,14 @@ def _followed(task, receipt, path):
 def verify_task(task, sb):
     if is_legacy(task):
         # v2-era conditions are no longer verified; the task is shown read-only.
-        return [dict(goal_id=g['id'], description=g['description'], passed=False, needs_review=False, legacy=True,
+        return [dict(goal_id=g['id'], description=g['description'], outcome='unfinished', passed=False, needs_review=False,
+                     legacy=True, notes=[],
                      conditions=[dict(kind=c['kind'], passed=False, needs_review=False, detail=LEGACY_NOTE)
                                  for c in g['conditions']]) for g in task['goals']]
     checks = []
     store = getattr(sb, 'artifacts', None)
+    # After a choice (user decision 2026-10-22), completion follows the chosen scope.
+    scope, skipped = choices.chosen_scope(task)
     for goal in task['goals']:
         rows = []
         for index, c in enumerate(goal['conditions']):
@@ -176,30 +179,51 @@ def verify_task(task, sb):
             except (ValueError, KeyError, OSError, AttributeError, SandboxError) as exc:
                 ok, detail = False, str(exc)
             rows.append(dict(kind=kind, passed=bool(ok), needs_review=review, detail=detail))
-        # After a choice (user decision 2026-10-22), completion follows the chosen scope.
-        scope, skipped = choices.chosen_scope(task)
-        if goal['id'] in skipped:
-            rows = [dict(kind='excluded_by_choice', passed=True, needs_review=False,
-                         detail=f"按你选择的选项 {scope}，此部分不执行")]
-        declared = task.get('declared_unfinished') or {}
-        if declared.get('revision') == task['revision']:
-            for u in declared.get('not_needed', []):
-                if u['part_id'] != goal['id']: continue
-                # "Nothing to do" cannot be proved here: allowed only for a part that
-                # prepared no plan and wrote nothing, and then only as review.
-                touched = any(goal['id'] in b['goal_ids'] for b in task.get('file_plan_bindings', {}).values()) or any(
-                    goal['id'] in (op.get('goal_ids') or []) for op in task.get('operation_history', []) + task.get('operations', []))
-                rows = ([dict(kind='declared_not_needed', passed=False, needs_review=False,
-                              detail='模型声明无需操作，但本部分已有计划或操作，需按其结果核验：' + u['reason'])] + rows) if touched else \
-                       [dict(kind='declared_not_needed', passed=True, needs_review=True, detail='模型说明无需操作（本地未能证明）：' + u['reason'])]
-            rows += [dict(kind='declared_unfinished', passed=False, needs_review=False, detail='模型声明未完成：'+u['reason'])
-                     if not scope else dict(kind='declared_outside_choice', passed=True, needs_review=False,
-                                            detail=f"模型说明（已按你选择的选项 {scope} 完成）："+u['reason'])
-                     for u in declared.get('items', []) if u['part_id'] == goal['id']]
-        checks.append(dict(goal_id=goal['id'], description=goal['description'],
-                           passed=all(r['passed'] for r in rows),
-                           # A part the user's choice excluded has nothing left to judge.
-                           needs_review=(goal['semantic_review'] and goal['id'] not in skipped)
-                                        or any(r['needs_review'] for r in rows),
-                           conditions=rows))
+        checks.append(_settle(task, goal, rows, scope, skipped))
     return checks
+
+
+# A part ends in one of five outcomes. The first three are settled locally from the
+# conditions; the last two only explain why a part needs no work.
+OUTCOMES = ('done', 'review', 'unfinished', 'not_needed', 'by_choice')
+
+
+def _settle(task, goal, rows, scope, skipped):
+    """One part's check: its condition rows, an outcome, and notes saying who explained what.
+
+    A note is ``by`` the model (its declared reason), the user's choice, or local
+    (a declaration the local facts contradict). Notes never pass a failed condition.
+    """
+    gid, notes, failed = goal['id'], [], False
+    outcome = None
+    if gid in skipped:
+        rows, outcome = [], 'by_choice'
+        notes.append(dict(by='choice', text=f'按你选择的选项 {scope}，此部分不执行'))
+    declared = task.get('declared_unfinished') or {}
+    if declared.get('revision') == task['revision']:
+        for u in declared.get('not_needed', []):
+            if u['part_id'] != gid: continue
+            # "Nothing to do" cannot be proved here: allowed only for a part that
+            # prepared no plan and wrote nothing, and then only as review.
+            touched = any(gid in b['goal_ids'] for b in task.get('file_plan_bindings', {}).values()) or any(
+                gid in (op.get('goal_ids') or []) for op in task.get('operation_history', []) + task.get('operations', []))
+            if touched:
+                failed = True
+                notes.append(dict(by='local', text='模型声明无需操作，但本部分已有计划或操作，需按其结果核验：' + u['reason']))
+            else:
+                rows, outcome = [], 'not_needed'
+                notes.append(dict(by='model', text='模型说明无需操作（本地未能证明）：' + u['reason']))
+        for u in declared.get('items', []):
+            if u['part_id'] != gid: continue
+            if scope:
+                notes.append(dict(by='choice', text=f'模型说明（已按你选择的选项 {scope} 完成）：' + u['reason']))
+            else:
+                failed = True
+                notes.append(dict(by='model', text=u['reason']))
+    passed = not failed and all(r['passed'] for r in rows)
+    # A part the user's choice excluded has nothing left to judge.
+    review = outcome == 'not_needed' or (goal['semantic_review'] and gid not in skipped) or any(r['needs_review'] for r in rows)
+    if outcome is None or not passed:
+        outcome = 'unfinished' if not passed else 'review' if review else 'done'
+    return dict(goal_id=gid, description=goal['description'], outcome=outcome, passed=passed,
+                needs_review=review, conditions=rows, notes=notes)

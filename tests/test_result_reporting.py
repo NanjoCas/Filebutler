@@ -27,3 +27,33 @@ def test_main_answer_has_no_tool_names_or_ids_and_the_raw_text_is_developer_deta
         assert internal not in main
     dev = [s for s in report['sections'] if s.get('audience') == 'dev']
     assert any(message.split('；')[0] in s['markdown'] for s in dev)
+
+
+# ---------------------------------------------------------------- five outcomes per part (2026-10-23)
+
+from agent.verifier import _settle
+
+
+def settle(rows, *, review=False, declared=None, skipped=(), touched=False):
+    goal = dict(id='g', description='部分', semantic_review=review, conditions=[])
+    task = dict(revision=1, declared_unfinished=dict(revision=1, **(declared or {})),
+                file_plan_bindings={'X': dict(goal_ids=['g'])} if touched else {})
+    return _settle(task, goal, rows, 'A（只做一半）' if skipped else None, set(skipped))
+
+
+def test_each_part_ends_in_one_of_five_outcomes():
+    ok, bad = dict(passed=True, needs_review=False), dict(passed=False, needs_review=False)
+    assert settle([ok])['outcome'] == 'done'
+    assert settle([ok], review=True)['outcome'] == 'review'
+    assert settle([bad])['outcome'] == 'unfinished'
+    assert settle([ok], declared=dict(items=[dict(part_id='g', reason='被拒绝')]))['outcome'] == 'unfinished'
+    nothing = settle([bad], declared=dict(not_needed=[dict(part_id='g', reason='没有对象')]))
+    assert nothing['outcome'] == 'not_needed' and nothing['passed'] and nothing['needs_review']
+    assert settle([bad], skipped=['g'])['outcome'] == 'by_choice'
+
+
+def test_a_declaration_never_passes_work_the_part_did():
+    # "Nothing to do" for a part that prepared a plan is contradicted locally.
+    check = settle([dict(passed=True, needs_review=False)], touched=True,
+                   declared=dict(not_needed=[dict(part_id='g', reason='没有对象')]))
+    assert check['outcome'] == 'unfinished' and check['notes'][0]['by'] == 'local'
