@@ -198,10 +198,6 @@ class TaskRuntime(Asking, Finishing):
         missing = [p for p in paths if not self._within(p, roots)]
         if missing:
             raise ValueError('写入范围不包含以下对象：'+'、'.join(missing[:8])+'；需检查来源和目标，不能自动扩大权限')
-        if not tool.batch and tool.operation_preview is None:
-            raise ValueError('写能力缺少可验证的操作预览适配器')
-        if tool.operation_preview:
-            self.validate_operations(tool.operation_preview(args, self.sb))
 
     def validate_operations(self, operations):
         operations = list(operations)

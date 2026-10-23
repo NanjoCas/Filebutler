@@ -326,7 +326,7 @@ class ApplyDedupArgs(BaseModel):
       "按本地查重计划批量将副本移入回收区，不删除。默认只处理 bytes/text，similar 候选默认跳过；"
       "用户明确同意合并近似版本后才传 include_similar=true。终端一次展示保留/回收清单并确认，每个文件记日志可 undo。"
       "执行前重新核对所有保留/回收文件 SHA256，变化则拒绝并要求重扫。例：{\"scan_id\":\"扫描返回的ID\"}",
-      ApplyDedupArgs, writes=True, batch=True, effects=('trash',), verification='execution_receipt',
+      ApplyDedupArgs, writes=True, batch=True, effects=('trash',),
       read_scope=scan_files, write_scope=scan_files, produces=('receipts',))
 def apply_dedup(a, sb):
     scan = get_scan(sb, a.scan_id)
@@ -385,7 +385,7 @@ class DeduplicateArgs(BaseModel):
       '按用户明确的字节/内容去重清理要求，一次在本地完成扫描、分组、网页核对确认、批量回收、核验与结果表格。'
       '内容相同用 text，字节相同用 bytes。无需 list_dir，也无需随后 apply_dedup 或再次扫描。每个移动写日志，可 undo。'
       '仅查重、要求比较近似版本或保留策略尚不明确时使用 find_duplicates 分步处理。',
-      DeduplicateArgs,writes=True,batch=True,effects=('trash',),verification='execution_receipt',
+      DeduplicateArgs,writes=True,batch=True,effects=('trash',),
       read_scope=paths('path'), write_scope=paths('path'), produces=('receipts',))
 def deduplicate(a,sb):
     progress=getattr(sb,'progress',lambda _:None)

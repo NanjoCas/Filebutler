@@ -1,6 +1,5 @@
 """Build a reviewable confirmation from validated tool arguments, not terminal text."""
 from pathlib import Path
-import unicodedata
 
 from safety import names as safe_names
 from safety.sandbox import Sandbox, SandboxError
@@ -119,16 +118,6 @@ def _headline(tool, args):
         return f"修改任务要求（{len(args['changes'])} 处）"
     if tool == "trash_many":
         return f"清理重复文件：{len(args.get('移入回收区', []))} 项移入回收区，保留 {len(args.get('保留', []))} 项（可撤销）"
-    if tool == "trash":
-        return f"把「{Path(args['path']).name}」移入回收区（可撤销）"
-    if tool == "move_many":
-        return f"按分类移动 {len(args['moves'])} 篇到 {len({m['dst_dir'] for m in args['moves']})} 个文件夹（可撤销）"
-    if tool == "move":
-        return f"把「{Path(args['src']).name}」移到「{args['dst_dir']}」（可撤销）"
-    if tool == "rename":
-        return f"把「{Path(args['path']).name}」改名为「{args['new_name'].strip()}」（可撤销）"
-    if tool == "make_dir":
-        return f"新建文件夹「{args['path']}」"
     return "执行一项文件操作"
 
 
@@ -174,12 +163,6 @@ def _mark_names(card: dict, sb: Sandbox) -> dict:
 def _build_confirmation(request: dict, sb: Sandbox) -> dict:
     tool, args = request["tool"], request["args"]
     groups, notes = [], []
-
-    def group(key, title, paths, tone="neutral", planned=False):
-        items = [describe_path(sb, str(p), planned=planned) for p in paths]
-        result = {"key": key, "title": title, "tone": tone, "items": items}
-        groups.append(result)
-        return items
 
     if tool == 'task_edit':
         changed=[]
@@ -262,47 +245,6 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
             notes.append("无法按重复组归类，请逐项核对。")
         title, label, tone = "确认清理重复文件", "确认移入回收区", "warning"
         summary = f"将 {len(changed)} 项移入回收区，保留 {len(retained)} 项；请按重复组核对。"
-    elif tool == "trash":
-        changed = group("affected", "将移入回收区", [args["path"]], "warning")
-        changed[0]["disposition"] = "trash"
-        title, label, tone = "确认移入回收区", "确认移入回收区", "warning"
-        summary = "这一步会将以下项目移入回收区，可在本轮结束后撤销。"
-        if changed[0]["kind"] == "directory":
-            notes.append("此操作包含文件夹内的全部文件和子文件夹，可点击文件夹查看内容。")
-    elif tool == "move_many":
-        changed=[]
-        destinations={}
-        for move in args['moves']:
-            item=describe_path(sb,move['src'])
-            item['destination']=move['dst']
-            if move.get('uncertain'):item['message']='分类结果待核实，请在移动前查看片段或原文件'
-            destinations.setdefault(move['dst_dir'],[]).append(item)
-            changed.append(item)
-        for index,(destination,items) in enumerate(destinations.items(),1):
-            groups.append({'key':f'category_{index}','title':destination,'tone':'neutral','items':items})
-        title,label,tone='确认执行分类计划','确认批量移动','neutral'
-        summary=f'按 {len(groups)} 个目标分类移动 {len(changed)} 篇，保留原文件名；确认后统一创建缺少的目录。'
-    elif tool == "move":
-        changed = group("affected", "将移动", [args["src"]])
-        destination = group("destination", "目标文件夹", [args["dst_dir"]])
-        changed[0]["destination"] = (Path(destination[0]["path"]) / changed[0]["name"]).as_posix()
-        title, label, tone = "确认移动文件", "确认移动", "neutral"
-        summary = "保留文件名，将以下项目移动到目标文件夹。"
-        if changed[0]["kind"] == "directory":
-            notes.append("移动文件夹时，其全部内容会随之移动。")
-    elif tool == "rename":
-        changed = group("affected", "将重命名", [args["path"]])
-        new_name = unicodedata.normalize("NFC", args["new_name"].strip())
-        changed[0]["destination"] = (Path(changed[0]["path"]).parent / new_name).as_posix()
-        title, label, tone = "确认重命名", "确认重命名", "neutral"
-        summary = "文件仍在原文件夹中，名称将按下方所示更改。"
-        before, after = Path(changed[0]["path"]).suffix, Path(new_name).suffix
-        if before.lower() != after.lower():
-            notes.append(f"扩展名将从 {before or '无'} 更改为 {after or '无'}。")
-    elif tool == "make_dir":
-        changed = group("affected", "将创建文件夹", [args["path"]], planned=True)
-        title, label, tone = "确认创建文件夹", "确认创建", "neutral"
-        summary = "将在以下位置创建文件夹，尚未创建的位置暂时无法预览。"
     else:
         changed = []
         title, label, tone = "确认文件操作", "确认执行", "neutral"

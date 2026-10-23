@@ -7,10 +7,6 @@ def paths(*fields):
     return resolve
 
 
-def no_paths(args, sb):
-    return []
-
-
 def catalog_scope(args, sb):
     if args.get('catalog_id'):
         return [sb.artifacts.data['catalogs'][args['catalog_id']]['path']]
