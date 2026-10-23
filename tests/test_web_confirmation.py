@@ -116,3 +116,12 @@ def test_task_edit_card_names_no_task_id(files):
     card = build_confirmation({"tool": "task_edit", "args": dict(task_id='Tabcdef123456', revision=3, reason='用户更正',
         changes=[dict(field='allowed_effects', before=['move'], after=['move', 'trash'])])}, files)
     assert card["headline"] == "修改任务要求（1 处）" and "Tabcdef123456" not in card["summary"]
+
+
+def test_plan_card_warns_when_a_file_extension_changes(files):
+    (files.root / "报告.pdf").write_text("x"); (files.root / "相册").mkdir()
+    steps = [dict(effect="rename", source="报告.pdf", destination="报告.txt"),
+             dict(effect="rename", source="notes.md", destination="NOTES.MD"),        # case only: same type
+             dict(effect="rename", source="相册", destination="相册.bak")]           # folders have no type
+    card = build_confirmation({"tool": "file_plan", "args": {"steps": steps}}, files)
+    assert card["warnings"] == ["⚠ 扩展名会改变，改后可能无法用原来的程序打开：报告.pdf → 报告.txt。"]

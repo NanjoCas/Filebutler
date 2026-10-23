@@ -187,6 +187,13 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
             changed.append(item)
         title,label,tone='确认执行文件计划','确认执行此计划','neutral'
         summary=f"将执行 {len(changed)} 项操作。"
+        # A changed extension may leave a file that no longer opens in its program.
+        suffixes = [(Path(s['source']).name, Path(s['destination']).name) for s, item in zip(args['steps'], changed)
+                    if s['effect'] in ('move', 'rename') and item['kind'] == 'file'
+                    and Path(s['source']).suffix.lower() != Path(s['destination']).suffix.lower()]
+        if suffixes:
+            notes.append('⚠ 扩展名会改变，改后可能无法用原来的程序打开：'
+                         + '；'.join(f"{a} → {b}" for a, b in suffixes[:5]) + ('等' if len(suffixes) > 5 else '') + '。')
         for row in args.get('hidden_contents') or []:
             if row['metadata']:
                 notes.append(f"回收 {row['folder']} 时，将连同系统生成的文件一起移入回收区："
