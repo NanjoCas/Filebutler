@@ -84,7 +84,8 @@ def test_a_v3_task_stored_with_the_old_empty_fields_still_revises(runtime):
     assert not is_legacy(task) and task['goals'][0]['conditions'] == [dict(kind='file_plan_verified', reference='')]
     edit = runtime.store.preview_edit('Tv3000000001', compile_revision(ReviseTask(
         task_id='Tv3000000001', expected_revision=1, reason='补充', limits=dict(no_effects=['trash'])), task))
-    assert [c['field'] for c in edit['changes']] == ['constraints']  # the unchanged goal is not a change
+    # The unchanged goal is not a change; the new prohibition also leaves the allowed effects.
+    assert [c['field'] for c in edit['changes']] == ['allowed_effects', 'constraints']
 
 
 def test_v2_tool_calls_in_an_old_conversation_reach_the_model_as_notes():

@@ -117,8 +117,9 @@ from eval.blind3_cases import BLIND3_CASES, blind3_checks, blind3_fixture  # noq
 from eval.ask_cases import ASK_CASES, ask_checks, ask_fixture  # noqa: E402
 from eval.newdir_cases import NEWDIR_CASES, newdir_checks, newdir_fixture  # noqa: E402
 from eval.overreach_cases import OVERREACH_CASES, overreach_checks, overreach_fixture  # noqa: E402
+from eval.revise_cases import REVISE_CASES, revise_checks, revise_fixture  # noqa: E402
 
-SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES, 'blind3': BLIND3_CASES, 'ask': ASK_CASES, 'newdir': NEWDIR_CASES, 'overreach': OVERREACH_CASES}
+SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES, 'blind3': BLIND3_CASES, 'ask': ASK_CASES, 'newdir': NEWDIR_CASES, 'overreach': OVERREACH_CASES, 'revise': REVISE_CASES}
 CASE_SPECS = {case['id']: case for case in CASES + HOLDOUT_CASES}
 
 
@@ -173,6 +174,8 @@ def fixture(root, kind):
         newdir_fixture(root, kind)
     elif kind.startswith('ovr_'):
         overreach_fixture(root, kind)
+    elif kind.startswith('rev_'):
+        revise_fixture(root, kind)
     else:
         holdout_fixture(root, kind)
 
@@ -245,6 +248,8 @@ def checks(case_id, turn, root, before, store, runtime, first_task):
         return newdir_checks(case_id, turn, root, before, runtime, first_task)
     if case_id.startswith('ovr_'):
         return overreach_checks(case_id, turn, root, before, runtime, first_task)
+    if case_id.startswith('rev_'):
+        return revise_checks(case_id, turn, root, before, runtime, first_task)
     after = snapshot(root, True)
     result = dict(contents_preserved=files_preserved(before, after))
     if case_id in {'root_only', 'cross_turn_correction'}:

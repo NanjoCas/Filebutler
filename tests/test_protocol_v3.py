@@ -92,18 +92,23 @@ def test_limits_compile_to_rules_and_only_ever_narrow():
 
 
 def test_revision_compiles_to_a_reviewed_patch():
-    task = dict(goals=[dict(id='organize_1', description='o', conditions=[dict(kind='file_plan_verified')], semantic_review=False)],
+    task = dict(goals=[dict(id='organize_1', description='o', conditions=[dict(kind='file_plan_verified')],
+                            semantic_review=False, scope=['Inbox'])],
                 constraints=[dict(id='user_limits', description='x', forbidden_effects=['trash'], rules=[]),
                              dict(id='note_1', description='旧备注', forbidden_effects=[], rules=[])],
-                allowed_effects=['move'], write_roots=['Inbox'])
+                allowed_effects=['create', 'move', 'rename'], write_roots=['Inbox'])
     patch = compile_revision(ReviseTask(task_id='T', expected_revision=3, reason='更正',
-                                        parts=[dict(id='organize_1', kind='organize', description='新要求')]), task)
+                                        parts=[dict(id='organize_1', kind='organize', description='新要求', scope=['Archive'])]), task)
     assert patch.expected_revision == 3 and [g.id for g in patch.upsert_goals] == ['organize_1']
-    # A new organize part may move/create/rename, but the user's "no trash" stays.
-    assert patch.allowed_effects == ['create', 'move', 'rename'] and patch.write_roots == ['Inbox', '.']
+    # The replaced part takes its old scope with it; the user's "no trash" stays.
+    assert patch.allowed_effects is None and patch.write_roots == ['Archive']
     relax = compile_revision(ReviseTask(task_id='T', expected_revision=3, reason='用户允许回收',
                                         limits=dict()), task)
-    assert relax.remove_constraint_ids == ['user_limits', 'note_1'] and relax.allowed_effects is None
+    assert relax.remove_constraint_ids == ['user_limits', 'note_1']
+    assert relax.allowed_effects == ['create', 'move', 'rename', 'trash'] and relax.write_roots is None
+    dropped = compile_revision(ReviseTask(task_id='T', expected_revision=3, reason='不整理了', remove_part_ids=['organize_1'],
+                                          parts=[dict(id='answer_2', kind='answer', description='只回答')]), task)
+    assert dropped.allowed_effects == [] and dropped.write_roots == []
     with pytest.raises(ValueError, match='不存在'):
         compile_revision(ReviseTask(task_id='T', expected_revision=3, reason='r', remove_part_ids=['nope']), task)
 
@@ -223,6 +228,21 @@ def test_rejected_revision_keeps_the_task(tmp_path):
     assert '拒绝' in client.calls('revise_task')[0]['text']
     stored = session.sb.runtime.store.get(session.ids[TASK])
     assert stored['revision'] == 1 and stored['constraints'][0]['forbidden_effects'] == ['trash']
+
+
+def test_confirmed_relaxation_allows_the_effect(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('整理，别删东西', [step(start([dict(id='organize', kind='organize', description='m')],
+                                         limits=dict(no_effects=['trash']))), finish()])
+    _, client = session.run('b.txt 可以删', [
+        step(call('revise_task', dict(task_id=TASK, expected_revision=1, reason='用户允许回收', limits=dict()))),
+        step(call('prepare_file_plan', dict(description='回收 b.txt', actions=[dict(effect='trash', source='Inbox/b.txt')]),
+                  alias=PLAN)),
+        execute(), finish()])
+    assert errors(client) == []
+    assert not (tmp_path / 'Inbox/b.txt').exists()
+    assert 'trash' in session.sb.runtime.store.get(session.ids[TASK])['allowed_effects']
 
 
 def test_unstarted_plan_is_rebased_after_a_revision(tmp_path):
