@@ -115,7 +115,9 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | --- | --- |
 | `agent/loop.py` | 模型循环、工具分发、预算、事件与收尾；每次运行都由 TaskRuntime 控制。 |
 | `agent/task.py` | Pydantic 任务/条件/规则、TaskStore SQLite、修订/CAS、任务编辑与人工复核、blocker 记录与 task_state；完成条件只有 6 种，由 `agent/intent.py` 本地生成；v2 时期登记的旧任务按只读处理（`is_legacy`）。 |
-| `agent/task_runtime.py` | 控制工具（start_task、revise_task、ask_user、finish_task 等）、工具可见性、权限和约束检查、选项检查与用户选择约束。 |
+| `agent/task_runtime.py` | 工具分发、工具可见性、权限和约束检查；ask_user 在 `agent/asking.py`，finish_task 与所选范围在 `agent/finishing.py`（两者是 TaskRuntime 的 mixin）。 |
+| `agent/choices.py` | 用户决定表：hidden / overwrite / read / choice / skip，每行含来源（选项或文字）和任务版本；旧任务的 chosen_scope、sensitive_grants 在读取时迁移。 |
+| `agent/prompts.py` | 模型可见的全部文字（系统提示、协议说明、控制工具与字段说明）；总量上限 31,311 字符。 |
 | `agent/intent.py` | v3：把模型给的部分和限制编译成完成条件、写入范围和效果。 |
 | `agent/system_files.py`、`agent/secrets_scan.py` | 回收文件夹时的系统文件名单与内容核验；隐藏文件的密钥扫描（只加强警告）。 |
 | `agent/file_plans.py` | prepare_file_plan / execute_file_plan / inspect_file_plan。模型选择对象，本地生成目录、范围需求、清单、源快照、摘要、执行与核验；已有任务不自动扩权限。 |
