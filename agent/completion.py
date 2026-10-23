@@ -72,19 +72,16 @@ def _kind(sb, path):
     return None
 
 
-def claims(task, sb, goal_id, index, c, op, producers=()):
-    """Whether this condition is the purpose of the operation, decided locally."""
-    kind = c['kind']
-    if kind in RECEIPT_CONDITIONS:
-        product, work, _ = RECEIPT_CONDITIONS[kind]
-        return product in producers and work(sb, op)
-    return kind == 'file_plan_verified' and 'file_plans' in producers
-
-
-def _claimed(task, sb, goal_ids, op, producers):
+def claimed(task, sb, op, candidates, producers=()):
+    """The candidate goals one of whose conditions is the operation's purpose: a file
+    plan proves file_plan_verified; a receipt condition needs the executor that writes it."""
+    def claims(c):
+        if c['kind'] in RECEIPT_CONDITIONS:
+            product, work, _ = RECEIPT_CONDITIONS[c['kind']]
+            return product in producers and work(sb, op)
+        return c['kind'] == 'file_plan_verified' and 'file_plans' in producers
     goals = {g['id']: g for g in task['goals']}
-    return [gid for gid in goal_ids if any(claims(task, sb, gid, i, c, op, producers)
-                                           for i, c in enumerate(goals[gid]['conditions']))]
+    return [gid for gid in candidates if any(claims(c) for c in goals[gid]['conditions'])]
 
 
 def attribute(task, sb, op, candidates, producers=()):
@@ -93,7 +90,7 @@ def attribute(task, sb, op, candidates, producers=()):
     The fallback is conservative: an unexplained action carries every candidate
     goal's constraints. Task-wide constraints apply regardless.
     """
-    return _claimed(task, sb, candidates, op, producers) or list(candidates)
+    return claimed(task, sb, op, candidates, producers) or list(candidates)
 
 
 def require_receipt_producers(task, sb, bound):

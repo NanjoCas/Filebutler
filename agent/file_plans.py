@@ -19,7 +19,7 @@ from pydantic import Field, model_validator
 
 from agent.artifacts import digest, signature, label
 from agent import choices
-from agent.completion import selected, walk_selection, is_package, attribute, claims
+from agent.completion import selected, walk_selection, is_package, attribute, claimed
 from agent.task import StrictModel, TaskSubmission
 
 
@@ -787,16 +787,14 @@ def _attribute_steps(runtime, task, steps, requested, producers):
         raise ValueError('goal_ids 引用了任务中不存在的目标：'+'、'.join(sorted(set(requested) - known)))
     candidates = requested or [g['id'] for g in task['goals']]
     explicit = bool(requested) or len(candidates) == 1
-    goals = {g['id']: g for g in task['goals']}
     unresolved = []
     for row in steps:
         if row['effect'] == 'create': continue
         op = dict(effect=row['effect'], source=row['source'],
                   destination=row['destination'] if row['effect'] != 'trash' else None)
-        row['goal_ids'] = attribute(task, runtime.sb, op, candidates, producers)
-        if not explicit and row['goal_ids'] == candidates and not any(
-                claims(task, runtime.sb, gid, i, c, op, producers)
-                for gid in candidates for i, c in enumerate(goals[gid]['conditions'])):
+        served = claimed(task, runtime.sb, op, candidates, producers)
+        row['goal_ids'] = served or list(candidates)
+        if not explicit and not served:
             unresolved.append(row['source'])
     for row in steps:
         if row['effect'] != 'create': continue
