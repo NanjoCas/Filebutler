@@ -34,7 +34,7 @@ TOOL_NAMES = {
     'prepare_file_plan': '准备文件操作', 'execute_file_plan': '执行文件操作', 'inspect_file_plan': '查看文件操作',
     'ask_user': '向你提问', 'start_task': '登记任务', 'revise_task': '修改任务',
     'finish_task': '核验任务', 'inspect_run': '查询运行记录', 'inventory_files': '统计文件', 'list_dir': '查看文件夹',
-    'search_files': '查找文件', 'search_content': '检索论文内容', 'read_file': '阅读文件', 'file_info': '查看文件信息',
+    'search_files': '查找文件', 'search_content': '检索文件内容', 'read_file': '阅读文件', 'file_info': '查看文件信息',
     'find_duplicates': '查找重复文件', 'apply_dedup': '处理重复文件', 'deduplicate': '查重与清理',
     'report_findings': '整理查找结果', 'paper_profiles': '读取论文片段', 'submit_classification': '保存分类方案'}
 # Internal identifiers: plans, tasks, catalogs, receipts, scans, file and evidence handles.

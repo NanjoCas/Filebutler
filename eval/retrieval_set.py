@@ -6,7 +6,10 @@ evidence snippet is checked against the full text of its page first.
 
 Methods (same queries, same top k):
 - keyword: count of query terms present in a document's first two PDF pages (E12 baseline);
-- pdf_front2: search_content as shipped before stage 3 (BM25, PDFs only, first two pages).
+- pdf_front2: search_content as shipped before stage 3 (BM25, PDFs only, first two pages, whole files);
+- full_doc: full text of every readable format, each file scored whole;
+- full_chunk_<n>: full text, scored in segments of n characters, a file by its best segment
+  (search_content since stage 3 uses CHUNK).
 """
 import argparse
 import json
@@ -67,10 +70,10 @@ def metrics(paths, gold, k):
 
 
 class Keyword:
-    name = 'keyword'
+    name, config = 'keyword', dict(formats='pdf', pdf_pages=2, chunk=None)
 
     def __init__(self, sb):
-        self.sb, self.index = sb, PaperIndex()
+        self.sb, self.index = sb, PaperIndex(**self.config)
 
     def build(self):
         self.papers, self.coverage = self.index.collect(self.sb)
@@ -90,7 +93,12 @@ class PdfFront2(Keyword):
         return [h['path'] for h in self.index.search(self.sb, query, top_k=k)[0]]
 
 
-METHODS = [Keyword, PdfFront2]
+def bm25(name, **config):
+    return type(name, (PdfFront2,), dict(name=name, config=config))
+
+
+METHODS = [Keyword, PdfFront2, bm25('full_doc', formats='all', pdf_pages=None, chunk=None)] + [
+    bm25(f'full_chunk_{n}', formats='all', pdf_pages=None, chunk=n) for n in (250, 500, 1000)]
 
 
 def evaluate(roots, queries, k=5, methods=METHODS):

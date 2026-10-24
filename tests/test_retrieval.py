@@ -58,7 +58,7 @@ def test_chinese_tokenization_and_cross_language_limitation(tmp_path):
     assert not index.search(sb, "半监督 假新闻")[0]  # 明确记录 BM25 跨语言的边界
 
 
-def test_page_offset_can_be_verified_and_third_page_is_not_indexed(tmp_path):
+def test_page_offset_can_be_verified_and_later_pages_are_indexed(tmp_path):
     pdf(tmp_path / "paper.pdf", ["Introduction.", "Background filler. " * 50 + "dengue prediction", "quantum uniquekeyword"])
     sb, index = Sandbox(tmp_path), PaperIndex()
     hit = index.search(sb, "dengue prediction")[0][0]
@@ -67,7 +67,8 @@ def test_page_offset_can_be_verified_and_third_page_is_not_indexed(tmp_path):
     assert hit["snippet"] == text[hit["offset"]:hit["offset"] + 240]
     out = dispatch(sb, "read_file", path="paper.pdf", page=2, offset=hit["offset"])
     assert "dengue" in out and "第 2 页" in out
-    assert not index.search(sb, "uniquekeyword")[0]
+    later = index.search(sb, "uniquekeyword")[0][0]
+    assert later["page"] == 3 and "uniquekeyword" in dispatch(sb, "read_file", path="paper.pdf", page=3, offset=later["offset"])
     assert "没有第 4 页" in dispatch(sb, "read_file", path="paper.pdf", page=4)
     assert "超出文字长度" in dispatch(sb, "read_file", path="paper.pdf", page=1, offset=99999)
 
@@ -105,10 +106,10 @@ def test_hidden_corrupt_empty_and_symlink_files_are_reported(tmp_path):
     (root / "external.pdf").symlink_to(tmp_path / "outside.pdf")
     (root / "external_dir").symlink_to(tmp_path, target_is_directory=True)
     hits, stats = PaperIndex().search(sb, "quantum")
-    assert not hits
-    assert stats["pdf"] == 3 and stats["indexed"] == 1
+    assert [h["path"] for h in hits] == ["note.txt"]  # not the hidden or outside copies
+    assert stats["files"] == 4 and stats["indexed"] == 2
     assert stats["failed"] == 1 and stats["empty"] == 1
-    assert stats["symlinks"] == 2 and stats["non_pdf"] == 1
+    assert stats["symlinks"] == 2 and stats["unsupported"] == 0
     assert "拒绝" in dispatch(sb, query="quantum", path="..")
     assert "不检索隐藏目录" in dispatch(sb, query="quantum", path=".trash")
 
@@ -191,20 +192,39 @@ def test_all_terms_filters_partial_name_without_claiming_authorship(tmp_path):
     assert "author.pdf" in out and "noise.pdf" not in out
 
 
-def test_non_pdf_count_cannot_be_read_as_empty_pdf_count(tmp_path):
+def test_unsupported_and_unreadable_files_are_counted_apart(tmp_path, monkeypatch):
+    from agent import ocr
+    def unreadable(image): raise registry.ToolError("文字识别失败")
+    monkeypatch.setattr(ocr, "recognize", unreadable)
     pdf(tmp_path / "paper.pdf", ["reinforcement learning policy reward"])
-    for i in range(15):
-        (tmp_path / f"photo_{i}.jpg").write_bytes(b"placeholder")
+    for i in range(3):
+        (tmp_path / f"backup_{i}.zip").write_bytes(b"PK")
+    (tmp_path / "photo.jpg").write_bytes(b"placeholder")
     out = dispatch(Sandbox(tmp_path), query="reinforcement learning")
-    assert "扫描PDF=1，已索引PDF=1，解析失败PDF=0，前两页无可检索词项PDF=0" in out
-    assert "跳过非PDF文件=15（不是无文字层PDF）" in out
+    assert "文件=2，已索引=1，读取失败=1，没有文字=0；不支持的格式=3（压缩包等）" in out
     assert "低分不证明主题不相关" in out
 
 
-def test_empty_first_two_pages_does_not_claim_whole_pdf_has_no_text(tmp_path):
+def test_office_web_and_text_hits_give_offsets_read_file_can_check(tmp_path):
+    from eval.retrieval_mixed import _pptx, _xlsx
+    _pptx(tmp_path / "汇报.pptx", [("背景", "谣言检测", ""), ("实验设置", "数据集 Weibo21，学习率 2e-5", "")])
+    _xlsx(tmp_path / "结果.xlsx", [("主实验", [("模型", "F1"), ("BERT", 0.85)]), ("超参数", [("温度系数", 0.07)])])
+    (tmp_path / "页.html").write_text("<script>var x = 'quantumleap';</script><p>知识蒸馏：学生模型模仿教师模型</p>")
+    (tmp_path / "笔记.md").write_text("开头。" * 300 + "图神经网络的过平滑问题")
+    sb = Sandbox(tmp_path)
+    for query, name, word in [("Weibo21 学习率", "汇报.pptx", "Weibo21"), ("温度系数", "结果.xlsx", "温度系数"),
+                              ("知识蒸馏", "页.html", "知识蒸馏"), ("过平滑", "笔记.md", "过平滑")]:
+        hit = PaperIndex().search(sb, query)[0][0]
+        assert hit["path"] == name and hit["page"] is None and word in hit["snippet"]
+        assert word in dispatch(sb, "read_file", path=name, offset=hit["offset"], max_chars=300)
+    assert hit["offset"] >= 600  # the note's hit is in its own segment, not at the start
+    assert not PaperIndex().search(sb, "quantumleap")[0]  # script text is not content
+    assert "page=" not in dispatch(sb, query="知识蒸馏") and "offset=" in dispatch(sb, query="知识蒸馏")
+
+
+def test_text_on_a_later_page_is_found(tmp_path, monkeypatch):
+    from agent import ocr
+    monkeypatch.setattr(ocr, "recognize", lambda image: "")
     pdf(tmp_path / "later.pdf", ["", "", "reinforcement learning"])
-    out = dispatch(Sandbox(tmp_path), query="reinforcement")
-    assert "扫描PDF=1，已索引PDF=0，解析失败PDF=0，前两页无可检索词项PDF=1" in out
-    assert "跳过非PDF文件=0" in out
-    # 第三页有可读取文本，只是超出本工具检索范围。
-    assert "reinforcement" in dispatch(Sandbox(tmp_path), "read_file", path="later.pdf", page=3)
+    hit = PaperIndex().search(Sandbox(tmp_path), "reinforcement")[0][0]
+    assert hit["page"] == 3

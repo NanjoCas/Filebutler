@@ -34,7 +34,7 @@ def metrics(paths, gold, k):
 def evaluate(root: Path, queries: list[dict], k=5):
     if not root.is_dir():
         raise FileNotFoundError(f"缺少真实语料：{root}")
-    sb, index = Sandbox(root), PaperIndex()
+    sb, index = Sandbox(root), PaperIndex('pdf', pdf_pages=2, chunk=None)  # the E12 setting
     start = time.perf_counter()
     papers, coverage = index.collect(sb)
     build_seconds = time.perf_counter() - start

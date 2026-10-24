@@ -16,6 +16,7 @@
 - **2026-10-24 功能增加方案**（未实施）：`docs/feature-plan-2026-10-24.md`，包括读 Office 文档、OCR、模糊语义搜索。第 9 节有 3 个待定问题。
 - **2026-10-24 功能方案阶段 0、1 完成**：新增统一抽取层 `agent/extract.py`，read_file、search_content、paper_profiles、敏感规则都从这里取文字；`agent/document_cache.cached` 按内容缓存所有格式，PDF 键不变，旧缓存仍然有效。read_file 新增支持 docx/doc/rtf/odt（macOS textutil）、pptx（python-pptx，每张幻灯片一个单元，含备注、表格、分组）、xlsx（openpyxl，取值而不是公式，每表最多 5000 行）、html（去掉标签）、rst。锁文件、损坏或加密文件、解压后超过 300MB 的文件给出明确错误。本机 160 个文件中 158 个读取成功，失败的 2 个是测试假文件。搜索还只索引 PDF（阶段 3 再扩大）。离线测试 424 passed、2 xfailed；没有做真实复验。
 - **2026-10-24 功能方案阶段 2（OCR）完成**（`2ee7b3f`）：没有新增 Python 依赖。`agent/ocr_vision.swift` 调用 macOS Vision 在本机识别，第一次使用时由 swiftc 编译到 `.cache/`；没有 macOS 或编译器时提示"无法识别"。read_file 可以读图片（会按 EXIF 方向转正）和文字少于 20 字的 PDF 页，结果里注明"本地 OCR 识别，可能有错字"，识别结果按页缓存。search_content 每次调用最多花 20 秒识别扫描页，剩下的下次检索继续。本机 70 张图片 0 失败，平均 0.33 秒；19 份 PDF 中有 26 个扫描页，25 页识别出文字，每页约 1 秒；真实论文首页渲染后识别，与文字层的相似度为 0.94。测试图片如果用 Hiragino 字体，英文里的 d 会被认成 a，所以评测改用 Arial Unicode。离线测试 434 passed；第 38 轮 ocr 15/15。
+- **2026-10-24 功能方案阶段 3（全文 BM25）完成**：先冻结检索评测集（`6c29b17`，`eval/retrieval_set_20261024.yaml`，61 题：E12 原题 12、新增主题 18、只在第 3 页以后才有的细节 19、混合格式 12；混合格式资料库由 `eval/retrieval_mixed.py` 生成；真实论文复制到临时目录再测，不往 `data/real` 写缓存），再改 `tools/retrieval.py`：检索所有能读的格式的全文（PDF、文本、Office、网页，图片和扫描页本地 OCR），按 500 字分段计 BM25，文件取最好的一段；非 PDF 的命中只给 offset（对应 read_file 的 offset）。去掉了 `pdf_pages` 参数，提示总字数 31,209→30,956。`python -m eval.retrieval_set --out <新目录>`：Recall@5 全部 52.9%→78.4%（细节 63.2%→89.5%，混合格式 9.1%→90.9%，E12 仍为 81.8%，跨语言 4.2%→8.3%）；整篇打分 76.0%、MRR 0.772，分段 500 字 78.4%、MRR 0.738，两者融合只差 1–2 题，选分段是因为召回最高、查询快约 8 倍（19ms 对 145ms）。代价：第一次建索引变慢，51 篇论文 + 12 个混合文件冷启动 6.3 秒（原来 1.5 秒），换会话读 sqlite 缓存 0.5 秒；资料库很大时第一次检索会很慢，没有设时间上限。题目和标注由同一人写成，不是盲测。
 - **2026-10-24 状态显示按"用户下一步做什么"重排，内部状态不动**（用户决定）：`agent/reporting.display_state` 给报告加上 `display` 字段，取值为 done / answered / confirm / waiting / unfinished / cancelled。只读任务（没有执行过文件操作）即使是 needs_review，也显示为"已回答"，回复里不再写"这一轮的结果待核实"；改动过文件的任务显示"请确认结果"。网页标签（`web/app.js` outcomeLabel、`web/tasks.js`）统一为：已完成 / 已回答 / 请确认结果 / 等你回答 / 没有完成 / 已取消。查找结果表里的"模型判断（待复核）"改为"模型判断"。起因是第 37 轮：同一个问题，模型登记了查找任务、引用了片段的反而显示"待核实"，直接回答的却没有任何提示。任务状态、核验和评测判定都没变，第 37 轮仍记为 13/15。
 - **2026-10-24 敏感文件检测默认关闭**（用户决定：先不做，交给用户自己选资料库范围）：新配置 `sensitive_files: false`。关闭时文件名、内容规则都不运行，任务协议不再显示敏感文件规则（`SENSITIVE_RULE`），所有文件正常读取；设为 `true` 恢复 2026-10-22 的行为。带 `sensitive` 标签的 4 个冻结场景由 `eval/live_policy.py` 单独打开。离线测试 412 passed、2 xfailed；没有做真实复验。
 - **第 20 轮：两套盲测各 3 次 + v2 对照**：v3 47/48 = 97.9%（95% 区间 89.1%–99.6%），v2 35/48 = 72.9%（59.0%–83.4%）；费用 ¥0.575 对 ¥0.978。
@@ -143,7 +144,7 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | `tools/registry.py`、`tools/scopes.py` | 能力声明、Typed ToolResult、作用域与操作预览适配；保留旧字符串返回兼容。 |
 | `tools/classification.py` | 论文卡片、完整分类提案、旧本地执行器；分类由模型选择，可传维度/目录/编号。 |
 | `tools/dedup.py` | 字节、规范化全文及近似候选去重；近似版本需逐组核对，不能用相似度自动当重复。 |
-| `tools/retrieval.py`、`tools/fs_read.py` | BM25、文本/PDF 读取；页范围可配置，默认前两页，不保证穷尽，不含 OCR。 |
+| `tools/retrieval.py`、`tools/fs_read.py` | 全文 BM25（500 字分段，所有能读的格式，含 OCR 文字）；read_file 读 PDF 默认前两页；检索不保证穷尽，不跨语言。 |
 | `tools/fs_write.py` | 旧单项创建/移动/改名/回收，继续保留。 |
 | `safety/atomic.py` | 新执行器的原子禁止覆盖移动：macOS renamex_np、Linux renameat2；缺接口拒绝，不退回覆盖型 rename。 |
 | `safety/names.py` | 文件名隔离：工具结果中含换行、控制符、双向控制符、尖括号的名字统一转义并附 F 标识；确认卡片上的可见标记。 |

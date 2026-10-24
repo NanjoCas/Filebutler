@@ -1,8 +1,10 @@
-"""论文前两页的 BM25 主题检索。BM25 索引属于 Sandbox 实例；PDF 抽取按内容和页范围缓存到本资料库，可跨运行复用。
+"""全文 BM25 检索：PDF、文本、Office、网页，图片和扫描页经本地 OCR（功能方案阶段 3，2026-10-24）。
 
+索引属于 Sandbox 实例；文字由 agent/extract 提供，按内容缓存到本资料库，可跨运行复用。
+每个文件按约 CHUNK 字切段，按段计 BM25，文件得分取最好的一段；片段和偏移取自该段，可直接交给 read_file。
 采用正 IDF：log(1 + (N-df+0.5)/(df+0.5))，k1=1.2、b=0.75。
 参考 https://www.elastic.co/blog/practical-bm25-part-2-the-bm25-algorithm-and-its-variables
-按论文计文档频率，文件名和目录不参与评分；候选片段不是语义相关性的保证。
+文件名和目录不参与评分；候选片段不是语义相关性的保证。
 """
 import html
 import json
@@ -12,7 +14,7 @@ import re
 import time
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -22,9 +24,9 @@ from safety.sandbox import Sandbox
 from tools.fs_read import _existing, _paginate
 from tools.registry import ToolError, tool
 from tools.scopes import paths
-from agent.policy import evidence_policy
 
 OCR_SECONDS = 20  # OCR time per search; scanned pages left over are recognised by the next one
+CHUNK = 500       # characters per scored segment (eval/retrieval_set.py compares sizes)
 
 STOP = set("a an and are as at be been by can for from has have in is it its of on or that the their this to was were we with".split())
 TOKEN = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]+")
@@ -42,25 +44,60 @@ def tokenize(text: str) -> list[str]:
 
 
 @dataclass
+class Segment:
+    unit: int      # index into Paper.pages
+    start: int     # character offset in that unit
+    terms: Counter
+    length: int
+
+
+@dataclass
 class Paper:
-    pages: list[str]
+    pages: list[str]   # text units: PDF pages, slides, sheets; one for other files
     terms: Counter
     length: int
     error: str = ""
+    pdf: bool = True
+    segments: list[Segment] = field(default_factory=list)
+
+    def offset(self, unit, start):
+        """Offset for read_file: within the page for a PDF, else within the joined text."""
+        return start if self.pdf else sum(len(u) + 1 for u in self.pages[:unit]) + start
+
+
+def segments(pages, size):
+    """Segments of about size characters; size None keeps the whole file as one segment."""
+    if size is None:
+        terms = Counter(tokenize("\n".join(pages)))
+        return [Segment(0, 0, terms, sum(terms.values()))]
+    found = []
+    for unit, text in enumerate(pages):
+        for start in range(0, max(1, len(text)), size):
+            terms = Counter(tokenize(text[start:start + size]))
+            if terms:
+                found.append(Segment(unit, start, terms, sum(terms.values())))
+    return found
 
 
 class PaperIndex:
-    def __init__(self):
+    """formats 'all' reads every supported format, 'pdf' only PDFs; pdf_pages None is the
+    whole PDF; chunk None scores whole files (the pre-stage-3 search was pdf, 2, None)."""
+
+    def __init__(self, formats="all", pdf_pages=None, chunk=CHUNK):
+        self.formats, self.pdf_pages, self.chunk = formats, pdf_pages, chunk
         self.cache = {}  # 实际路径 -> (stat 指纹, Paper)；每次查询重新枚举可见文件
 
-    def collect(self, sb: Sandbox, path: str = ".", pdf_pages=2):
+    def collect(self, sb: Sandbox, path: str = "."):
+        from agent import ocr
+        from agent.extract import READABLE_EXTS, units
         base = _existing(sb, path)
         if not base.is_dir():
             raise ToolError(f"{path} 不是文件夹")
         if any(p.startswith(".") for p in base.relative_to(sb.root).parts):
             raise ToolError("不检索隐藏目录或回收区")
+        readable = READABLE_EXTS if self.formats == "all" else {".pdf"}
         papers, live = {}, set()
-        stats = dict(pdf=0, indexed=0, failed=0, empty=0, non_pdf=0, symlinks=0, extracted=0)
+        stats = dict(files=0, indexed=0, failed=0, empty=0, unsupported=0, symlinks=0, extracted=0)
         for directory, dirs, files in os.walk(base, followlinks=False):
             parent = Path(directory)
             stats["symlinks"] += sum((parent / d).is_symlink() for d in dirs if not d.startswith("."))
@@ -72,29 +109,28 @@ class PaperIndex:
                 if p.is_symlink():
                     stats["symlinks"] += 1
                     continue
-                if p.suffix.lower() != ".pdf":
-                    stats["non_pdf"] += 1
+                if p.suffix.lower() not in readable:
+                    stats["unsupported"] += 1
                     continue
                 p = sb.path(sb.rel(p))  # 抽取前再次走沙盒检查
-                stats["pdf"] += 1
+                stats["files"] += 1
                 live.add(p)
                 st = p.stat()
                 signature = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
                 cached = self.cache.get(p)
-                if not cached or cached[0] != signature or cached[2] != pdf_pages:
+                if not cached or cached[0] != signature:
                     stats["extracted"] += 1
-                    from agent import ocr
                     skipped = ocr.stats(sb)["skipped"]
                     try:
-                        from agent.extract import units
-                        pages = units(sb, p, pages=pdf_pages)
+                        pages = units(sb, p, pages=self.pdf_pages)
                         terms = Counter(tokenize("\n".join(pages)))
-                        paper = Paper(pages, terms, sum(terms.values()))
+                        paper = Paper(pages, terms, sum(terms.values()), pdf=p.suffix.lower() == ".pdf",
+                                      segments=segments(pages, self.chunk))
                     except Exception as e:
                         paper = Paper([], Counter(), 0, type(e).__name__)
-                    # Scanned pages left for lack of time are recognised by a later search.
+                    # Scanned pages and images left for lack of time are recognised by a later search.
                     complete = ocr.stats(sb)["skipped"] == skipped
-                    self.cache[p] = (signature if complete else None, paper, pdf_pages)
+                    self.cache[p] = (signature if complete else None, paper)
                 paper = self.cache[p][1]
                 if paper.error:
                     stats["failed"] += 1
@@ -107,7 +143,7 @@ class PaperIndex:
         self.cache = {p: v for p, v in self.cache.items() if p in live}
         return papers, stats
 
-    def search(self, sb: Sandbox, query: str, path: str = ".", top_k: int = 5, match: str = "any", pdf_pages=2):
+    def search(self, sb: Sandbox, query: str, path: str = ".", top_k: int = 5, match: str = "any"):
         query_terms = set(tokenize(query))
         if not query_terms:
             raise ToolError("query 没有可检索的关键词，请提供主题词")
@@ -115,43 +151,51 @@ class PaperIndex:
         before = dict(ocr.stats(sb))
         sb._ocr_deadline = time.monotonic() + OCR_SECONDS
         try:
-            papers, stats = self.collect(sb, path, pdf_pages)
+            papers, stats = self.collect(sb, path)
         finally:
             sb._ocr_deadline = None
         after = ocr.stats(sb)
-        stats.update({f"ocr_{k}": after[k] - before[k] for k in ("pages", "skipped", "failed")})
-        n = len(papers)
-        if not n:
+        stats.update({f"ocr_{k}": after[k] - before[k] for k in ("pages", "images", "skipped", "failed")})
+        segs = [s for p in papers.values() for s in p.segments]
+        if not segs:
             return [], stats
-        df = Counter(t for p in papers.values() for t in p.terms)
-        avg = sum(p.length for p in papers.values()) / n
+        n = len(segs)
+        df = Counter(t for s in segs for t in s.terms if t in query_terms)
+        avg = sum(s.length for s in segs) / n
         idf = {t: math.log1p((n - df[t] + 0.5) / (df[t] + 0.5)) for t in query_terms}
+        bm25 = lambda s: sum(idf[t] * s.terms[t] * 2.2 / (s.terms[t] + 1.2 * (0.25 + 0.75 * s.length / avg))
+                             for t in sorted(query_terms) if s.terms[t])
         hits = []
         for rel, p in papers.items():
             if match == "all" and not query_terms.issubset(p.terms):
                 continue
-            score = sum(idf[t] * p.terms[t] * 2.2 /
-                        (p.terms[t] + 1.2 * (0.25 + 0.75 * p.length / avg))
-                        for t in sorted(query_terms) if p.terms[t])
+            score, best = max(((bm25(s), i) for i, s in enumerate(p.segments)), key=lambda x: (x[0], -x[1]))
             if score > 0:
-                page, offset, snippet = best_snippet(p.pages, query_terms, idf)
-                hits.append(dict(path=rel, score=score, page=page, offset=offset, snippet=snippet))
+                seg = p.segments[best]
+                end = seg.start + self.chunk if self.chunk else None
+                unit, start, snippet = best_snippet(p.pages, query_terms, idf, seg.unit if self.chunk else None, seg.start, end)
+                hits.append(dict(path=rel, score=score, page=unit + 1 if p.pdf else None,
+                                 offset=p.offset(unit, start), snippet=snippet))
         hits.sort(key=lambda h: (-h["score"], h["path"]))
         stats["matched"] = len(hits)
         return hits[:top_k], stats
 
 
-def best_snippet(pages, query_terms, idf):
+def best_snippet(pages, query_terms, idf, unit=None, start=0, end=None):
+    """Best 240-character window (step 120) in one unit's [start, end), or in every unit."""
     # 在原文窗口上评分，偏移可直接交给 read_file；不在规范化后的字符串上计算偏移。
     candidates = []
-    for page, text in enumerate(pages, 1):
-        for offset in range(0, len(text), 120):
+    for index, text in enumerate(pages):
+        if unit is not None and index != unit:
+            continue
+        stop = len(text) if end is None else min(len(text), end)
+        for offset in range(start if unit is not None else 0, max(stop, 1), 120):
             fragment = text[offset:offset + 240]
             matched = query_terms.intersection(tokenize(fragment))
             score = sum(idf[t] for t in sorted(matched))
-            candidates.append((score, page, offset, fragment))
-    _, page, offset, snippet = max(candidates, key=lambda x: (x[0], -x[1], -x[2]))
-    return page, offset, snippet
+            candidates.append((score, index, offset, fragment))
+    _, index, offset, snippet = max(candidates, key=lambda x: (x[0], -x[1], -x[2]))
+    return index, offset, snippet
 
 
 class ContentSearchArgs(BaseModel):
@@ -162,32 +206,28 @@ class ContentSearchArgs(BaseModel):
     match: Literal["any", "all"] = Field("any", description="any 为相关性召回；all 要求所有查询词均出现，适合 Sumiko Anno 等完整姓名；不是作者身份验证")
     retry_reason: Literal["insufficient_evidence"] | None = Field(None, description="普通查找已有命中但证据不足，需要唯一一次补充查询时填写")
     view: Literal["compact", "detail", "evidence"] = Field("compact", description="compact 返回路径/分数/位置；detail 加片段；evidence 返回本地文件与证据标识的卡片，适合普通主题查找")
-    pdf_pages: int | None = Field(None, ge=1, le=10000, description='不填沿用任务策略；显式 null 抽取全部文字层，正整数抽取前 N 页')
 
 
 @tool("search_content",
-      "递归用 BM25 找 PDF 候选；抽取范围由任务 evidence.pdf_pages 或本次 pdf_pages 指定，默认前两页。"
+      "递归用 BM25 检索文件全文：PDF、文本、Office、网页，图片和扫描页本地 OCR。"
       "按需求设置 top_k 并翻页，不必先列目录；view=evidence 返回引用片段。查全名可用 match=all，不能保证作者身份。"
-      "英文论文用英文关键词；分数不是置信度。compact 候选需正文核实，evidence 已提供原文，确实不足时才 read_file。无命中不代表没有相关论文，跨语言或同义词会漏检。"
-      "低分不能证明主题不相关；跳过非PDF文件不等于PDF无文字层，前两页无词项也不能诊断整份PDF没有文字层。"
+      "英文论文用英文关键词；分数不是置信度。compact 候选需正文核实，evidence 已提供原文，确实不足时才 read_file。无命中不代表没有相关文件，跨语言或同义词会漏检；低分不能证明主题不相关。"
       "找文件名/后缀用 search_files；全部分类或要求找全时不能只依赖 top_k，需要遍历核查。"
       "例：{\"query\":\"semi supervised fake news detection\",\"top_k\":5}",
       ContentSearchArgs, read_scope=paths('path'), usage='queries')
 def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
     if not hasattr(sb, "_paper_index"):
         sb._paper_index = PaperIndex()
-    pages = a.pdf_pages if 'pdf_pages' in a.model_fields_set else evidence_policy(sb).pdf_pages
-    hits, stats = sb._paper_index.search(sb, a.query, a.path, a.top_k, a.match, pages)
-    coverage = '前两页' if pages == 2 else f'前 {pages} 页' if pages is not None else '全部文字层页'
-    header = (f"OK: BM25，检索范围仅 PDF {coverage}\n"
-              f"PDF覆盖：扫描PDF={stats['pdf']}，已索引PDF={stats['indexed']}，解析失败PDF={stats['failed']}，"
-              f"{coverage}无可检索词项PDF={stats['empty']}\n"
-              f"范围外：跳过非PDF文件={stats['non_pdf']}（不是无文字层PDF），跳过符号链接={stats['symlinks']}\n"
-              f"有词项重合 {stats.get('matched', 0)} 篇，候选 {len(hits)} 篇；低分不证明主题不相关，不能保证找全。")
-    if stats.get('ocr_pages') or stats.get('ocr_skipped') or stats.get('ocr_failed'):
-        header += (f"\n扫描页本地 OCR：{stats['ocr_pages']} 页已识别"
-                   + (f"，{stats['ocr_skipped']} 页因时间上限未识别（再次检索会继续）" if stats['ocr_skipped'] else '')
-                   + (f"，{stats['ocr_failed']} 页识别失败" if stats['ocr_failed'] else ''))
+    hits, stats = sb._paper_index.search(sb, a.query, a.path, a.top_k, a.match)
+    header = (f"OK: BM25 全文检索\n"
+              f"覆盖：文件={stats['files']}，已索引={stats['indexed']}，读取失败={stats['failed']}，没有文字={stats['empty']}；"
+              f"不支持的格式={stats['unsupported']}（压缩包等），跳过符号链接={stats['symlinks']}\n"
+              f"有词项重合 {stats.get('matched', 0)} 个文件，候选 {len(hits)} 个；低分不证明主题不相关，不能保证找全。")
+    if any(stats.get(k) for k in ('ocr_pages', 'ocr_images', 'ocr_skipped', 'ocr_failed')):
+        header += (f"\n本地 OCR：{stats['ocr_pages']} 个扫描页、{stats['ocr_images']} 张图片已识别"
+                   + (f"，{stats['ocr_skipped']} 个因时间上限未识别（再次检索会继续）" if stats['ocr_skipped'] else '')
+                   + (f"，{stats['ocr_failed']} 个识别失败" if stats['ocr_failed'] else ''))
+    where = lambda h: (f"page={h['page']} " if h['page'] else '') + f"offset={h['offset']}"
     artifacts = getattr(sb, 'artifacts', None)
     from agent.sensitive import enabled, reasons, granted
     def withheld(hit):
@@ -217,10 +257,10 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
                 raise ToolError('检索期间文件变化，请重新查询后再引用')
             snippet = hit['snippet'][:min(240, allowance)]
             eid = artifacts.evidence(fid, 'fragment', page=hit['page'], offset=hit['offset'],
-                                     excerpt=snippet, scope=f'PDF {coverage}的检索命中片段',
+                                     excerpt=snippet, scope='全文检索命中片段',
                                      extracted_pages=len(sb._paper_index.cache[p][1].pages))
             name = p.stem[:65]
-            blocks.append(f"{index}. file:{fid} evidence:{eid} p={hit['page']} offset={hit['offset']} 名称={name}\n"
+            blocks.append(f"{index}. file:{fid} evidence:{eid} {where(hit)} 名称={name}\n"
                           f'<file_content>{html.escape(snippet, quote=False)}</file_content>')
         footer = f'第 {a.page}/{total_pages} 页'
         if a.page < total_pages: footer += f'，下一页用 page={a.page+1}'
@@ -228,7 +268,7 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
     blocks = []
     for i, h in enumerate(hits, 1):
         blocks.append(f"{i}. {json.dumps(h['path'], ensure_ascii=False)} · score={h['score']:.4f} · "
-                      f"page={h['page']} offset={h['offset']}")
+                      f"{where(h)}")
         if a.view == "detail":
             why = withheld(h)
             if why:

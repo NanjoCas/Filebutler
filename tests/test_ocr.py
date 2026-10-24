@@ -101,10 +101,10 @@ def test_search_finds_scanned_text_and_resumes_after_the_time_limit(tmp_path, mo
     search = lambda: registry.dispatch('search_content', json.dumps(dict(query='federated learning', path='文献')), sb)
     monkeypatch.setattr(retrieval, 'OCR_SECONDS', 0)
     first = search()
-    assert '2 页因时间上限未识别' in first and '候选 0 篇' in first and calls == []
+    assert '2 个因时间上限未识别' in first and '候选 0 个' in first and calls == []
     monkeypatch.setattr(retrieval, 'OCR_SECONDS', 20)
     second = search()
-    assert '2 页已识别' in second and '候选 2 篇' in second and len(calls) == 2
+    assert '2 个扫描页、0 张图片已识别' in second and '候选 2 个' in second and len(calls) == 2
 
 
 def test_without_ocr_a_scan_says_so_and_an_image_gets_a_clear_error(tmp_path, monkeypatch):
