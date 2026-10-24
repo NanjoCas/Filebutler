@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import time
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ from tools.fs_read import _existing, _paginate
 from tools.registry import ToolError, tool
 from tools.scopes import paths
 from agent.policy import evidence_policy
+
+OCR_SECONDS = 20  # OCR time per search; scanned pages left over are recognised by the next one
 
 STOP = set("a an and are as at be been by can for from has have in is it its of on or that the their this to was were we with".split())
 TOKEN = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]+")
@@ -80,6 +83,8 @@ class PaperIndex:
                 cached = self.cache.get(p)
                 if not cached or cached[0] != signature or cached[2] != pdf_pages:
                     stats["extracted"] += 1
+                    from agent import ocr
+                    skipped = ocr.stats(sb)["skipped"]
                     try:
                         from agent.extract import units
                         pages = units(sb, p, pages=pdf_pages)
@@ -87,7 +92,9 @@ class PaperIndex:
                         paper = Paper(pages, terms, sum(terms.values()))
                     except Exception as e:
                         paper = Paper([], Counter(), 0, type(e).__name__)
-                    self.cache[p] = (signature, paper, pdf_pages)
+                    # Scanned pages left for lack of time are recognised by a later search.
+                    complete = ocr.stats(sb)["skipped"] == skipped
+                    self.cache[p] = (signature if complete else None, paper, pdf_pages)
                 paper = self.cache[p][1]
                 if paper.error:
                     stats["failed"] += 1
@@ -104,7 +111,15 @@ class PaperIndex:
         query_terms = set(tokenize(query))
         if not query_terms:
             raise ToolError("query 没有可检索的关键词，请提供主题词")
-        papers, stats = self.collect(sb, path, pdf_pages)
+        from agent import ocr
+        before = dict(ocr.stats(sb))
+        sb._ocr_deadline = time.monotonic() + OCR_SECONDS
+        try:
+            papers, stats = self.collect(sb, path, pdf_pages)
+        finally:
+            sb._ocr_deadline = None
+        after = ocr.stats(sb)
+        stats.update({f"ocr_{k}": after[k] - before[k] for k in ("pages", "skipped", "failed")})
         n = len(papers)
         if not n:
             return [], stats
@@ -169,6 +184,10 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
               f"{coverage}无可检索词项PDF={stats['empty']}\n"
               f"范围外：跳过非PDF文件={stats['non_pdf']}（不是无文字层PDF），跳过符号链接={stats['symlinks']}\n"
               f"有词项重合 {stats.get('matched', 0)} 篇，候选 {len(hits)} 篇；低分不证明主题不相关，不能保证找全。")
+    if stats.get('ocr_pages') or stats.get('ocr_skipped') or stats.get('ocr_failed'):
+        header += (f"\n扫描页本地 OCR：{stats['ocr_pages']} 页已识别"
+                   + (f"，{stats['ocr_skipped']} 页因时间上限未识别（再次检索会继续）" if stats['ocr_skipped'] else '')
+                   + (f"，{stats['ocr_failed']} 页识别失败" if stats['ocr_failed'] else ''))
     artifacts = getattr(sb, 'artifacts', None)
     from agent.sensitive import enabled, reasons, granted
     def withheld(hit):
