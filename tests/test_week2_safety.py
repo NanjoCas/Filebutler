@@ -35,8 +35,31 @@ def test_invalid_input_asks_again_until_valid():
     assert asked[1] == "无效输入「全部允许」，请输入 y / n / a："
 
 
-def test_eof_rejects():
+def test_eof_stops_without_counting_as_a_refusal():
+    # Routing redesign S1: a closed input is interrupted(eof), not the user saying no.
     def eof(q):
         raise EOFError
     c = Confirmer("always", ask=eof)
-    assert not c.allow("trash", {"path": "x"}) and c.rejections == 1
+    outcome = c.decide("trash", {"path": "x"})
+    assert not outcome.approved and (outcome.decision, outcome.reason, outcome.source) == ('interrupted', 'eof', 'cli')
+    assert c.rejections == 0
+
+
+def test_ctrl_c_and_timeout_are_kept_apart_from_a_refusal():
+    def interrupt(q):
+        raise KeyboardInterrupt
+    assert Confirmer("always", ask=interrupt).decide("trash", {}).reason == 'user_interrupt'
+    c = Confirmer("always", ask_action=lambda request: 'timed_out', source='web')
+    outcome = c.decide("trash", {"path": "x"})
+    assert (outcome.decision, outcome.source) == ('timed_out', 'web') and c.rejections == 0
+
+
+def test_a_list_refused_this_run_is_not_asked_again_even_after_allow_all():
+    answers = iter(['n', 'a'])
+    asked = []
+    c = Confirmer("always", ask=lambda q: asked.append(q) or next(answers))
+    first = c.decide("file_plan", {"plan": "X1"}, manifest_key='same')
+    again = c.decide("file_plan", {"plan": "X2"}, manifest_key='same')  # new plan id, same list
+    assert first.decision == again.decision == 'declined' and again.repeated and len(asked) == 1
+    assert c.decide("file_plan", {"plan": "X3"}, manifest_key='other').approved  # "a": allow all
+    assert not c.decide("file_plan", {"plan": "X4"}, manifest_key='same').approved and len(asked) == 2

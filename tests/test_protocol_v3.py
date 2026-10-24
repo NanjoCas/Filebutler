@@ -338,6 +338,80 @@ def test_a_part_must_be_one_the_plan_can_prove(tmp_path):
         prepare(r, PrepareFilePlan(description='m', actions=[dict(ARCHIVE_A[0], part='nope')]))
 
 
+def test_goal_ids_naming_two_parts_cannot_share_one_action(tmp_path):
+    # Routing redesign S1 (docs/agent-routing-redesign-2026-10-24.md 2.1): archiving a with
+    # goal_ids=[g1, g2] and no part used to pass both parts while b stayed unrenamed.
+    from agent.file_plans import PrepareFilePlan, prepare, execute
+    r, sb = two_part_runtime(tmp_path)
+    with pytest.raises(ValueError, match='AMBIGUOUS_GOAL'):
+        prepare(r, PrepareFilePlan(description='只归档 a', actions=ARCHIVE_A, goal_ids=['g1', 'g2']))
+    assert (tmp_path / 'Inbox/a.txt').is_file()
+    plan = prepare(r, PrepareFilePlan(description='只归档 a', actions=[dict(ARCHIVE_A[0], part='g1')], goal_ids=['g1', 'g2']))
+    execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
+    checks = part_checks(r, sb)
+    assert checks['g1']['passed'] and not checks['g2']['passed']
+    assert (tmp_path / 'Inbox/b.txt').is_file() and not (tmp_path / 'Inbox/c.txt').exists()
+
+
+def test_a_plan_bound_ambiguously_before_strict_attribution_proves_neither_part(tmp_path):
+    from agent.file_plans import PrepareFilePlan, prepare, execute
+    r, sb = two_part_runtime(tmp_path)
+    plan = prepare(r, PrepareFilePlan(description='只归档 a', actions=[dict(ARCHIVE_A[0], part='g1')], goal_ids=['g1']))
+    execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
+    # What a pre-2026-10-24 plan looked like: its one action owned by both parts.
+    for receipt in r.current['file_plan_receipts'].values():
+        for s in receipt['payload']['steps']:
+            s['goal_ids'] = ['g1', 'g2']
+    r.current['file_plan_bindings'] = {pid: dict(b, goal_ids=['g1', 'g2']) for pid, b in r.current['file_plan_bindings'].items()}
+    checks = part_checks(r, sb)
+    assert not checks['g1']['passed'] and not checks['g2']['passed']
+
+
+def test_a_shared_parent_folder_proves_no_part_on_its_own(tmp_path):
+    from agent.file_plans import PrepareFilePlan, prepare, execute
+    r, sb = two_part_runtime(tmp_path)
+    plan = prepare(r, PrepareFilePlan(description='归档并改名', actions=[
+        dict(effect='move', source='Inbox/a.txt', destination='New/a.txt', part='g1'),
+        dict(effect='move', source='Inbox/b.txt', destination='New/c.txt', part='g2')]))
+    [folder] = [s for s in plan['payload']['steps'] if s['effect'] == 'create']
+    assert sorted(folder['goal_ids']) == ['g1', 'g2']
+    execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
+    (tmp_path / 'New/c.txt').rename(tmp_path / 'Inbox/b.txt')  # g2's own action undone
+    checks = part_checks(r, sb)
+    assert checks['g1']['passed'] and not checks['g2']['passed']
+
+
+def test_a_plan_the_user_declined_is_not_asked_again_this_run_under_a_new_id(tmp_path):
+    from agent.file_plans import PrepareFilePlan, prepare, execute
+    r, sb = two_part_runtime(tmp_path)
+    asked = []
+    confirmer = Confirmer('always', ask=lambda q: asked.append(q) or 'n')
+    actions = [dict(ARCHIVE_A[0], part='g1')]
+    first = prepare(r, PrepareFilePlan(description='归档 a', actions=actions))
+    with pytest.raises(ValueError, match='USER_DECLINED'):
+        execute(r, first['id'], OpLog(sb, 'one'), confirmer)
+    second = prepare(r, PrepareFilePlan(description='再试一次', actions=actions))
+    assert second['id'] != first['id']
+    with pytest.raises(ValueError, match='本轮已拒绝过同一操作清单'):
+        execute(r, second['id'], OpLog(sb, 'one'), confirmer)
+    assert len(asked) == 1 and (tmp_path / 'Inbox/a.txt').is_file()
+    # A different list is asked normally.
+    other = prepare(r, PrepareFilePlan(description='改名 b', actions=[
+        dict(effect='rename', source='Inbox/b.txt', destination='Inbox/c.txt', part='g2')]))
+    with pytest.raises(ValueError, match='USER_DECLINED'):
+        execute(r, other['id'], OpLog(sb, 'one'), confirmer)
+    assert len(asked) == 2
+
+
+def test_a_confirmation_timeout_is_not_reported_as_a_refusal(tmp_path):
+    from agent.file_plans import PrepareFilePlan, prepare, execute
+    r, sb = two_part_runtime(tmp_path)
+    plan = prepare(r, PrepareFilePlan(description='归档 a', actions=[dict(ARCHIVE_A[0], part='g1')]))
+    with pytest.raises(ValueError) as error:
+        execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('always', ask_action=lambda request: 'timed_out', source='web'))
+    assert 'CONFIRMATION_TIMEOUT' in str(error.value) and '不是用户拒绝' in str(error.value)
+
+
 def test_untagged_actions_serve_the_parts_no_action_names(tmp_path):
     from agent.file_plans import PrepareFilePlan, prepare
     flatten_fixture(tmp_path)
@@ -798,6 +872,8 @@ PARTS = [dict(kind='organize', description='文献内所有文件平铺到根目
          dict(kind='organize', description='回收清空后的子文件夹和文献文件夹本身')]
 MOVE_ALL = dict(path='文献', recursive=True, effect='move', destination='.')
 BOTH = ['organize_1', 'organize_2']  # one plan serving two parts of the same kind names them
+FLATTEN = dict(MOVE_ALL, part='organize_1')  # and each action's part (strict attribution, 2026-10-24)
+RECYCLE = dict(effect='trash', source='文献', include_metadata=True, part='organize_2')
 
 
 def test_flatten_and_recycle_folder_with_metadata_in_one_plan(tmp_path):
@@ -807,8 +883,9 @@ def test_flatten_and_recycle_folder_with_metadata_in_one_plan(tmp_path):
     flatten_fixture(tmp_path)
     session = Session(tmp_path)
     result, client = session.run('平铺并删除空文件夹', [
-        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=MOVE_ALL, goal_ids=BOTH, actions=[
-            dict(effect='trash', source='文献/01'), dict(effect='trash', source='文献', include_metadata=True)]), alias=PLAN)),
+        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=dict(MOVE_ALL, part='organize_1'), goal_ids=BOTH, actions=[
+            dict(effect='trash', source='文献/01', part='organize_2'),
+            dict(effect='trash', source='文献', include_metadata=True, part='organize_2')]), alias=PLAN)),
         execute(), finish()])
     assert errors(client) == [], errors(client)
     assert (tmp_path / 'x.pdf').read_text() == '文献/01/x.pdf' and (tmp_path / 'y.pdf').is_file()
@@ -933,8 +1010,7 @@ def test_finder_metadata_appearing_before_execution_is_tolerated(tmp_path):
     from agent.file_plans import PrepareFilePlan, prepare, execute
     flatten_fixture(tmp_path)
     r, sb = tree_runtime(tmp_path)
-    plan = prepare(r, PrepareFilePlan(description='m', selection=MOVE_ALL, goal_ids=BOTH,
-                                      actions=[dict(effect='trash', source='文献', include_metadata=True)]))
+    plan = prepare(r, PrepareFilePlan(description='m', selection=FLATTEN, goal_ids=BOTH, actions=[RECYCLE]))
     (tmp_path / '文献/01/.DS_Store').write_bytes(DS_STORE + b'later')
     execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
     assert not (tmp_path / '文献').exists() and (tmp_path / 'x.pdf').is_file()
@@ -944,8 +1020,7 @@ def test_new_hidden_file_before_execution_stops_before_any_write(tmp_path):
     from agent.file_plans import PrepareFilePlan, prepare, execute
     flatten_fixture(tmp_path)
     r, sb = tree_runtime(tmp_path)
-    plan = prepare(r, PrepareFilePlan(description='m', selection=MOVE_ALL, goal_ids=BOTH,
-                                      actions=[dict(effect='trash', source='文献', include_metadata=True)]))
+    plan = prepare(r, PrepareFilePlan(description='m', selection=FLATTEN, goal_ids=BOTH, actions=[RECYCLE]))
     (tmp_path / '文献/.env').write_text('appeared after the plan was confirmed')
     with pytest.raises(ValueError, match='文献'):
         execute(r, plan['id'], OpLog(sb, 'one'), Confirmer('never'))
@@ -1094,8 +1169,7 @@ def test_recycled_folder_is_counted_as_a_folder(tmp_path):
     flatten_fixture(tmp_path)
     session = Session(tmp_path)
     result, _ = session.run('平铺', [
-        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=MOVE_ALL, goal_ids=BOTH, actions=[
-            dict(effect='trash', source='文献', include_metadata=True)]), alias=PLAN)), execute(), finish()])
+        step(start(PARTS), call('prepare_file_plan', dict(description='平铺并回收', selection=FLATTEN, goal_ids=BOTH, actions=[RECYCLE]), alias=PLAN)), execute(), finish()])
     assert result.final.startswith('已移动 2 个文件；已移入回收区 1 个文件夹')
 
 

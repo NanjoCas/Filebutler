@@ -1,6 +1,7 @@
 """Task-driven controller: no natural-language keyword routing or authorization."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -32,8 +33,12 @@ class _TaskConfirmer:
         self.delegate, self.notes = delegate, list(notes)
 
     def allow(self, name, args, file_count=None, **kwargs):
+        return self.decide(name, args, file_count, **kwargs).approved
+
+    def decide(self, name, args, file_count=None, **kwargs):
         if self.notes: kwargs['notes'] = self.notes
-        return self.delegate.allow(name, args, file_count, force=True, **kwargs)
+        kwargs['force'] = True
+        return self.delegate.decide(name, args, file_count, **kwargs)
 
 
 class TaskRuntime(Asking, Finishing):
@@ -345,9 +350,13 @@ class TaskRuntime(Asking, Finishing):
                 edit = self.store.preview_edit(args.task_id, patch)
                 if not confirmer:
                     raise ValueError('任务修改必须通过用户确认策略')
-                if not confirmer.allow('task_edit', {k: edit[k] for k in
-                        ('id', 'task_id', 'revision', 'reason', 'changes')}, file_count=0, force=True):
-                    raise ValueError('用户拒绝任务修改，旧任务不变')
+                from agent.file_plans import not_confirmed
+                changes = {k: edit[k] for k in ('id', 'task_id', 'revision', 'reason', 'changes')}
+                key = hashlib.sha256(json.dumps([args.task_id, edit['changes']], ensure_ascii=False, sort_keys=True,
+                                                default=str).encode()).hexdigest()[:24]
+                answer = confirmer.decide('task_edit', changes, file_count=0, force=True, manifest_key=key)
+                if not answer.approved:
+                    raise ValueError(not_confirmed(answer, '任务修改').replace('未执行剩余操作', '旧任务不变'))
                 self.current = self.store.apply_edit(edit['id'], self.instruction, self.run_id, actor='confirmed_model_edit')
                 self.operations = []
                 self.outputs, self._output_indices = [], {}

@@ -177,3 +177,30 @@ def test_an_answer_whose_files_changed_meanwhile_writes_nothing_unchecked(tmp_pa
         dict(effect='move', source='Inbox/b.txt', destination='Archive')])))])
     assert client.calls('prepare_file_plan')[0]['status'] == 'error'
     assert (tmp_path / 'Inbox/a.txt').is_file() and not (tmp_path / 'Archive/b.txt').exists() and not session.approvals
+
+
+# Routing redesign S0 (docs/agent-routing-redesign-2026-10-24.md 2): a choice written
+# into the reply instead of ask_user. User log logs/20261024-213101 (names replaced):
+# "删掉所有测试文件" ended in plain text with options A-D; the page showed no choice card,
+# and the next message "A" had no local record of what A was. The fix is the strict
+# terminal of slice S5 (finish_turn), not detecting words in the text.
+TEXT_OPTIONS = ('根目录有 2 个测试文件夹——你说的“测试文件”指哪些？\n\n'
+                'A. 只回收根目录的测试文件夹（推荐）\nB. 连代码里的测试脚本一起回收\n'
+                'C. 先不动，只给我清单')
+
+
+@pytest.mark.xfail(strict=True, reason='routing redesign S5 (finish_turn) not enabled: plain-text options end as answered')
+def test_options_written_in_the_reply_do_not_end_as_an_answer(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, _ = session.run('删掉所有测试文件', [step(call('list_dir', dict(path='.')))], final=TEXT_OPTIONS)
+    assert result.stop_reason != 'answered'
+
+
+def test_options_written_in_the_reply_leave_no_question_to_answer(tmp_path):
+    # Pins today's behaviour of the gap above: nothing records what A meant.
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, _ = session.run('删掉所有测试文件', [step(call('list_dir', dict(path='.')))], final=TEXT_OPTIONS)
+    assert result.stop_reason == 'answered' and result.final.startswith('根目录有 2 个测试文件夹')
+    assert TaskRuntime('A', session.cfg, session.sb, 'next').answered_choice is None

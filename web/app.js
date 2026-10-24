@@ -336,7 +336,7 @@ function eventSteps(events) {
     } else if (event.type === "confirmation_required") {
       indexes.set("confirmation", steps.length); steps.push({title: "等待你确认文件操作", detail: "确认后继续执行", state: "waiting"});
     } else if (event.type === "confirmation_answered") {
-      const entry = steps[indexes.get("confirmation")]; if (entry) { entry.state = "done"; entry.detail = event.answer === "n" ? "你已拒绝该操作" : "你已允许该操作"; }
+      const entry = steps[indexes.get("confirmation")]; if (entry) { entry.state = "done"; entry.detail = event.answer === "n" ? "你已拒绝该操作" : event.answer === "timed_out" ? "等待超时，没有执行" : "你已允许该操作"; }
     }
   }
   return steps;

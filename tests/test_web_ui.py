@@ -248,8 +248,12 @@ def test_ui_confirmation_remains_interactive_with_live_steps(ui, monkeypatch, fi
     turn = ui.get(f"/api/turns/{tid}").json()
     assert turn["pending_confirmation"] and turn["events"][-2]["type"] == "tool_start"
     assert ui.post(f"/api/turns/{tid}/confirm", json={"answer": "y", "confirmation_id": "expired"}).status_code == 409
-    assert ui.post(f"/api/turns/{tid}/confirm", json={"answer": "n", "confirmation_id": turn["pending_confirmation"]["id"]}).status_code == 200
+    confirmation_id = turn["pending_confirmation"]["id"]
+    assert ui.post(f"/api/turns/{tid}/confirm", json={"answer": "n", "confirmation_id": confirmation_id}).status_code == 200
     assert finished.wait(5)
+    # A retry whose first response was lost gets the same decision; "y" cannot replace it.
+    assert ui.post(f"/api/turns/{tid}/confirm", json={"answer": "n", "confirmation_id": confirmation_id}).json()["answer"] == "n"
+    assert ui.post(f"/api/turns/{tid}/confirm", json={"answer": "y", "confirmation_id": confirmation_id}).status_code == 409
     assert not (files.root / "blocked").exists()
     assert ui.get(f"/api/turns/{tid}").json()["status"] == "completed"
 

@@ -159,7 +159,7 @@ class PathArgs(BaseModel):
 
 @tool("file_info",
       "查看单个文件的详细信息：大小、修改时间、MD5；图片额外给出拍摄日期和尺寸，PDF 额外给出页数。"
-      "核实单个文件时可用 MD5；批量去重优先 find_duplicates，避免逐文件调用。图片不能用 read_file，要用它。例：{\"path\": \"IMG_2041.jpg\"}",
+      "核实单个文件时可用 MD5；批量去重优先 find_duplicates，避免逐文件调用。例：{\"path\": \"IMG_2041.jpg\"}",
       PathArgs, read_scope=paths('path'), file_fields=('path',))
 def file_info(a: PathArgs, sb: Sandbox) -> str:
     p = _existing(sb, a.path)

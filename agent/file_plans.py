@@ -30,7 +30,7 @@ class Action(StrictModel):
     include_metadata: bool = Field(False, description='仅 trash 文件夹：同意连同其中的系统元数据（.DS_Store 等）一起回收')
     include_hidden: list[str] = Field(default_factory=list, max_length=20,
         description='仅 trash 文件夹：用户已通过 ask_user 同意一起回收的其他隐藏文件，逐个写出完整路径')
-    part: str = Field('', description='此动作完成的部分 ID；一个计划完成多个同类部分时填写')
+    part: str = Field('', description='动作的部分ID；多个候选部分时必填')
 
     @model_validator(mode='after')
     def endpoints(self):
@@ -53,6 +53,7 @@ class Selection(StrictModel):
     effect: Literal['move', 'trash'] = 'move'
     destination: str | None = None
     preserve_tree: bool = False
+    part: str = Field('', description='展开的动作都属于此部分')
 
 
 class PrepareFilePlan(StrictModel):
@@ -61,7 +62,7 @@ class PrepareFilePlan(StrictModel):
     selection: Selection | None = None
     classification_plan_id: str | None = Field(None, description='已有分类计划的精确 P 标识；本地展开全部来源和目标，不必抄写文件路径')
     goal_ids: list[str] = Field(default_factory=list, max_length=30,
-        description='此计划完成的部分；任务只有一个会改文件的部分时可省略，有多个同类部分时必填')
+        description='计划涉及的部分ID；多目标动作仍须part')
     task_id: str | None = Field(None, description='仅在续做以前的任务时填写，复制完整 ID，沿用原限制；本轮已调用 start_task 时不要填')
 
 
@@ -358,7 +359,7 @@ def prepare(runtime, args):
             if sel['effect'] == 'move':
                 tail = Path(src).relative_to(sel['path']) if sel['preserve_tree'] else Path(src).name
                 dst = (Path(sel['destination']) / tail).as_posix()
-            actions.append(dict(effect=sel['effect'], source=src, destination=dst))
+            actions.append(dict(effect=sel['effect'], source=src, destination=dst, part=sel['part']))
     actions = _normalize(runtime, actions)
     chosen = getattr(runtime, 'chosen_option', None)
     if chosen is not None:
@@ -426,6 +427,8 @@ def prepare(runtime, args):
                 else:
                     _visible(sb, sb.rel(p), write=True)
                     dirs.setdefault(sb.rel(p), dict(effect='create', source=None, destination=sb.rel(p), snapshot=None))
+            if effect == 'create' and action.get('part') and dst in dirs:
+                dirs[dst]['part'] = action['part']  # a folder the user asked for proves its part
         if effect != 'create':
             if effect == 'trash': dst = f'.trash/{pid}_{len(steps)}_{source.name}'
             steps.append(dict(effect=effect, source=src, destination=dst, snapshot=snap,
@@ -765,7 +768,18 @@ def conflicts(runtime, plan):
     return hints
 
 
+AMBIGUOUS_GOAL = 'AMBIGUOUS_GOAL'
+
+
 def _attribute_steps(runtime, task, steps, requested, producers):
+    """Each business action proves exactly one goal (routing redesign S1, 2026-10-24).
+
+    An action naming its part serves that part. Without one, it serves the only
+    candidate goal it can prove; when several could, the plan is refused even if
+    goal_ids lists them all: one archived file proving "archive a" and "rename b"
+    was the P0 this closes. A folder created for the actions serves their goals
+    as a dependency and proves none of them on its own (verifier._goal_steps).
+    """
     known = {g['id'] for g in task['goals']}
     if set(requested) - known:
         raise ValueError('goal_ids 引用了任务中不存在的目标：'+'、'.join(sorted(set(requested) - known)))
@@ -773,9 +787,7 @@ def _attribute_steps(runtime, task, steps, requested, producers):
     if named - known:
         raise ValueError('part 引用了任务中不存在的部分：'+'、'.join(sorted(named - known)) + '。当前部分：' + intent.parts_text(task))
     candidates = list(dict.fromkeys(requested + sorted(named))) if requested else [g['id'] for g in task['goals']]
-    # An action naming its part serves that part alone; the others serve the plan's remaining parts.
     rest = [g for g in candidates if g not in named] or candidates
-    explicit = bool(requested) or len(rest) == 1
     unresolved, shared = [], []
     for row in steps:
         if row['effect'] == 'create': continue
@@ -787,28 +799,32 @@ def _attribute_steps(runtime, task, steps, requested, producers):
             row['goal_ids'] = [row['part']]
             continue
         served = claimed(task, runtime.sb, op, rest, producers)
-        row['goal_ids'] = served or list(rest)
-        if not explicit and not served:
-            unresolved.append(row['source'])
-        # Parts with the same condition all "claim" an action; one plan proving
-        # each of them would pass a part nothing was done for.
-        elif not explicit and len(served) > 1:
+        if len(served) > 1:
             shared.append(row['source'])
+        elif served or len(rest) == 1:
+            row['goal_ids'] = served or list(rest)
+        else:
+            unresolved.append(row['source'])
     if shared:
-        raise ValueError('以下动作可能属于多个部分，本地无法确定是哪一个：' + '、'.join(shared[:8]) +
-                         '；请在 goal_ids 写明本计划完成的部分（一个计划完成多个部分时，在动作上写 part）。当前部分：'
+        raise ValueError(f'{AMBIGUOUS_GOAL}：以下动作可能属于多个部分，本地无法确定是哪一个：' + '、'.join(shared[:8]) +
+                         '。请在每个动作上写 part（一个部分一个 ID），或把各部分分成不同计划；写了 goal_ids 也不能代替。当前部分：'
                          + intent.parts_text(task))
+    if unresolved:
+        raise ValueError('无法从完成条件确定以下动作服务的目标，请在动作上写 part：'+'、'.join(unresolved[:8]))
     for row in steps:
         if row['effect'] != 'create': continue
+        if row.get('part'):
+            row['goal_ids'] = [row['part']]
+            continue
         # A parent directory serves the actions placed inside it.
         served = [g for s in steps if s['effect'] != 'create' and s['destination'] and
                   Path(s['destination']).is_relative_to(row['destination']) for g in s['goal_ids']]
         op = dict(effect='create', source=None, destination=row['destination'])
         row['goal_ids'] = list(dict.fromkeys(served)) or attribute(task, runtime.sb, op, candidates, producers)
-        if not served and not explicit and row['goal_ids'] == candidates:
+        if not served and len(row['goal_ids']) > 1:
             unresolved.append(row['destination'])
     if unresolved:
-        raise ValueError('无法从完成条件确定以下动作服务的目标，请提供 goal_ids：'+'、'.join(unresolved[:8]))
+        raise ValueError(f'{AMBIGUOUS_GOAL}：无法确定以下新建文件夹属于哪个部分，请在动作上写 part：'+'、'.join(unresolved[:8]))
     return list(dict.fromkeys(g for row in steps for g in row['goal_ids']))
 
 
@@ -1039,9 +1055,39 @@ def _confirm(runtime, plan, remaining, confirmer):
                                           notes=s['snapshot'].get('notes', {}),
                                           consent_source=s['snapshot'].get('consent_source'))
                                      for s in trees]
-    if not confirmer.allow('file_plan', review, file_count=len(remaining), force=True,
-                           **({'notes': runtime.text_limits()} if runtime.text_limits() else {})):
-        raise ValueError('用户拒绝执行此计划，未执行剩余操作')
+    outcome = confirmer.decide('file_plan', review, file_count=len(remaining), force=True,
+                               manifest_key=manifest_key(plan, remaining),
+                               **({'notes': runtime.text_limits()} if runtime.text_limits() else {}))
+    if not outcome.approved:
+        raise ValueError(not_confirmed(outcome, '此计划'))
+
+
+def manifest_key(plan, steps):
+    """What the user is asked to approve, without the plan's random identity.
+
+    Effect, source and destination of each step (a trash destination carries the
+    plan id, so it is left out), plus what recycling folders and overwrites take
+    with them. File versions are not part of it: a declined list stays declined
+    when a file changes. Used to keep a refused list from being asked again in
+    the same run under a new plan id.
+    """
+    rows = sorted([s['effect'], s['source'], None if s['effect'] == 'trash' else s['destination'],
+                   sorted((s['snapshot'] or {}).get('hidden') or []), sorted((s['snapshot'] or {}).get('metadata') or [])]
+                  for s in steps)
+    overwrites = sorted(o['target'] for o in plan['payload'].get('overwrites', []))
+    return hashlib.sha256(json.dumps([rows, overwrites], ensure_ascii=False).encode()).hexdigest()[:24]
+
+
+def not_confirmed(outcome, what):
+    """The error for an unapproved confirmation, by what actually happened."""
+    again = '本轮已拒绝过同一操作清单，没有再次询问。' if outcome.repeated else ''
+    if outcome.decision == 'declined':
+        return f'USER_DECLINED：用户拒绝执行{what}，未执行剩余操作。{again}本轮不要换个计划 ID 重新提交同样的操作'
+    if outcome.decision == 'timed_out':
+        return (f'CONFIRMATION_TIMEOUT：等待用户确认超时，未执行{what}的剩余操作；这不是用户拒绝。{again}'
+                '本轮不要重新提交，告诉用户可以稍后再发起')
+    return (f"CONFIRMATION_INTERRUPTED：确认被中断（{outcome.reason or '未知原因'}），未执行{what}的剩余操作。{again}"
+            '本轮不要重新提交')
 
 
 def _run_step(runtime, plan, s, oplog):

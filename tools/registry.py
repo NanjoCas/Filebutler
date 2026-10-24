@@ -179,9 +179,16 @@ def _trash_batch_locked(plan: TrashBatch, sandbox: Sandbox, oplog: OpLog | None,
         if artifacts:
             artifacts.receipt(groups=[], moved=[], keeps=[], verified=True, scan=plan.scan)
         return "OK: 没有需要移入回收区的文件"
-    if confirmer and not confirmer.allow("trash_many", {"保留": plan.keeps, "移入回收区": plan.paths},
-                                         file_count=len(plan.paths), review_groups=plan.groups or None):
-        return "ERROR: 用户拒绝了批量去重，未移动任何文件"
+    if confirmer:
+        import hashlib
+        from agent.file_plans import not_confirmed
+        key = hashlib.sha256(json.dumps(['trash_many', sorted(plan.paths)], ensure_ascii=False).encode()).hexdigest()[:24]
+        answer = confirmer.decide("trash_many", {"保留": plan.keeps, "移入回收区": plan.paths},
+                                  file_count=len(plan.paths), review_groups=plan.groups or None, manifest_key=key)
+        if answer.decision == 'declined':
+            return "ERROR: 用户拒绝了批量去重，未移动任何文件（USER_DECLINED）"
+        if not answer.approved:
+            return "ERROR: " + not_confirmed(answer, '批量去重')
     plan.validate()
     enforce(sandbox, [operation('trash', p) for p in plan.paths])
     completed = 0

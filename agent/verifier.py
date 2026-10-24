@@ -43,8 +43,21 @@ def _later(receipts, pid):
 
 
 def _goal_steps(plan, goal_id):
-    """The steps attributed to this goal; a parent directory serves its actions' goals."""
-    return {s['id'] for s in plan['payload']['steps'] if goal_id in (s.get('goal_ids') or plan['payload']['goal_ids'])}
+    """The steps attributed to this goal, and whether any of them proves it.
+
+    A parent directory serves its actions' goals but proves none of them unless it
+    is this goal's alone (a folder the user asked for). A business step owned by
+    several goals proves none: such bindings only exist in plans prepared before
+    strict attribution (2026-10-24) and stay frozen rather than pass every goal.
+    """
+    mine, proof = set(), False
+    for s in plan['payload']['steps']:
+        owners = s.get('goal_ids') or plan['payload']['goal_ids']
+        if goal_id not in owners: continue
+        if s['effect'] != 'create' and len(owners) > 1: continue
+        mine.add(s['id'])
+        proof = proof or s['effect'] != 'create' or len(owners) == 1
+    return mine if proof else set()
 
 
 def verify_bound_plans(task, goal_id, condition, sb):

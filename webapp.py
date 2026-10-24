@@ -30,7 +30,7 @@ from agent.llm import LLM  # noqa: E402
 from agent.loop import run_agent  # noqa: E402
 from agent.prompts import SYSTEM_PROMPT  # noqa: E402
 from rich.console import Console  # noqa: E402
-from safety.confirm import Confirmer  # noqa: E402
+from safety.confirm import TIMED_OUT, Confirmer  # noqa: E402
 from safety.oplog import OpLog, undo  # noqa: E402
 from safety.sandbox import Sandbox, SandboxError, is_hidden  # noqa: E402
 from tools.fs_read import IMAGE_EXTS, TEXT_EXTS, _fmt_size  # noqa: E402
@@ -138,6 +138,7 @@ class TurnState:
         self.pending_confirmation: dict | None = None
         self.confirm_event: threading.Event | None = None
         self.confirm_answer: str | None = None
+        self.decided: dict[str, str] = {}  # confirmation_id -> the answer that ended it
         self.lock = threading.RLock()
 
 
@@ -197,16 +198,21 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
             question = f"{action['title']}：{action['summary']}"
             state.confirm_event = threading.Event()
             state.confirm_answer = None
-            state.pending_confirmation = {"id": uuid.uuid4().hex, "question": question, "action": action, "choices": ["y", "n", "a"]}
+            confirmation_id = uuid.uuid4().hex
+            request["confirmation_id"] = confirmation_id
+            state.pending_confirmation = {"id": confirmation_id, "question": question, "action": action, "choices": ["y", "n", "a"]}
             state.status = "waiting_confirmation"
             _event(state.id, {"type": "confirmation_required", "question": question})
             answered = state.confirm_event.wait(timeout=900)
-            answer = state.confirm_answer if answered else "n"
-            state.pending_confirmation = None
-            state.confirm_event = None
-            state.status = "running"
-            _event(state.id, {"type": "confirmation_answered", "answer": answer or "n"})
-            return answer or "n"
+            with state.lock:
+                # Not answered in 15 minutes is a timeout, not the user refusing.
+                answer = state.confirm_answer if answered and state.confirm_answer else TIMED_OUT
+                state.decided[confirmation_id] = answer
+                state.pending_confirmation = None
+                state.confirm_event = None
+                state.status = "running"
+            _event(state.id, {"type": "confirmation_answered", "answer": answer})
+            return answer
 
         try:
             cfg = _config()
@@ -214,7 +220,7 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
             _event(state.id, {"type": "started", "message": "Agent 正在处理"})
             LOG_DIR.mkdir(exist_ok=True)
             confirmer = Confirmer(cfg.get("confirm", "risky"), cfg.get("confirm_threshold", 10),
-                                  ask_action=ask_in_browser)
+                                  ask_action=ask_in_browser, source="web")
             sb = Sandbox(cfg['sandbox'])
             cfg['task_session'] = state.conversation_id
             # Upgrade old per-turn metadata without rewriting old messages.
@@ -622,13 +628,22 @@ def confirm_turn(turn_id: str, body: Confirmation):
     if not state:
         raise HTTPException(409, "当前运行没有等待确认")
     with state.lock:
+        # A retry of an answer whose response was lost gets the decision back; a
+        # different answer cannot replace one already made (e.g. "y" after "n").
+        if body.confirmation_id and body.confirmation_id in state.decided:
+            decided = state.decided[body.confirmation_id]
+            if decided != body.answer:
+                raise HTTPException(409, "该确认已经有结果，不能更改")
+            return {"ok": True, "answer": decided}
         if state.status != "waiting_confirmation" or not state.confirm_event or state.confirm_event.is_set():
             raise HTTPException(409, "当前运行没有等待确认")
         if body.confirmation_id and body.confirmation_id != (state.pending_confirmation or {}).get("id"):
             raise HTTPException(409, "该确认请求已过期，请确认当前显示的操作")
         state.confirm_answer = body.answer
+        if body.confirmation_id:
+            state.decided[body.confirmation_id] = body.answer
         state.confirm_event.set()
-    return {"ok": True}
+    return {"ok": True, "answer": body.answer}
 
 
 @app.post("/api/turns/{turn_id}/undo")
