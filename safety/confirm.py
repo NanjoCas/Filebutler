@@ -64,6 +64,8 @@ class Confirmer:
             ans = (ans or '').strip().lower()
             if ans in OPTIONS or ans in (TIMED_OUT, INTERRUPTED):
                 return ans, ''
+            if ans.startswith(INTERRUPTED + ':'):  # e.g. interrupted:user_cancelled from the page
+                return INTERRUPTED, ans.split(':', 1)[1]
             prompt = f"无效输入「{ans}」，{ASK_TEXT}"
 
     def allow(self, tool_name: str, args: dict, file_count: int | None = None, **kwargs) -> bool:

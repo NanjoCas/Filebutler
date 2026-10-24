@@ -182,6 +182,10 @@ def _get_conversation(conversation_id: str):
     return row
 
 
+class StopRequest(BaseModel):
+    client_message_id: str = Field(min_length=8, max_length=100)
+
+
 class ExactResponse(BaseModel):
     question_id: str = Field(min_length=1, max_length=40)
     version: int = Field(ge=1)
@@ -662,6 +666,39 @@ def send_message(conversation_id: str, body: NewMessage):
             ACTIVE_CONVERSATIONS.discard(conversation_id)
         return _receipt_reply(receipt)
     return _start_turn(conversation_id, row, content, receipt)
+
+
+@app.post("/api/conversations/{conversation_id}/cancel")
+def stop_request(conversation_id: str, body: StopRequest):
+    """The stop button (routing redesign S3, 5.2): the latest request is cancelled once.
+    A run still working stops at its next safe point (before a confirmation, after it,
+    or before the next file step); a card waiting for an answer is interrupted. What
+    already ran stays done and undoable."""
+    from agent.interactions import InteractionError
+    row = _get_conversation(conversation_id)
+    try:
+        receipt, stopped = _interactions(conversation_id).accept_cancel(body.client_message_id)
+    except InteractionError as exc:
+        raise HTTPException(ERROR_STATUS[exc.code], str(exc)) from exc
+    if receipt["existing"] or not stopped:
+        return {"status": "cancelled" if receipt["existing"] else "nothing_to_stop", "receipt_id": receipt["receipt_id"]}
+    running = [s for s in TURN_STATES.values() if s.conversation_id == conversation_id and s.status in ("queued", "running", "waiting_confirmation")]
+    for state in running:
+        with state.lock:
+            if state.confirm_event and not state.confirm_event.is_set():
+                state.confirm_answer = "interrupted:user_cancelled"
+                state.confirm_event.set()
+    if not running and stopped.get("task_id"):
+        # Nothing is running: the stop is recorded on the task and told in the chat now.
+        from agent.reporting import stopped_report
+        store = _tasks(conversation_id)
+        task = store.cancel_from_user(stopped["task_id"], actor="user_button", receipt_id=receipt["receipt_id"])
+        summary = stopped_report(task, task.get("operation_history", []) + task.get("operations", []), "cancelled")["summary"]
+        history = json.loads(row["history_json"]) + [{"role": "assistant", "content": summary}]
+        with _db() as db:
+            db.execute("UPDATE conversations SET history_json=?, updated_at=? WHERE id=?",
+                       (json.dumps(history, ensure_ascii=False), _now(), conversation_id))
+    return {"status": "cancelled", "receipt_id": receipt["receipt_id"], "running": bool(running)}
 
 
 def _start_turn(conversation_id, row, content, receipt):

@@ -98,6 +98,8 @@ Constraint.model_rebuild()
 
 class TaskSubmission(StrictModel):
     goals: list[Goal] = Field(min_length=1, max_length=30)
+    draft_map: dict[str, str] = Field(default_factory=dict,
+                                      description='部分 ID -> 登记前提问里的草案部分 ID（路由改造 S3）')
     read_roots: list[str] = Field(default_factory=lambda: ['.'], min_length=1, max_length=1000)
     write_roots: list[str] = Field(default_factory=list, max_length=1000)
     allowed_effects: list[Effect] = Field(default_factory=list,
@@ -343,7 +345,7 @@ class TaskStore:
         from safety.sandbox import Sandbox
         validate_spec(after, Sandbox(self.root))
         changes = [dict(field=key, before=before.get(key), after=after[key]) for key in fields
-                   if before.get(key, TaskPolicy().model_dump() if key == 'policy' else None) != after[key]]
+                   if before.get(key, TaskPolicy().model_dump() if key == 'policy' else {} if key == 'draft_map' else None) != after[key]]
         if before.get('cancelled', False) != after['cancelled']:
             changes.append(dict(field='cancelled', before=before.get('cancelled', False), after=after['cancelled']))
         if not changes:
@@ -384,6 +386,25 @@ class TaskStore:
                        (data['id'], data['revision'], self.root, self.session, json.dumps(data, ensure_ascii=False)))
             db.execute("UPDATE task_edits SET status='applied' WHERE id=?", (edit_id,))
         return data
+
+    def cancel_from_user(self, task_id, *, actor, receipt_id=None, run_id=''):
+        """The user cancelled the request (routing redesign S3, 5.2): a new revision that
+        is cancelled, kept apart from confirmed model edits. It narrows what may run, so
+        no confirmation card; it changes nothing else, and the executed facts, ledger,
+        budget and undo stay as they are."""
+        from copy import deepcopy
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            before = self.get(task_id)
+            if before.get('cancelled'):
+                return before
+            data = deepcopy(before)
+            data.update(revision=before['revision'] + 1, cancelled=True, status='cancelled',
+                        cancellation=dict(actor=actor, receipt_id=receipt_id, run_id=run_id),
+                        source_messages=before['source_messages'] + [dict(content='用户取消了这个请求', run_id=run_id, actor=actor)])
+            db.execute('INSERT INTO task_revisions(id,revision,root,session,data_json) VALUES(?,?,?,?,?)',
+                       (data['id'], data['revision'], self.root, self.session, json.dumps(data, ensure_ascii=False)))
+        return normalized(data)
 
     @staticmethod
     def inherit_execution(data, previous):

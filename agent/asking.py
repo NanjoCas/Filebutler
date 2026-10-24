@@ -19,22 +19,36 @@ class ChoiceAction(StrictModel):
     destination: str | None = Field(None, description='move/rename 的目标；可写目录')
 
 
+class Draft(StrictModel):
+    id: str = Field(min_length=1, max_length=20, description='短 ID，如 d_b')
+    description: str = Field(min_length=1, max_length=200, description='这部分要做什么')
+    subjects: list[str] = Field(default_factory=list, max_length=20, description='涉及的路径')
+
+
+class Scope(StrictModel):
+    level: Literal['request', 'parts'] = Field(description='request 整个请求；parts 只关于 part_ids')
+    part_ids: list[str] = Field(default_factory=list, max_length=10, description='任务的部分 ID；未登记时是 drafts 的 ID')
+
+
 class Choice(StrictModel):
     label: str = Field(min_length=1, max_length=80, description='一个可以直接执行的具体选项，如“只移动 Projects/alpha/report.txt”')
     detail: str = Field('', max_length=200, description='选这个会怎样；可留空')
     consent: Literal['include_hidden'] | None = Field(None, description='仅当此选项表示“同意连同隐藏文件一起回收”时填 include_hidden')
     actions: list[ChoiceAction] | None = Field(None, max_length=20,
-        description='此选项会执行的操作，供本地在显示前检查能否做到（不展示给用户）；不做任何操作写空列表')
+        description='此选项会执行的操作，本地在显示前检查；不做操作写空列表')
+    disposition: Literal['skip', 'continue', 'cancel_request'] | None = Field(None,
+        description='skip 跳过 scope 的部分；continue 按 actions 继续；cancel_request 取消请求（scope=request）')
 
 
 class AskUser(StrictModel):
     question: str = Field(min_length=1, max_length=300, description='问用户的一句话，说清缺什么信息')
     reason: Literal['multiple_candidates', 'missing_criterion', 'conflict', 'scope_beyond_request', 'cannot_do_as_asked'] = Field(
-        description='为什么必须问：multiple_candidates 有多个候选对象；missing_criterion 标准没有可执行的界限；'
-                    'conflict 遇到冲突而用户没交代；scope_beyond_request 要动的对象超出用户说的范围；cannot_do_as_asked 无法按原样做到')
+        description='为什么必须问（任务协议列出的须问情况）')
     options: list[Choice] = Field(min_length=2, max_length=4, description='2–4 个互斥的具体选项，推荐的放第一个')
     allow_other: bool = Field(True, description='是否允许用户不选而自己补充说明')
     subject: list[str] = Field(default_factory=list, max_length=20, description='问题涉及的路径；询问能否回收含隐藏文件的文件夹时必填')
+    scope: Scope | None = Field(None, description='只关于部分目标时必填，选项只影响这些部分')
+    drafts: list[Draft] = Field(default_factory=list, max_length=10, description='未登记任务时 scope 涉及的部分；登记时 draft_id 对应')
 
 
 CHOICE_KEYS = 'ABCDE'  # the model gives up to four; local may add one
@@ -57,7 +71,8 @@ class Asking:
             question, option = repo.answered(self.cfg['answer_id'])
             asked = question['data']
             return dict(question=asked['question'], chosen=option, text=None, subject=asked.get('subject', []),
-                        task_id=question['task_id'], question_id=question['question_id'])
+                        task_id=question['task_id'], question_id=question['question_id'],
+                        scope=asked.get('scope'), drafts=asked.get('drafts', []))
         if self.cfg.get('receipt_id'):
             question = repo.replied_to(self.cfg['receipt_id'])
             if not question: return None
@@ -142,6 +157,55 @@ class Asking:
                 choices.append(dict(label='取消这部分，不移动', detail='', consent=None, local=True, actions=[]))
             for key, c in zip(CHOICE_KEYS, choices): c['key'] = key
         return choices
+
+    def _question_scope(self, args):
+        """The question's scope, checked locally (routing redesign S3, 4.2-4.3).
+
+        parts: the ids are the current task's parts, or, before a task exists, the
+        question's own drafts. A skip option needs parts; cancelling the request
+        needs scope request. Without a scope the question is about the whole
+        request as before, and an empty option is not read as cancelling it.
+        """
+        scope = args.scope
+        drafts = {d.id for d in args.drafts}
+        if len(drafts) != len(args.drafts):
+            raise ValueError('drafts 的 ID 重复')
+        for o in args.options:
+            if o.disposition == 'cancel_request' and (not scope or scope.level != 'request'):
+                raise ValueError(f'选项“{o.label[:20]}”取消整个请求，scope.level 须为 request')
+            if o.disposition == 'skip' and (not scope or scope.level != 'parts'):
+                raise ValueError(f'选项“{o.label[:20]}”跳过部分，须用 scope.level=parts 写明是哪些部分')
+        if not scope:
+            return None
+        if scope.level == 'request':
+            return dict(level='request', part_ids=[])
+        if not scope.part_ids:
+            raise ValueError('scope.level=parts 需要 part_ids')
+        known = {g['id'] for g in self.current['goals']} if self.current else drafts
+        unknown = [p for p in scope.part_ids if p not in known]
+        if unknown:
+            where = ('当前任务的部分：' + parts_text(self.current) if self.current
+                     else '本问题 drafts 的 ID：' + '、'.join(sorted(drafts) or ['（无）']))
+            raise ValueError('scope.part_ids 引用了不存在的部分：' + '、'.join(unknown) + '；' + where)
+        return dict(level='parts', part_ids=list(scope.part_ids), drafts=not self.current)
+
+    def scope_goals(self):
+        """Goal ids the answered option is about: None (the whole request, as before scopes),
+        or the parts the question named; a draft maps to a part by Part.draft_id only."""
+        a = self.answered_choice or {}
+        scope = a.get('scope')
+        if not a.get('chosen') or not scope:
+            return None
+        if scope['level'] == 'request':
+            return [g['id'] for g in (self.current or {}).get('goals', [])]
+        if not scope.get('drafts'):
+            return list(scope['part_ids'])
+        mapped = {draft: goal for goal, draft in (self.current or {}).get('draft_map', {}).items()}
+        missing = [d for d in scope['part_ids'] if d not in mapped]
+        if missing:
+            raise ValueError('UNRESOLVED_QUESTION_SCOPE：用户的选择只关于草案部分 ' + '、'.join(missing) +
+                             '；登记任务时在对应 Part 写 draft_id，本地才能据此处理')
+        return [mapped[d] for d in scope['part_ids']]
 
     def _creates_folder(self, choice, sb):
         """The option moves something into a folder that does not exist yet."""
@@ -248,8 +312,10 @@ class Asking:
         return self._ask(AskUser.model_validate_json(raw), sb)
 
     def _ask(self, args, sb):
+        scope = self._question_scope(args)
         choices = [dict(key=CHOICE_KEYS[i], label=o.label, detail=o.detail, consent=o.consent,
-                        actions=None if o.actions is None else [a.model_dump() for a in o.actions])
+                        actions=None if o.actions is None else [a.model_dump() for a in o.actions],
+                        **({'disposition': o.disposition} if o.disposition else {}))
                    for i, o in enumerate(args.options)]
         choices = self._ground_choices(choices, args.subject, sb)
         for c in choices:
@@ -274,7 +340,8 @@ class Asking:
         from agent.interactions import Interactions
         # Stable question and option ids: an answer names them exactly (routing redesign S2).
         self.pending_choice = Interactions(self.store).record_question(
-            dict(question=args.question, reason=args.reason, choices=choices, allow_other=args.allow_other, subject=subject),
+            dict(question=args.question, reason=args.reason, choices=choices, allow_other=args.allow_other, subject=subject,
+                 scope=scope, drafts=[d.model_dump() for d in args.drafts]),
             run_id=self.run_id, task_id=(self.current or {}).get('id'), task_revision=(self.current or {}).get('revision'),
             request_id=self.cfg.get('request_id'))
         choices = self.pending_choice['choices']

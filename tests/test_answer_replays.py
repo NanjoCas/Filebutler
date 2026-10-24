@@ -44,19 +44,49 @@ def checks(session):
     return {c['goal_id']: c for c in session.sb.runtime.current['checks']}
 
 
-@pytest.mark.xfail(strict=True, reason='gap: an option about b bounds the whole next plan, so a cannot be moved')
+ASK_B_SCOPED = dict(ASK_B, drafts=[dict(id='d_b', description='把 Inbox/b.txt 移到 Archive', subjects=['Inbox/b.txt'])],
+                    scope=dict(level='parts', part_ids=['d_b']),
+                    options=[dict(ASK_B['options'][0], disposition='skip'), ASK_B['options'][1]])
+TWO_PARTS_MAPPED = [TWO_PARTS[0], dict(TWO_PARTS[1], draft_id='d_b')]
+
+
 def test_answering_bs_question_settles_b_by_the_choice_and_a_by_its_work(tmp_path):
-    # As in 23 of 24 live asks: the question comes before the task is registered.
+    # Routing redesign S3: the question names its scope (a draft part, as in 23 of 24
+    # live asks it comes before the task); the option about b bounds and settles b only.
     clash_b(tmp_path)
     session = Session(tmp_path)
-    session.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', ASK_B))])
-    result, client = session.run('A', [step(start(TWO_PARTS), call('prepare_file_plan', MOVE_A, alias=PLAN)),
+    session.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', ASK_B_SCOPED))])
+    result, client = session.run('A', [step(start(TWO_PARTS_MAPPED), call('prepare_file_plan', MOVE_A, alias=PLAN)),
                                        execute(), finish()])
     assert errors(client) == []
     part = checks(session)
     assert part['a']['outcome'] == 'done' and part['b']['outcome'] == 'by_choice'
     assert result.runtime['task_status'] == 'completed'
     assert (tmp_path / 'Inbox/b.txt').is_file() and (tmp_path / 'Archive/b.txt').read_text() == 'older archived b'
+
+
+def test_a_skipped_part_gets_no_plan_and_an_unmapped_draft_settles_nothing(tmp_path):
+    clash_b(tmp_path)
+    session = Session(tmp_path)
+    session.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', ASK_B_SCOPED))])
+    _, client = session.run('A', [step(start(TWO_PARTS))])  # b not mapped to its draft
+    assert 'UNRESOLVED_QUESTION_SCOPE' in client.calls('start_task')[0]['text']
+    clash_b(tmp_path / 'again'); again = Session(tmp_path / 'again')
+    again.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', ASK_B_SCOPED))])
+    _, client = again.run('A', [step(start(TWO_PARTS_MAPPED), call('prepare_file_plan', dict(
+        description='移动 b', actions=[dict(effect='move', source='Inbox/b.txt', destination='Archive/b (1).txt', part='b')])))])
+    assert '跳过部分 b' in client.calls('prepare_file_plan')[0]['text']
+
+
+def test_a_skip_option_needs_a_parts_scope_and_cancel_needs_the_request(tmp_path):
+    clash_b(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('把 b.txt 移到 Archive', [step(call('ask_user', dict(ASK_B, options=[
+        dict(ASK_B['options'][0], disposition='skip'), ASK_B['options'][1]])))], final='好的。')
+    assert 'scope.level=parts' in client.calls('ask_user')[0]['text']
+    _, client = session.run('把 b.txt 移到 Archive', [step(call('ask_user', dict(ASK_B, scope=dict(level='parts', part_ids=['d_x']),
+        drafts=[dict(id='d_b', description='b')])))], final='好的。')
+    assert 'scope.part_ids 引用了不存在的部分' in client.calls('ask_user')[0]['text']
 
 
 def test_skipping_b_leaves_an_untouched_part_a_unfinished(tmp_path):
@@ -92,16 +122,28 @@ def test_an_answer_resumes_the_task_its_question_was_asked_in(tmp_path):
     assert [o['src'] for o in session.sb.runtime.current['operation_history'] if o['op'] == 'move'] == ['Inbox/a.txt']
 
 
-@pytest.mark.xfail(strict=True, reason='gap: a resent letter answers whichever question is pending now')
 def test_a_resent_letter_does_not_answer_the_follow_up_question(tmp_path):
     # The page sent "A" and the request went through, but the reply was lost; the page
-    # puts "A" back in the input box and the user sends it again after the turn ended.
+    # sends it again after the turn ended, with the same message id (routing redesign S2-S3).
+    from agent.interactions import Interactions, receive
     clash_b(tmp_path)
     session = Session(tmp_path)
     session.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', ASK_SCOPE))])
-    session.run('A', [step(call('ask_user', ASK_B))])  # the answer to Q1 led to a follow-up Q2
-    resent = TaskRuntime('A', dict(H.CFG), session.sb, 'resent')
-    assert resent.answered_choice is None  # "A" was the answer to Q1, already used
+    first, cfg = receive(session.cfg, session.sb, 'A', client_message_id='page-1', pressed='A')
+    q1 = Interactions(TaskRuntime('A', cfg, session.sb, 'q1').store)
+    session.run('B', [step(call('ask_user', ASK_B))])  # stands for the follow-up question Q2
+    q2 = q1.open_question()
+    import json
+    import pytest as _pytest
+    from agent.interactions import InteractionError
+    sent = json.loads(q1.receipt(first['receipt_id'])['payload_json'])['response']  # what the page kept
+    again, _ = receive(session.cfg, session.sb, 'A', client_message_id='page-1', response=sent)
+    assert again['existing'] and again['receipt_id'] == first['receipt_id'] and again['answer_id'] == first['answer_id']
+    # Pressing A on the question shown now, under the old id, is a different message: refused.
+    with _pytest.raises(InteractionError) as error:
+        receive(session.cfg, session.sb, 'A', client_message_id='page-1', pressed='A')
+    assert error.value.code == 'IDEMPOTENCY_CONFLICT'
+    assert q1.open_question()['question_id'] == q2['question_id']  # Q2 still waits for its own answer
 
 
 def test_doing_nothing_at_all_settles_every_part_the_model_names(tmp_path):
@@ -126,22 +168,27 @@ def test_a_typed_reply_resumes_no_task(tmp_path):
 
 
 def test_a_new_request_after_a_question_carries_no_option(tmp_path):
+    # Routing redesign S3: text after a question must say what it is before any write.
     clash_b(tmp_path)
     session = Session(tmp_path)
     session.run('把 b.txt 移到 Archive', [step(call('ask_user', ASK_B))])
+    move_a = call('prepare_file_plan', dict(description='移动 a', actions=[
+        dict(effect='move', source='Inbox/a.txt', destination='Archive')]), alias=PLAN)
+    _, client = session.run('先不管这个，把 Inbox/a.txt 移到 Archive', [
+        step(start([dict(kind='organize', description='移动 a')]), move_a)], final='好的。')
+    assert 'INPUT_RELATION_REQUIRED' in client.calls('prepare_file_plan')[0]['text'] and (tmp_path / 'Inbox/a.txt').is_file()
+    session.run('把 b.txt 移到 Archive', [step(call('ask_user', ASK_B))])
     result, client = session.run('先不管这个，把 Inbox/a.txt 移到 Archive', [
-        step(start([dict(kind='organize', description='移动 a')]),
-             call('prepare_file_plan', dict(description='移动 a', actions=[
-                 dict(effect='move', source='Inbox/a.txt', destination='Archive')]), alias=PLAN)), execute(), finish()])
-    assert errors(client) == []
+        step(start([dict(kind='organize', description='移动 a')], input_resolution=dict(kind='new_request')), move_a),
+        execute(), finish()])
+    assert errors(client) == [] and result.stop_reason == 'done'
     runtime = session.sb.runtime
-    assert runtime.chosen_option is None and not runtime.answered_choice['chosen']
-    # Free text may be an answer: overwrite consent from text is only ever confirmed on the card.
-    assert {r['source'] for r in runtime.decisions} <= {'text'}
-    assert '不要沿用上一问的选项' in runtime._choice_text()
-    # One turn later nothing from the question is left.
+    # A new request: neither the option nor text consent to overwrite carries over.
+    assert runtime.chosen_option is None and runtime.answered_choice is None and runtime.decisions == []
+    from agent.interactions import Interactions
+    assert Interactions(runtime.store).open_question() is None  # the question waits, suspended
     later = TaskRuntime('A', dict(H.CFG), session.sb, 'later')
-    assert later.answered_choice is None and later.decisions == []
+    assert later.decisions == []
 
 
 def test_a_letter_after_an_unrelated_finished_turn_is_not_an_answer(tmp_path):

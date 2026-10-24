@@ -20,7 +20,7 @@ def display_state(state, task=None):
         changed = task and (task.get('operation_history') or task.get('operations'))
         return 'confirm' if changed else 'answered'
     return {'completed': 'done', 'answered': 'done', 'explained': 'done', 'waiting_input': 'waiting',
-            'cancelled': 'cancelled'}.get(state, 'unfinished')
+            'cancelled': 'cancelled', 'paused': 'cancelled'}.get(state, 'unfinished')
 
 
 def _clause(text, limit=180):
@@ -98,15 +98,35 @@ def _all_explained(task):
     return bool(unmet) and all(any(n['by'] == 'model' for n in g.get('notes', [])) for g in unmet)
 
 
-def build_report(task, model_summary, records, reply=''):
-    state = task['status']
-    operations = task.get('operations', [])
+def action_phrases(operations):
+    """"已移动 2 个文件" and the like, for the operations given."""
     counts = Counter((o['op'], o.get('kind', '项')) for o in operations)
     actions = []
     verbs = {'move':'已移动', 'rename':'已重命名', 'trash':'已移入回收区', 'make_dir':'已创建'}
     for op in ('move','rename','trash','make_dir'):
         for kind in ('文件','文件夹','项'):
             if counts[(op,kind)]: actions.append(f'{verbs[op]} {counts[(op,kind)]} 个{kind}')
+    return actions
+
+
+def stopped_report(task, operations, state):
+    """The user cancelled or paused the request (routing redesign S3, 5.3). What ran stays
+    done and undoable; what did not is named, and nothing is called complete."""
+    done = action_phrases(operations)
+    if state == 'cancelled':
+        head = '已取消' + (f"；此前{'；'.join(done)}，可撤销" if done else '，没有执行任何文件操作')
+    else:
+        head = '已暂停' + (f"；此前{'；'.join(done)}，可撤销" if done else '，没有执行任何文件操作') + '。需要继续时告诉我'
+    touched = {g for o in operations for g in (o.get('goal_ids') or [])}
+    left = [g['description'] for g in (task or {}).get('goals', []) if g['id'] not in touched]
+    summary = head + ('。未处理：' + '；'.join(_clause(d, 60) for d in left[:5]) if left and task else '') + '。'
+    return dict(version=1, state=state, summary=summary.replace('。。', '。'), sections=[])
+
+
+def build_report(task, model_summary, records, reply=''):
+    state = task['status']
+    operations = task.get('operations', [])
+    actions = action_phrases(operations)
     sections = []
     lines = ['| 目标 | 核验结果 |', '| --- | --- |']
     for check in task['checks']:

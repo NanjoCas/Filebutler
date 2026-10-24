@@ -48,16 +48,27 @@ def of(rows, kind):
 def chosen_scope(task):
     """(option note, part ids it left out) chosen in the task's current revision, else (None, set())."""
     rows = [r for r in task.get('decisions', []) if r['revision'] == task['revision']]
-    note = next((r['note'] for r in rows if r['kind'] == 'choice'), None)
+    notes = list(dict.fromkeys(r['note'] for r in rows if r['kind'] == 'choice'))
+    note = '、'.join(notes) or None
     return note, {r['target'] for r in rows if r['kind'] == 'skip'} if note else set()
 
 
-def record_choice(task, key, label, excluded):
-    """Replace any earlier choice of this task with the one just carried out."""
+def record_choice(task, key, label, excluded, question_id=None, scope=None):
+    """Record the choice just carried out.
+
+    A choice about the whole request replaces any earlier one. A choice about some
+    parts (scope, routing redesign S3) replaces only earlier decisions about those
+    parts, so two questions about different parts both hold.
+    """
     note = f'{key}（{label}）'
-    rows = [r for r in task.get('decisions', []) if r['kind'] not in ('choice', 'skip')]
-    task['decisions'] = rows + [row('choice', key, 'option', task['revision'], note)] + \
-        [row('skip', g, 'option', task['revision'], note) for g in excluded]
+    if scope is None:
+        rows = [r for r in task.get('decisions', []) if r['kind'] not in ('choice', 'skip')]
+    else:
+        rows = [r for r in task.get('decisions', []) if not (
+            r['kind'] in ('choice', 'skip') and (r.get('question_id') == question_id or set(r.get('scope') or [r['target']]) & set(scope)))]
+    extra = {} if scope is None else dict(question_id=question_id, scope=list(scope))
+    task['decisions'] = rows + [dict(row('choice', key, 'option', task['revision'], note), **extra)] + \
+        [dict(row('skip', g, 'option', task['revision'], note), **extra) for g in excluded]
 
 
 def migrate(task):

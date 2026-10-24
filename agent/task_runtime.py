@@ -82,6 +82,8 @@ class TaskRuntime(Asking, Finishing):
         self._usage = None
         self._producers = ()
         self._part = None  # the part a write tool's call names (routing redesign S4)
+        self.input_relation = None  # how this message relates to the last question (S3, 4.5)
+        self._epochs = {}  # request id -> cancel epoch this run started under
         self._attributions = None
         self._pretask = []  # read-only facts observed before any task existed in this run
         self.pending_choice = None
@@ -96,6 +98,13 @@ class TaskRuntime(Asking, Finishing):
         chosen = (self.answered_choice or {}).get('chosen') or {}
         # The chosen option's declared actions bound the next plan (None: not declared).
         self.chosen_option = chosen if chosen.get('actions') is not None else None
+        # The cancel epoch this run starts under: a later cancel stops its next step (S3, 5.2).
+        for rid in {self.cfg.get('request_id'), (self.current or {}).get('request_id')} - {None}:
+            req = self._interactions().request(rid)
+            if req: self._epochs[rid] = req['cancel_epoch']
+        if chosen.get('disposition') == 'cancel_request':
+            # The user pressed "cancel the whole request": decided by the button, not the model.
+            self._stop_request('cancelled', 'user_option')
 
     def _last_outcome(self):
         try: last = self.store.outcome()
@@ -212,6 +221,133 @@ class TaskRuntime(Asking, Finishing):
             self.blocked_reasons.append(str(exc))
             return raw, 'ERROR: ' + str(exc)
 
+    def _check_drafts(self, spec):
+        """Part.draft_id names a draft of the question the user just answered, once each;
+        a draft that question's option is about must be mapped (routing redesign S3, 4.2)."""
+        a = self.answered_choice or {}
+        drafts = {d['id'] for d in a.get('drafts') or []}
+        named = list(spec.draft_map.values())
+        if len(named) != len(set(named)):
+            raise ValueError('draft_id 重复：一个草案部分只对应一个正式部分')
+        unknown = [d for d in named if d not in drafts]
+        if unknown:
+            raise ValueError('draft_id 不属于用户刚回答的问题：' + '、'.join(unknown))
+        scope = a.get('scope') or {}
+        if a.get('chosen') and scope.get('drafts'):
+            missing = [d for d in scope['part_ids'] if d not in named]
+            if missing:
+                raise ValueError('UNRESOLVED_QUESTION_SCOPE：用户的选择只关于草案部分 ' + '、'.join(missing) +
+                                 '；请在对应的 Part 写 draft_id')
+
+    # ----- how the message relates to the question, and the user stopping a request (S3) -----
+
+    def _interactions(self):
+        from agent.interactions import Interactions
+        return Interactions(self.store)
+
+    def relation_needed(self):
+        """The message replied to a question in text: before writing, the run must say how."""
+        a = self.answered_choice
+        return bool(a and not a.get('chosen') and self.cfg.get('receipt_id'))
+
+    def _target_request(self):
+        """The request a pause or cancel means: the task's, the question's, this message's."""
+        rid = (self.current or {}).get('request_id')
+        if not rid and self.answered_choice and self.cfg.get('receipt_id'):
+            replied = self._interactions().replied_to(self.cfg['receipt_id'])
+            rid = replied and replied.get('request_id')
+        if not rid:
+            latest = self._interactions().latest_request(exclude=self.cfg.get('request_id'))
+            rid = latest and latest['request_id']
+        return rid or self.cfg.get('request_id')
+
+    def declare_relation(self, resolution, *, terminal):
+        """Apply the model's statement of how this message relates to what came before."""
+        kind = resolution.kind
+        if kind in ('pause', 'cancel_request') and not terminal:
+            raise ValueError(f'{kind} 用 finish_turn 的 input_resolution 声明，并结束本轮')
+        if kind == 'answer' and not self.relation_needed():
+            raise ValueError('本轮消息没有回应待答问题，不能声明 answer')
+        if kind in ('new_request', 'independent_query'):
+            # Not an answer: the question waits, and none of its options or consents carry over.
+            if self.relation_needed() and (self.answered_choice or {}).get('question_id'):
+                self._interactions().suspend_question(self.answered_choice['question_id'])
+            self.answered_choice, self.decisions, self.chosen_option = None, [], None
+        elif kind == 'resume':
+            self._resume_request(resolution.request_id)
+        elif kind == 'pause':
+            self._stop_request('paused', 'user_text')
+        elif kind == 'cancel_request':
+            self._stop_request('cancelled', 'user_text')
+        self.input_relation = kind
+
+    def _require_writable(self):
+        if self.relation_needed() and self.input_relation is None:
+            q = (self.answered_choice or {}).get('question', '')
+            raise ValueError(f'INPUT_RELATION_REQUIRED：用户这条消息回应了上一问“{q[:60]}”，但没有选选项。写入前请在 '
+                             'start_task 或 prepare_file_plan 的 input_resolution 写明它是 answer、revise 还是 new_request 等')
+        if self.stop_requested():
+            raise ValueError('USER_CANCELLED：用户已取消或暂停这个请求，不能再写入')
+
+    def stop_requested(self):
+        """The user paused or cancelled the request this run works for (checked by the executor
+        before the confirmation, after it and before each step)."""
+        rid = (self.current or {}).get('request_id') or self.cfg.get('request_id')
+        if not rid:
+            return False
+        req = self._interactions().request(rid)
+        return bool(req and (req['status'] in ('paused', 'cancelled') or req['cancel_epoch'] > self._epochs.get(rid, 0)))
+
+    def stopped_by_user(self):
+        """The request was cancelled or paused from outside this run: report what ran."""
+        rid = (self.current or {}).get('request_id') or self.cfg.get('request_id')
+        req = self._interactions().request(rid) if rid else None
+        status = 'paused' if req and req['status'] == 'paused' else 'cancelled'
+        if self.current and status == 'cancelled':
+            self.current = self.store.cancel_from_user(self.current['id'], actor=(req or {}).get('status_actor') or 'user_button',
+                                                       receipt_id=(req or {}).get('status_receipt'), run_id=self.run_id)
+        task = self.current
+        operations = list((task or {}).get('operation_history', [])) + list(self.operations)
+        from agent.reporting import stopped_report
+        self.report = stopped_report(task, operations, status)
+        self.final_answer, self.stop_reason, self.finished = self.report['summary'], status, True
+
+    def _resume_request(self, request_id):
+        if not request_id:
+            raise ValueError('resume 需要 request_id（见最近运行结果）')
+        req = self._interactions().request(request_id)
+        if not req or req['status'] != 'paused':
+            raise ValueError('只有暂停的请求可以继续；已取消的请求请重新提出')
+        self._interactions().set_status(request_id, 'active', actor='user_text', receipt_id=self.cfg.get('receipt_id'))
+        if req.get('task_id'):
+            task = self.store.get(req['task_id'])
+            if task.get('status') == 'paused':
+                task['status'] = 'running'
+                self.store.checkpoint(task)
+            self.current = task
+        self._epochs[request_id] = req['cancel_epoch']
+
+    def _stop_request(self, status, actor):
+        """Pause or cancel the request: no new writes, its questions closed or suspended, the task
+        cancelled or paused. What already ran stays done; nothing is called complete."""
+        rid = self._target_request()
+        req = self._interactions().set_status(rid, status, actor=actor, receipt_id=self.cfg.get('receipt_id')) if rid else None
+        task_id = (self.current or {}).get('id') or (req or {}).get('task_id')
+        task = None
+        if task_id:
+            if status == 'cancelled':
+                task = self.store.cancel_from_user(task_id, actor=actor, receipt_id=self.cfg.get('receipt_id'), run_id=self.run_id)
+            else:
+                task = self.store.get(task_id)
+                task['status'] = 'paused'
+                self.store.checkpoint(task)
+            self.current = task
+        operations = ([o for o in (task or {}).get('operation_history', []) + (task or {}).get('operations', [])]
+                      if task else []) + [o for o in self.operations if o not in ((task or {}).get('operations') or [])]
+        from agent.reporting import stopped_report
+        self.report = stopped_report(task, operations, status)
+        self.final_answer, self.stop_reason, self.finished = self.report['summary'], status, True
+
     def _named_part(self, part, tool):
         """The part a write tool's call names: one of the task's, proved by this tool's receipt."""
         from agent.verifier import CONSUMERS
@@ -226,6 +362,7 @@ class TaskRuntime(Asking, Finishing):
     def _check_write(self, tool, args):
         if not self.current:
             raise ValueError('写操作前必须 start_task 登记用户的要求和限制')
+        self._require_writable()
         if self.current.get('cancelled'):
             raise ValueError('任务已取消，不能执行写操作')
         if self.current['unresolved_questions']:
@@ -322,7 +459,12 @@ class TaskRuntime(Asking, Finishing):
 
     def _register(self, spec, sb):
         """Register a new task (start_task)."""
+        self._check_drafts(spec)
         self.current = self.store.submit(spec, self.instruction, self.run_id)
+        if self.cfg.get('request_id'):
+            self.current['request_id'] = self.cfg['request_id']
+            self._interactions().link_task(self.cfg['request_id'], self.current['id'])
+            self.store.checkpoint(self.current)
         self.adopt_observations()
         self.operations = []
         self.outputs = []
@@ -338,6 +480,8 @@ class TaskRuntime(Asking, Finishing):
                 from agent import file_plans
                 if name == 'prepare_file_plan':
                     args = PrepareFilePlan.model_validate_json(raw)
+                    if args.input_resolution and self.input_relation is None:
+                        self.declare_relation(args.input_resolution, terminal=False)
                     id_note = ''
                     if args.task_id:
                         # Continuing a recent task keeps its limits; it never switches tasks.
@@ -349,6 +493,7 @@ class TaskRuntime(Asking, Finishing):
                             self.adopt_observations()
                     elif not self.current:
                         raise ValueError('请先 start_task 登记用户的要求和限制（可在同一响应中紧接着准备计划）；续做近期任务时填写 task_id')
+                    self._require_writable()
                     plan = file_plans.prepare(self, args)
                     if plan['payload'].get('empty_selection'):
                         sel = plan['payload']['empty_selection']
@@ -376,6 +521,7 @@ class TaskRuntime(Asking, Finishing):
                     outcome = registry.ToolResult(status='ok', text='OK: '+file_plans.markdown(plan))
                 else:
                     pid = ExecuteFilePlan.model_validate_json(raw).plan_id
+                    self._require_writable()
                     outcome = registry.ToolResult(status='ok', text=file_plans.execute(self, pid, oplog, confirmer))
                     self.capture_output('prepare_file_plan', file_plans.markdown(self.store.file_plan(pid)), pid)
             elif name == 'inspect_run':
@@ -387,7 +533,10 @@ class TaskRuntime(Asking, Finishing):
             elif name == 'start_task':
                 if self.current and any(m.get('run_id') == self.run_id for m in self.current.get('source_messages', [])):
                     raise ValueError(f"本轮已登记任务 {self.current['id']}；更正或补充请用 revise_task，不能另建任务")
-                outcome = self._register(compile_start(StartTask.model_validate_json(raw)), sb)
+                start = StartTask.model_validate_json(raw)
+                if start.input_resolution:
+                    self.declare_relation(start.input_resolution, terminal=False)
+                outcome = self._register(compile_start(start), sb)
                 outcome.text += '部分：' + parts_text(self.current) + '。修订时用这些 ID。'
             elif name == 'revise_task':
                 args = ReviseTask.model_validate_json(raw)

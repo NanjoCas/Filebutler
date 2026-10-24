@@ -1345,7 +1345,8 @@ def test_a_free_text_answer_lets_the_card_confirm_the_hidden_files(tmp_path):
     secrets_fixture(tmp_path)
     session = Session(tmp_path)
     session.run('删除项目', [step(call('ask_user', ASK_NO_CONSENT))])
-    result, client = session.run('同意删除', [step(start([dict(kind='organize', description='移出并回收')]),
+    result, client = session.run('同意删除', [step(start([dict(kind='organize', description='移出并回收')],
+                                                      input_resolution=dict(kind='answer')),
                                                 call('prepare_file_plan', TRASH_PROJECT, alias=PLAN)), execute(), finish()])
     assert errors(client) == [] and result.stop_reason == 'done'
     [request] = [r for r in session.approvals if r['tool'] == 'file_plan']
@@ -1670,7 +1671,8 @@ def test_a_free_text_answer_to_overwrite_is_confirmed_on_the_card(tmp_path):
     clash_fixture(tmp_path)
     session = Session(tmp_path)
     session.run('移动', [step(call('ask_user', ASK_CLASH))])
-    result, client = session.run('覆盖吧', [step(start([dict(kind='organize', description='覆盖')]),
+    result, client = session.run('覆盖吧', [step(start([dict(kind='organize', description='覆盖')],
+                                                    input_resolution=dict(kind='answer')),
                                               call('prepare_file_plan', OVERWRITE_A, alias=PLAN)), execute(), finish()])
     assert errors(client) == [] and (tmp_path / 'Archive/a.txt').read_text() == 'alpha'
     [request] = [r for r in session.approvals if r['tool'] == 'file_plan']

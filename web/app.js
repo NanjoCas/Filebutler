@@ -347,7 +347,7 @@ const DISPLAY_LABELS = {done: "已完成", answered: "已回答", confirm: "请�
 function outcomeLabel(result) {
   const shown = DISPLAY_LABELS[result?.report?.display];
   if (shown) return shown;
-  return ({done: "已完成", answered: "已完成", explained: "已完成", partial: "没有完成", needs_review: "请确认结果", waiting_input: "等你回答", cancelled: "已取消", cost_budget:'没有完成：费用达上限', token_budget:'没有完成：Token 达上限', max_steps:'没有完成：执行轮数达上限', repeated_call:'没有完成：重复调用', repair_limit:'没有完成：连续失败无进展', exception:'运行失败', unverified_answer: "没有完成：未形成可核验结果", unstructured_terminal: "没有完成：回复格式不完整"})[result?.stop_reason] || "已停止";
+  return ({done: "已完成", answered: "已完成", explained: "已完成", partial: "没有完成", needs_review: "请确认结果", waiting_input: "等你回答", cancelled: "已取消", paused: "已暂停", cost_budget:'没有完成：费用达上限', token_budget:'没有完成：Token 达上限', max_steps:'没有完成：执行轮数达上限', repeated_call:'没有完成：重复调用', repair_limit:'没有完成：连续失败无进展', exception:'运行失败', unverified_answer: "没有完成：未形成可核验结果", unstructured_terminal: "没有完成：回复格式不完整"})[result?.stop_reason] || "已停止";
 }
 function eventSteps(events) {
   const steps = [], indexes = new Map();
@@ -390,7 +390,10 @@ function updateActivity(turn) {
     const details = node("ol", "activity-steps hidden");
     const toggle = (open) => { heading.setAttribute("aria-expanded", String(open)); details.classList.toggle("hidden", !open); if (open && card.turn) renderSteps(card, card.turn); };
     heading.onclick = () => { const open = heading.getAttribute("aria-expanded") !== "true"; expandedTurn = open ? card.turn?.id : null; toggle(open); };
-    card.append(heading, current, details);
+    // Stop the request (routing redesign S3): the run stops at its next safe point.
+    const stop = node("button", "activity-stop text-button", "停止"); stop.type = "button";
+    stop.onclick = (event) => { event.stopPropagation(); stopRequest(stop); };
+    card.append(heading, stop, current, details);
     // Keep the list open across the reload that follows completion.
     if (expandedTurn && expandedTurn === turn.id) { card.turn = turn; toggle(true); }
     const last = $("messages").lastElementChild;
@@ -398,6 +401,7 @@ function updateActivity(turn) {
   }
   const events = turn.events || [], steps = eventSteps(events), working = ACTIVE.has(turn.status);
   card.className = `agent-activity ${working ? turn.status === "waiting_confirmation" ? "waiting" : "working" : turn.status === "failed" ? "failed" : "finished"}`;
+  card.querySelector(".activity-stop").classList.toggle("hidden", !working || turn.id === "submitting");
   const activeStep = [...steps].reverse().find(step => step.state === "active" || step.state === "waiting");
   const toolCount = events.filter(event => event.type === "tool_end").length;
   const title = working ? turn.status === "waiting_confirmation" ? "等待你的确认" : activeStep?.title || (turn.id === "submitting" ? "正在提交请求" : "Agent 正在准备") : turn.status === "failed" ? "本轮处理已中断" : turn.result?.stop_reason === "done" ? (devMode ? `处理完成 · ${toolCount || turn.result?.tool_calls || 0} 次工具调用` : "已完成") : outcomeLabel(turn.result);
@@ -411,6 +415,20 @@ function updateActivity(turn) {
   if (!card.querySelector(".activity-steps").classList.contains("hidden")) renderSteps(card, turn);
   turn.clockReceivedAt = performance.now();
   latestActivity = turn; updateClock(); scrollIfNearBottom();
+}
+async function stopRequest(button) {
+  const cid = currentConversation;
+  if (!cid) return;
+  button.disabled = true; button.textContent = "正在停止…";
+  // One id per press, kept for a retry, like a message.
+  const key = `fb-stop-${cid}`;
+  let id; try { id = localStorage.getItem(key); } catch {}
+  if (!id) { id = newMessageId(); try { localStorage.setItem(key, id); } catch {} }
+  try {
+    await api(`/api/conversations/${cid}/cancel`, {method: "POST", body: JSON.stringify({client_message_id: id})});
+    try { localStorage.removeItem(key); } catch {}
+    button.textContent = "已请求停止";
+  } catch (err) { button.disabled = false; button.textContent = "停止"; showError(err.message); }
 }
 function renderSteps(card, turn) {
   const events = turn.events || [], signature = `${turn.id}:${events.length}:${turn.status}`;

@@ -131,6 +131,12 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
 
     try:
         for step in range(1, max_steps + 1):
+            if runtime.final_answer is None and runtime.stop_requested():
+                runtime.stopped_by_user()  # the stop button while this run was working (S3, 5.2)
+            if runtime.final_answer is not None:  # decided before any model call (a cancel button)
+                final, stop_reason = runtime.final_answer, runtime.stop_reason
+                messages.append({'role': 'assistant', 'content': final})
+                break
             if reason := over_budget():
                 stop_reason = reason
                 break

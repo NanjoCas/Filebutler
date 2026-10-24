@@ -235,3 +235,7 @@ body.resizing iframe { pointer-events: none; }
 .dev-toggle[aria-pressed="true"] { background: #24392c; color: #fff; border-color: #24392c; }
 /* An answered question's options disappear (only the latest question keeps its buttons). */
 .choice-buttons.settled { display: none; }
+
+/* Stop the request while it runs (routing redesign S3). */
+.agent-activity .activity-stop { float: right; margin: 2px 4px 0 0; font-size: 12px; }
+.agent-activity .activity-stop.hidden { display: none; }

@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from agent.artifacts import digest, signature, label
+from agent.intent import InputResolution
 from agent import choices, intent
 from agent.completion import selected, walk_selection, is_package, attribute, claimed
 from agent.task import StrictModel
@@ -64,6 +65,7 @@ class PrepareFilePlan(StrictModel):
     goal_ids: list[str] = Field(default_factory=list, max_length=30,
         description='计划涉及的部分ID；多目标动作仍须part')
     task_id: str | None = Field(None, description='仅在续做以前的任务时填写，复制完整 ID，沿用原限制；本轮已调用 start_task 时不要填')
+    input_resolution: InputResolution | None = Field(None, description='续做任务且消息回应上一问时必填')
 
 
 class ExecuteFilePlan(StrictModel):
@@ -362,7 +364,9 @@ def prepare(runtime, args):
             actions.append(dict(effect=sel['effect'], source=src, destination=dst, part=sel['part']))
     actions = _normalize(runtime, actions)
     chosen = getattr(runtime, 'chosen_option', None)
-    if chosen is not None:
+    # A question about some parts bounds only those parts' actions (routing redesign S3, 5.1).
+    scoped = runtime.scope_goals() if chosen is not None else None
+    if chosen is not None and scoped is None:
         _within_choice(runtime, chosen, actions)  # before any other check, so the reason is this one
     if not actions and args.selection and not args.actions:
         return _empty_selection(runtime, args)
@@ -475,6 +479,12 @@ def prepare(runtime, args):
     producers = ['file_plans'] + (['classification_plans'] if classification else [])
     # For an existing task, bindings are explicit or locally derived; neither grants access.
     goal_ids = _attribute_steps(runtime, task, steps, args.goal_ids, producers)
+    if chosen is not None and scoped is not None:
+        mine = [s for s in steps if s['effect'] != 'create' and set(s['goal_ids']) & set(scoped)]
+        if chosen.get('disposition') == 'skip' and mine:
+            raise ValueError(f"用户选择 {chosen['key']}（{chosen['label']}）跳过部分 {'、'.join(scoped)}，"
+                             f"不能为它们准备操作：{'、'.join(s['source'] for s in mine[:3])}。其他部分照常处理")
+        _within_choice(runtime, chosen, mine)
     additions = _additions(runtime, task, steps)
     payload = dict(task_id=task['id'], revision=task['revision'], goal_ids=goal_ids,
                    description=args.description, steps=steps, classification=classification)
@@ -951,7 +961,9 @@ def execute(runtime, plan_id, oplog, confirmer):
             if plan['status'] == 'completed':
                 return _verified_again(runtime, plan, task)
             _recheck(runtime, plan)                      # 1. before the confirmation
+            _stop_point(runtime)
             _confirm(runtime, plan, remaining, confirmer)
+            _stop_point(runtime)                         # the user may have cancelled while the card was open
             _grant(task, plan, runtime.run_id)
             runtime.store.checkpoint(task)
             _validate(runtime, plan, remaining)
@@ -959,10 +971,18 @@ def execute(runtime, plan_id, oplog, confirmer):
             plan['status'] = 'executing'; plan['error'] = ''
             runtime.store.save_file_plan(plan)
             for s in remaining:
+                _stop_point(runtime)                     # a cancel stops before the next step, never inside one
                 _run_step(runtime, plan, s, oplog)       # 3. each step checks its object first
             return _finish_plan(runtime, plan, task)
         except (ValueError, OSError) as exc:
             _blocked(runtime, plan, exc)
+
+
+def _stop_point(runtime):
+    """Routing redesign S3 (5.2): the user's cancel or pause takes effect here. A step already
+    started finishes and is journalled; no later step runs. Done steps stay undoable."""
+    if getattr(runtime, 'stop_requested', lambda: False)():
+        raise ValueError('USER_CANCELLED：用户已取消或暂停这个请求，剩余操作未执行；已执行的操作保留，可撤销')
 
 
 def _reconcile(runtime, plan_id):

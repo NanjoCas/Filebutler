@@ -37,6 +37,10 @@ class Part(StrictModel):
     execute: bool = Field(False, description='仅 classify：用户要求本轮按方案移动文件')
 
 
+class StartPart(Part):
+    draft_id: str | None = Field(None, max_length=20, description='对应提问 drafts 的 ID')
+
+
 class Limits(StrictModel):
     """Only what the user said. Each field compiles to a local rule; none grants access."""
     no_effects: list[Effect] = Field(default_factory=list, description='用户禁止的操作')
@@ -50,14 +54,25 @@ class Limits(StrictModel):
                     '每写一条，执行前都要用户确认，结果会进入人工复核')
 
 
+# How the user's message relates to what came before (routing redesign S3, 4.5): declared
+# by the model from the user's own words, checked and applied locally. No class docstring:
+# pydantic would send it to the model as the schema description.
+class InputResolution(StrictModel):
+    kind: Literal['answer', 'revise', 'resume', 'new_request', 'independent_query', 'pause', 'cancel_request'] = Field(
+        description='answer 回答上一问；revise 更正；new_request 新请求；independent_query 顺带问别的；'
+                    'pause 暂停；cancel_request 取消请求；resume 继续暂停的请求')
+    request_id: str | None = Field(None, max_length=40, description='resume 时的请求 ID')
+
+
 class StartTask(StrictModel):
     summary: str = Field(min_length=1, max_length=800, description='一句话概括用户要求')
-    parts: list[Part] = Field(min_length=1, max_length=10)
+    parts: list[StartPart] = Field(min_length=1, max_length=10)
     limits: Limits = Field(default_factory=Limits)
     questions: list[str] = Field(default_factory=list, max_length=20,
         description='必须由用户回答才能继续的问题；有问题时不开放写入')
     criteria: list[str] = Field(default_factory=list, max_length=30, description='用户的判断标准，如分类维度')
     detail: Literal['concise', 'full'] = 'concise'
+    input_resolution: InputResolution | None = Field(None, description='消息回应上一问时必填')
 
     @model_validator(mode='after')
     def unique_parts(self):
@@ -148,8 +163,9 @@ def compile_start(args: StartTask) -> TaskSubmission:
     if len({g['id'] for g in goals}) != len(goals):
         raise ValueError('parts 的 ID 重复')
     effects, roots = authority(goals, args.limits.no_effects)
+    drafts = {g['id']: p.draft_id for g, p in zip(goals, args.parts) if getattr(p, 'draft_id', None)}
     return TaskSubmission.model_validate(dict(
-        goals=goals, read_roots=['.'], write_roots=roots,
+        goals=goals, draft_map=drafts, read_roots=['.'], write_roots=roots,
         allowed_effects=effects, constraints=compile_limits(args.limits),
         unresolved_questions=args.questions,
         policy=dict(criteria=args.criteria, output=dict(detail=args.detail))))

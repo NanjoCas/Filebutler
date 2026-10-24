@@ -17,7 +17,7 @@ from pydantic import Field
 
 from agent import choices
 from agent.asking import AskUser
-from agent.intent import parts_text
+from agent.intent import InputResolution, parts_text
 from agent.reporting import build_report
 from agent.task import StrictModel, task_state
 from agent.verifier import verify_task
@@ -48,14 +48,14 @@ class EvidenceBinding(StrictModel):
 class FinishTurn(StrictModel):
     mode: Literal['reply', 'ask', 'task'] = Field(
         description='reply 回答或说明；ask 提问并等待用户选择；task 已登记任务时收尾，本地逐部分核验')
-    reply: str = Field('', max_length=12000, description='给用户的主回复。mode=task 时只写用户要你告诉他的内容'
-                       '（如哪些文件、数量、无法执行的原因），不要复述已执行的操作')
+    reply: str = Field('', max_length=12000, description='给用户的主回复；mode=task 时只写用户要你告诉他的内容')
     question: AskUser | None = Field(None, description='mode=ask 必填：问题和 2–4 个选项')
     summary: str = FinishTask.model_fields['summary']
-    unfinished: list[Unfinished] = FinishTask.model_fields['unfinished']
-    not_needed: list[Unfinished] = FinishTask.model_fields['not_needed']
+    unfinished: list[Unfinished] = Field(default_factory=list, max_length=10, description='没有做到的部分，会标为未完成')
+    not_needed: list[Unfinished] = Field(default_factory=list, max_length=10, description='没有对象而无需操作的部分，结果待核实')
+    input_resolution: InputResolution | None = Field(None, description='消息回应上一问、要暂停或取消时必填')
     evidence_bindings: list[EvidenceBinding] = Field(default_factory=list, max_length=10,
-        description='多个查找部分时，逐个写明哪些证据支持哪个部分；同一证据可写在多个部分')
+        description='多个查找部分时写明各自的证据')
 
 
 TERMINAL_REQUIRED = ('[本地协议] TERMINAL_REQUIRED：刚才的回复没有调用 finish_turn，用户还看不到。'
@@ -83,6 +83,9 @@ class Finishing:
         """
         chosen = self.chosen_option
         if not chosen or not self.current: return
+        scoped = self.scope_goals()
+        if scoped is not None:
+            return self._record_scoped_choice(chosen, scoped)
         ops = [o for o in self.current.get('operation_history', []) + self.operations if o.get('run_id') == self.run_id]
         def executed(a):
             path = self._resolve(a['path'])
@@ -105,6 +108,19 @@ class Finishing:
                          or nothing and all(c['kind'] == 'manual_review' for c in g['conditions']))]
         choices.record_choice(self.current, chosen['key'], chosen['label'], excluded)
 
+    def _record_scoped_choice(self, chosen, scoped):
+        """A choice about some parts settles only those (routing redesign S3, 5.1): skip
+        leaves them out when nothing was done for them; any other part is judged by its
+        own work, so skipping b never settles an untouched a."""
+        touched = {g for b in self.current.get('file_plan_bindings', {}).values() for g in b['goal_ids']} | \
+                  {g for o in self.current.get('operation_history', []) + self.operations for g in (o.get('goal_ids') or [])}
+        if chosen.get('disposition') == 'skip':
+            excluded = [g for g in scoped if g not in touched]
+        else:
+            excluded = []
+        choices.record_choice(self.current, chosen['key'], chosen['label'], excluded,
+                              question_id=(self.answered_choice or {}).get('question_id'), scope=scoped)
+
     def interrupt(self, reason):
         if self.current and self.final_answer is None:
             self.current['status'] = 'interrupted'
@@ -113,6 +129,10 @@ class Finishing:
 
     def _finish_turn(self, raw, sb):
         args = FinishTurn.model_validate_json(raw)
+        if args.input_resolution and self.input_relation is None:
+            self.declare_relation(args.input_resolution, terminal=True)
+            if self.finished:  # paused or cancelled: the local report is the turn's answer
+                return registry.ToolResult(status='ok', text=f'OK: 已{"暂停" if self.stop_reason == "paused" else "取消"}这个请求，本轮结束')
         if args.mode == 'ask':
             if not args.question:
                 raise ValueError('mode=ask 需要 question：问题和 2–4 个选项')

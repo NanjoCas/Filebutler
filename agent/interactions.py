@@ -24,7 +24,10 @@ import uuid
 from datetime import datetime
 
 API_VERSION = 1
-SCHEMA_VERSION = 2  # PRAGMA user_version of tasks.sqlite3 once these tables are authoritative
+SCHEMA_VERSION = 3  # PRAGMA user_version of tasks.sqlite3 once these tables are authoritative
+# 3 (S3): a request can be paused or cancelled by the user; cancel_epoch fences running work.
+REQUEST_COLUMNS = (('cancel_epoch', 'INTEGER NOT NULL DEFAULT 0'), ('status_actor', 'TEXT'),
+                   ('status_receipt', 'TEXT'), ('status_at', 'TEXT'))
 LEASE_SECONDS = 1800
 
 DDL = '''
@@ -94,13 +97,18 @@ def migrate(path, db):
         finally: backup.close()
     db.execute('BEGIN IMMEDIATE')
     try:
-        if db.execute('PRAGMA user_version').fetchone()[0] >= SCHEMA_VERSION:  # migrated meanwhile
+        current = db.execute('PRAGMA user_version').fetchone()[0]
+        if current >= SCHEMA_VERSION:  # migrated meanwhile
             db.execute('COMMIT')
             return
         for statement in DDL.split(';'):  # not executescript: it would commit the open transaction
             if statement.strip(): db.execute(statement)
+        present = {r[1] for r in db.execute('PRAGMA table_info(requests)')}
+        for column, kind in REQUEST_COLUMNS:
+            if column not in present:
+                db.execute(f'ALTER TABLE requests ADD COLUMN {column} {kind}')
         db.execute("INSERT OR REPLACE INTO protocol_meta VALUES('stage', 'copying')")
-        if has_runs:
+        if has_runs and current < 2:  # questions exist from version 2 on
             _backfill_legacy_questions(db)
         db.execute("INSERT OR REPLACE INTO protocol_meta VALUES('stage', 'authoritative')")
         db.execute("INSERT OR REPLACE INTO protocol_meta VALUES('schema_version', ?)", (str(SCHEMA_VERSION),))
@@ -134,12 +142,15 @@ def _question_data(asked):
     return data
 
 
-def canonical(content, response):
-    """The payload a message id stands for: the text exactly as sent, and the exact response."""
+def canonical(content, response, action=None):
+    """The payload a message id stands for: the text exactly as sent, the exact response,
+    and an action (cancel: the stop button, which starts no run)."""
     if response is not None:
         response = dict(question_id=str(response['question_id']), version=int(response['version']),
                         option_id=str(response['option_id']))
     payload = dict(api_version=API_VERSION, content=content, response=response)
+    if action:
+        payload['action'] = action
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return payload, hashlib.sha256(text.encode()).hexdigest()
 
@@ -151,6 +162,31 @@ class Interactions:
         self.store, self.root, self.session = store, store.root, store.session
 
     # ----- receiving a message -----
+
+    def accept_cancel(self, client_message_id):
+        """The stop button, received once: (receipt, request it stopped or None)."""
+        payload, digest = canonical('[停止]', None, 'cancel')
+        with self.store.connect() as db:
+            known = self._receipt(db, client_message_id)
+            if known:
+                return self._returned(db, known, digest), None
+        target = self.latest_request()
+        receipt_id, run_request_id = _id('M'), _id('R')
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if self._receipt(db, client_message_id):
+                db.execute('ROLLBACK')
+                return self.accept_cancel(client_message_id)
+            request_id = target['request_id'] if target else _id('U')
+            db.execute('INSERT INTO message_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                       (receipt_id, self.root, self.session, client_message_id, API_VERSION, digest,
+                        json.dumps(payload, ensure_ascii=False), request_id, run_request_id, None, _now()))
+            db.execute('INSERT INTO run_requests VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (run_request_id, self.root, self.session, receipt_id, None, 'no_run',
+                        None, None, 0, None, None, _now(), _now()))
+        stopped = self.set_status(target['request_id'], 'cancelled', actor='user_button', receipt_id=receipt_id) if target else None
+        return dict(receipt_id=receipt_id, request_id=request_id, run_request_id=run_request_id, answer_id=None,
+                    status='no_run', ui_turn_id=None, run_id=None, existing=False), stopped
 
     def accept(self, client_message_id, content, response=None):
         """The receipt of one submission: dict(receipt_id, request_id, run_request_id, answer_id,
@@ -188,9 +224,9 @@ class Interactions:
                            "AND status='open'", (receipt_id, self.root, self.session))
                 request_id = _id('U')
             if not db.execute('SELECT 1 FROM requests WHERE request_id=?', (request_id,)).fetchone():
-                db.execute('INSERT INTO requests VALUES(?,?,?,?,?,?,?)',
-                           (request_id, self.root, self.session, receipt_id, 'active',
-                            question['task_id'] if question else None, _now()))
+                db.execute('INSERT INTO requests(request_id, root, session, source_receipt, status, task_id, created_at) '
+                           'VALUES(?,?,?,?,?,?,?)', (request_id, self.root, self.session, receipt_id, 'active',
+                                                    question['task_id'] if question else None, _now()))
             db.execute('INSERT INTO message_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                        (receipt_id, self.root, self.session, client_message_id, API_VERSION, digest,
                         json.dumps(payload, ensure_ascii=False), request_id, run_request_id, answer_id, _now()))
@@ -233,6 +269,57 @@ class Interactions:
         if not option:
             raise InteractionError('INVALID_ARGUMENTS', '选项不属于这个问题')
         return dict(row), option
+
+    # ----- requests: pause, cancel, resume (routing redesign S3, 5) -----
+
+    def request(self, request_id):
+        with self.store.connect() as db:
+            row = db.execute('SELECT * FROM requests WHERE request_id=? AND root=? AND session=?',
+                             (request_id, self.root, self.session)).fetchone()
+        return dict(row) if row else None
+
+    def latest_request(self, exclude=None):
+        """The session's most recent request that is not cancelled, other than exclude
+        (the one a stop button or "停一下" means)."""
+        with self.store.connect() as db:
+            row = db.execute("SELECT * FROM requests WHERE root=? AND session=? AND status!='cancelled' AND request_id!=? "
+                             "ORDER BY created_at DESC, rowid DESC LIMIT 1", (self.root, self.session, exclude or '')).fetchone()
+        return dict(row) if row else None
+
+    def link_task(self, request_id, task_id):
+        with self.store.connect() as db:
+            db.execute('UPDATE requests SET task_id=? WHERE request_id=? AND root=? AND session=?',
+                       (task_id, request_id, self.root, self.session))
+
+    def set_status(self, request_id, status, *, actor, receipt_id=None):
+        """paused | cancelled | active. Cancelling raises the epoch running work checks,
+        closes the request's questions and cancels its run requests that have not started.
+        Returns the request after the change (None: not this session's request)."""
+        assert status in ('paused', 'cancelled', 'active')
+        with self.store.connect() as db:
+            row = db.execute('SELECT * FROM requests WHERE request_id=? AND root=? AND session=?',
+                             (request_id, self.root, self.session)).fetchone()
+            if not row:
+                return None
+            if row['status'] == 'cancelled' and status != 'cancelled':
+                raise InteractionError('QUESTION_STALE', '这个请求已经取消；需要时请重新提出')
+            epoch = row['cancel_epoch'] + (1 if status == 'cancelled' and row['status'] != 'cancelled' else 0)
+            db.execute('UPDATE requests SET status=?, cancel_epoch=?, status_actor=?, status_receipt=?, status_at=? '
+                       'WHERE request_id=?', (status, epoch, actor, receipt_id, _now(), request_id))
+            closed = 'closed' if status == 'cancelled' else 'suspended'
+            if status in ('paused', 'cancelled'):
+                db.execute("UPDATE questions SET status=? WHERE request_id=? AND status IN ('open', 'suspended')",
+                           (closed, request_id))
+            if status == 'cancelled':
+                db.execute("UPDATE run_requests SET status='cancelled', updated_at=? WHERE root=? AND session=? "
+                           "AND status='queued' AND receipt_id IN (SELECT receipt_id FROM message_receipts WHERE request_id=?)",
+                           (_now(), self.root, self.session, request_id))
+            return dict(db.execute('SELECT * FROM requests WHERE request_id=?', (request_id,)).fetchone())
+
+    def suspend_question(self, question_id):
+        with self.store.connect() as db:
+            db.execute("UPDATE questions SET status='suspended' WHERE question_id=? AND root=? AND session=? "
+                       "AND status IN ('open', 'replied')", (question_id, self.root, self.session))
 
     # ----- questions -----
 

@@ -87,3 +87,27 @@ def test_a_message_accepted_before_a_crash_gets_its_turn_once_after_restart(ui, 
     webapp._recover_outbox()  # nothing left to recover
     assert len(made) == 1
     assert post(ui, cid, '列出文件', 'before-crash').json()['existing']
+
+
+def test_stop_while_a_card_waits_interrupts_it_and_writes_nothing(ui, monkeypatch, files):
+    from tests.test_web_ui import make_folder_plan
+    waiting = threading.Event()
+    made, finished = scripted(monkeypatch, make_folder_plan('不应出现'))
+    original = webapp._event
+    def notify(turn_id, event):
+        original(turn_id, event)
+        if event["type"] == "confirmation_required": waiting.set()
+    monkeypatch.setattr(webapp, "_event", notify)
+    cid = ui.post("/api/conversations").json()["id"]
+    turn = post(ui, cid, '新建 blocked').json()
+    assert waiting.wait(4)
+    reply = ui.post(f"/api/conversations/{cid}/cancel", json={"client_message_id": "stop-press-1"})
+    stopped = reply.json()
+    assert reply.status_code == 200, stopped
+    assert stopped["status"] == "cancelled" and stopped["running"]
+    assert wait_for(finished, 1)
+    done = ui.get(f"/api/turns/{turn['turn_id']}").json()
+    assert done["result"]["stop_reason"] == "cancelled" and done["final"].startswith("已取消")
+    assert not (files.root / "blocked").exists()
+    # The same press again is the same stop; a new message after it is a new request.
+    assert ui.post(f"/api/conversations/{cid}/cancel", json={"client_message_id": "stop-press-1"}).json()["status"] == "cancelled"
