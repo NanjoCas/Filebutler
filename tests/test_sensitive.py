@@ -1,5 +1,6 @@
 """Sensitive files (user decision 2026-10-22): contents are withheld from the model
-unless the user granted reading that file, by choosing an option, in this task."""
+unless the user granted reading that file, by choosing an option, in this task.
+Off by default since 2026-10-24 (config sensitive_files); these tests turn it on."""
 from agent import choices
 import json
 
@@ -40,9 +41,12 @@ def test_rules_need_valid_numbers_and_skip_common_title_words():
     assert name_kind('.env') == '环境变量文件'
 
 
+ON = dict(H.CFG, sensitive_files=True)
+
+
 def runtime(tmp_path):
     sb = Sandbox(tmp_path); sb.artifacts = ArtifactStore(sb)
-    r = TaskRuntime('读取', dict(protocol='v3'), sb, 'one'); sb.runtime = r
+    r = TaskRuntime('读取', dict(protocol='v3', sensitive_files=True), sb, 'one'); sb.runtime = r
     return r, sb
 
 
@@ -85,7 +89,7 @@ SENSITIVE_ASK = dict(question='要读取 合同.txt 的内容吗？', reason='sc
 
 def test_choosing_the_read_option_grants_it_for_the_task(tmp_path):
     (tmp_path / '合同.txt').write_text('付款期限三十天')
-    session = Session(tmp_path)
+    session = Session(tmp_path, ON)
     asked, _ = session.run('合同里的付款期限是多久？', [step(call('ask_user', SENSITIVE_ASK))])
     assert asked.report['choices'][0]['read_grant'] == ['合同.txt'] and '⚠ 授权读取敏感文件 合同.txt' in asked.final
     assert not asked.report['choices'][1].get('read_grant')
@@ -99,7 +103,22 @@ def test_choosing_the_read_option_grants_it_for_the_task(tmp_path):
 @pytest.mark.parametrize('reply', ['B', '可以读'])
 def test_declining_or_a_free_text_reply_grants_nothing(tmp_path, reply):
     (tmp_path / '合同.txt').write_text('付款期限三十天')
-    session = Session(tmp_path)
+    session = Session(tmp_path, ON)
     session.run('合同里的付款期限是多久？', [step(call('ask_user', SENSITIVE_ASK))])
     _, client = session.run(reply, [step(call('read_file', dict(path='合同.txt')))], final='')
     assert '敏感文件' in client.calls('read_file')[0]['text'] and '付款期限三十天' not in client.calls('read_file')[0]['text']
+
+
+def test_off_by_default_contents_are_read_and_the_rule_is_not_shown(tmp_path):
+    (tmp_path / '合同.txt').write_text('付款期限三十天')
+    H.pdf(tmp_path / '文献/客户合同.pdf', 'Abstract: graph neural networks contract between parties, secret terms.')
+    assert not H.CFG.get('sensitive_files')
+    session = Session(tmp_path)
+    result, client = session.run('合同里的付款期限是多久？', [step(call('read_file', dict(path='合同.txt'))),
+                                                       step(call('search_content', dict(query='graph neural networks', path='文献', view='detail')))],
+                                 final='三十天')
+    assert '付款期限三十天' in client.calls('read_file')[0]['text']
+    assert 'secret terms' in client.calls('search_content')[0]['text']
+    from agent.prompts import SENSITIVE_RULE
+    assert SENSITIVE_RULE not in '\n'.join(m['content'] for m in result.messages if m['role'] == 'system')
+    assert SENSITIVE_RULE in TaskRuntime('x', ON, session.sb, 'on').guidance()

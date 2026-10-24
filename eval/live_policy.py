@@ -362,6 +362,8 @@ def run_suite(cases, out, cfg, total_cap, llm_for, mode):
                 instruction, chosen = choose(turn, last_report)
                 if report['cost'] >= total_cap: report['budget_stopped'] = True; break
                 turn_cfg = {**cfg, 'cost_budget': min(cfg['cost_budget'], total_cap - report['cost'])}
+                # Sensitive-file checks are off by default (2026-10-24); cases written for them turn them on.
+                if 'sensitive' in case.get('tags', []): turn_cfg['sensitive_files'] = True
                 llm = llm_for(case['id'], index, turn_cfg)
                 requests = []; approvals = []; events = []; data = {}; result = None
                 turn_before = snapshot(sb.root, True)

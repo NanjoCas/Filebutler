@@ -88,6 +88,9 @@ FIELD_DOCS = {
 # Protocol guidance sent as a system message each run, before the dynamic state
 # (the user's last answer, the last run's outcome, recent tasks).
 GUIDANCE_MARK = '【任务协议 v3】'
+# Shown only while config sensitive_files is on (off by default since 2026-10-24).
+SENSITIVE_RULE = ('敏感文件（凭据、证件、合同、财务、医疗，或含密钥、身份证号、卡号）不读内容，只按文件名整理；'
+                  '需要内容时 ask_user，同意项 actions 写 read 该文件，仅本任务有效。')
 TASK_GUIDANCE = (GUIDANCE_MARK + '\n'
                  '先区分询问与执行：解释、方案讨论直接回答；查询历史运行原因用 inspect_run。\n'
                  '要求执行时用 start_task 说明用户要做的事：parts 按部分列出（find/dedup/organize/classify/answer），'
@@ -115,8 +118,7 @@ TASK_GUIDANCE = (GUIDANCE_MARK + '\n'
                  '用户说的目标文件夹不存在时也先问：有意思相近的已有文件夹，第一个选项问是否指它（不要自行认定），其余写在哪里新建和取消；用户要求新建的照常做。'
                  '选项必须是工具能做到的：隐藏文件和隐藏文件夹不能移动或读取，锁文件不能移动或回收，隐藏文件只能随所在文件夹一起回收，'
                  '回收区只能由用户手动清空。'
-                 '敏感文件（凭据、证件、合同、财务、医疗，或含密钥、身份证号、卡号）不读内容，只按文件名整理；'
-                 '需要内容时 ask_user，同意项 actions 写 read 该文件，仅本任务有效。'
+                 + SENSITIVE_RULE +
                  '每个选项写 actions（move/rename/trash/read 及路径，不做操作写空列表），本地会在用户看到前检查，做不到的退回给你改写；'
                  '所选选项约束下一轮计划，不能超出；完成以所选范围为准，选项不含的部分不必做，也不写进 unfinished。\n'
                  '回收文件夹：可见文件须由同一计划先移走（整个文件夹一次回收，不必逐个列子文件夹）；'
