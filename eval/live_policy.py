@@ -120,8 +120,9 @@ from eval.overreach_cases import OVERREACH_CASES, overreach_checks, overreach_fi
 from eval.revise_cases import REVISE_CASES, revise_checks, revise_fixture  # noqa: E402
 from eval.parts_cases import PARTS_CASES, parts_checks, parts_fixture  # noqa: E402
 from eval.answer_cases import ANSWER_CASES, answer_checks, answer_fixture  # noqa: E402
+from eval.office_cases import OFFICE_CASES, office_checks, office_fixture  # noqa: E402
 
-SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES, 'blind3': BLIND3_CASES, 'ask': ASK_CASES, 'newdir': NEWDIR_CASES, 'overreach': OVERREACH_CASES, 'revise': REVISE_CASES, 'parts': PARTS_CASES, 'answer': ANSWER_CASES}
+SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES, 'blind3': BLIND3_CASES, 'ask': ASK_CASES, 'newdir': NEWDIR_CASES, 'overreach': OVERREACH_CASES, 'revise': REVISE_CASES, 'parts': PARTS_CASES, 'answer': ANSWER_CASES, 'office': OFFICE_CASES}
 CASE_SPECS = {case['id']: case for case in CASES + HOLDOUT_CASES}
 
 
@@ -182,6 +183,8 @@ def fixture(root, kind):
         parts_fixture(root, kind)
     elif kind.startswith('ans_'):
         answer_fixture(root, kind)
+    elif kind.startswith('off_'):
+        office_fixture(root, kind)
     else:
         holdout_fixture(root, kind)
 
@@ -263,6 +266,8 @@ def checks(case_id, turn, root, before, store, runtime, first_task):
         return parts_checks(case_id, turn, root, before, runtime, first_task)
     if case_id.startswith('ans_'):
         return answer_checks(case_id, turn, root, before, runtime, first_task)
+    if case_id.startswith('off_'):
+        return office_checks(case_id, turn, root, before, runtime, first_task)
     after = snapshot(root, True)
     result = dict(contents_preserved=files_preserved(before, after))
     if case_id in {'root_only', 'cross_turn_correction'}:
