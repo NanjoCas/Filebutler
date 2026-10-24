@@ -1,0 +1,496 @@
+# 检索评测集（2026-10-24，功能方案阶段 3），写检索代码之前冻结；冻结后题目、相关文件和证据都不改。
+# 检索层诊断，不是模型端到端评测，也不是独立盲测：题目和标注由同一人写成，标注时看过全文。
+#
+# 两个语料：
+# - papers：data/real/papers 的 51 篇真实论文，评测时复制到临时目录再检索（不往 data/real 写缓存）。
+#   沿用 E12 的 Q01–Q12（retrieval_queries.yaml，原样不动），新增 Q13–Q30（主题查找）、F01–F19（细节查找）。
+# - mixed：eval/retrieval_mixed.py 生成的混合格式资料库（Word、PPT、Excel、网页、Markdown、
+#   扫描 PDF、照片、长 PDF），题目 M01–M12。
+#
+# 相关性：
+# - 主题查找（Q）：按前两页的研究目标/提出的方法判相关，只在相关工作里提到不算；同一研究的不同版本都算。
+# - 细节查找（F、M）：找写有该细节的文件；相关文件是全文逐篇查过的全部出处。
+# 证据：每个相关文件给出页（PDF 的页、幻灯片序号、工作表序号，其他格式为 1）和该页上的原文片段，
+# 评测前按全文核对，对不上即报错。
+# 指标：Recall@k = 命中的相关文件数 / min(k, 相关文件数)；MRR@k；无相关题不计入 Recall，单列误候选。
+base: retrieval_queries.yaml
+corpora:
+  papers: data/real/papers
+  mixed: eval/retrieval_mixed.py
+queries:
+  # ---------- papers：主题查找 ----------
+  - id: Q13
+    corpus: papers
+    kind: english
+    query: COOPERA chatbot LINE COVID-19 Japan symptoms
+    intent: 用 LINE 聊天机器人 COOPERA 监测日本新冠流行状况的研究
+    relevant: &coopera
+      - path: covid-19/Early SNS-Based Monitoring System for the COVID-19 Outbreak in Japan A Population-Level Observational Study.pdf
+        page: 1
+        evidence: A chatbot-based healthcare system named COOPERA
+      - path: covid-19/Large-scale epidemiological monitoring of the COVID-19 epidemic in Tokyo.pdf
+        page: 1
+        evidence: A chatbot-based healthcare system named COOPERA
+  - id: Q14
+    corpus: papers
+    kind: cross_language_ja
+    query: LINEのチャットボットで日本の新型コロナ流行状況を調査した研究
+    intent: Q13 的日文查询，相关论文为英文
+    relevant: *coopera
+  - id: Q15
+    corpus: papers
+    kind: paraphrase
+    query: questionnaire bot asking residents about fever to track coronavirus spread
+    intent: Q13 的近义描述，不出现 COOPERA、LINE、chatbot
+    relevant: *coopera
+  - id: Q16
+    corpus: papers
+    kind: english
+    query: fake news images frequency domain pixel domain
+    intent: 利用新闻配图的频域和像素域特征检测假新闻的论文
+    relevant: &visual
+      - path: "transformer/ Exploiting Multi-domain Visual Information for Fake News Detection.pdf"
+        page: 1
+        evidence: clearly reﬂected in the frequency and pixel domain
+  - id: Q17
+    corpus: papers
+    kind: cross_language_fuzzy
+    query: 检测新闻配图是否被篡改或张冠李戴
+    intent: Q16 的中文模糊描述
+    relevant: *visual
+  - id: Q18
+    corpus: papers
+    kind: cross_language
+    query: 多模态 假新闻 外部知识 实体 强化学习
+    intent: 用强化学习自适应选择知识实体的多模态假新闻检测论文
+    relevant:
+      - path: 强化学习/Reinforced Adaptive Knowledge Learning for Multimodal Fake News Detection.pdf
+        page: 1
+        evidence: Reinforced Adaptive Knowledge Learning for Multimodal Fake News Detection
+  - id: Q19
+    corpus: papers
+    kind: english
+    query: particle swarm genetic algorithm salp swarm feature selection
+    intent: 用 PSO、GA、SSA 做包装式特征选择的新冠假新闻检测论文
+    relevant: &evolution
+      - path: covid-19/An Evolutionary Fake News Detection Method for COVID-19 Pandemic Information.pdf
+        page: 1
+        evidence: the salp swarm algorithm (SSA)
+  - id: Q20
+    corpus: papers
+    kind: cross_language
+    query: 进化算法 特征选择 新冠 假新闻
+    intent: Q19 的中文查询
+    relevant: *evolution
+  - id: Q21
+    corpus: papers
+    kind: paraphrase
+    query: detecting fake news when only a handful of articles are labeled and most are not
+    intent: 半监督假新闻检测（与 Q12 相同的相关文件），英文近义描述，不出现 semi-supervised
+    relevant:
+      - path: Dong.pdf
+        page: 1
+        evidence: Two-path Deep Semi-supervised Learning
+      - path: Guacho.pdf
+        page: 1
+        evidence: Semi-supervised Content-based Detection of Misinformation
+      - path: covid-19/Cross_SEAN_A_cross_stitch_semi_supervise.pdf
+        page: 1
+        evidence: Cross-Stitch Semi-Supervised Neural Attention Model
+  - id: Q22
+    corpus: papers
+    kind: cross_language_fuzzy
+    query: 用社交媒体帖子预测传染病流行趋势
+    intent: 用社交媒体发帖（推文）监测或预测流感、新冠等传染病流行的研究；问卷式聊天机器人（COOPERA）不算
+    relevant:
+      - path: Twitter-Based Influenza Detection After Flu Peak via Tweets With Indirect InformationText Mining Study.pdf
+        page: 1
+        evidence: Twitter-Based Influenza Detection After Flu Peak
+      - path: covid-19/From Twitter to COVID-19_ Using NLP to Predict COVID-19 Infection.pdf
+        page: 2
+        evidence: estimate the officially reported COVID-19 infections
+      - path: covid-19/SNS Big Data Analysis Framework for COVID-19 Outbreak Prediction in Smart Healthy City.pdf
+        page: 1
+        evidence: SNS Big Data Analysis Framework for COVID-19 Outbreak Prediction
+      - path: out.pdf
+        page: 6
+        evidence: classify over 8,400,000 tweet
+  - id: Q23
+    corpus: papers
+    kind: paraphrase
+    query: retrieve verified facts then check whether the claim is supported
+    intent: 先从可信来源检索事实或文档、再判断声明真假的新冠事实核查系统
+    relevant:
+      - path: covid-19/Two Stage Transformer Model for COVID-19 Fake News Detection and Fact Checking.pdf
+        page: 1
+        evidence: retrieves the most relevant facts concerning user claims
+      - path: covid-19/An Explainable Fake News Detector Based on Named Entity Recognition and Stance Classification Applied to COVID-19.pdf
+        page: 1
+        evidence: returning a set of documents from veriﬁed sources
+  - id: Q24
+    corpus: papers
+    kind: cross_language_ja
+    query: フェイクニュース検出のサーベイ論文
+    intent: 综述假新闻/虚假信息检测方法的论文；只谈虚假信息影响、不综述检测方法的不算
+    relevant: &surveys
+      - path: review/A Survey of Fake News- Fundamental Theories, Detection Methods, and Challenges.pdf
+        page: 1
+        evidence: "A Survey of Fake News: Fundamental Theories, Detection Methods"
+      - path: review/A systematic literature review of machine learning algorithms and datasets.pdf
+        page: 1
+        evidence: a systematic literature review of machine learning algorithms and datasets
+      - path: review/Fake news detection a systematic literature review of machine learning algorithms and datasets.pdf
+        page: 1
+        evidence: a systematic literature review of machine learning algorithms and datasets
+      - path: review/A_Comprehensive_Review_on_Fake_News_Detection_With_Deep_Learning.pdf
+        page: 1
+        evidence: A Comprehensive Review on Fake News Detection With Deep Learning
+      - path: review/Deep Learning Models to Detect Online False Information a Systematic Literature Review.pdf
+        page: 1
+        evidence: "Deep Learning Models to Detect Online False Information: a Systematic Literature Review"
+      - path: review/Deep learning for fake_news_detection_A_comprehensive_survey.pdf
+        page: 1
+        evidence: we present a complete review and analysis of existing DL based FND methods
+      - path: Hu.pdf
+        page: 1
+        evidence: we present a complete review and analysis of existing DL based FND methods
+      - path: review/Deep learning for misinformation detection on online social networks a survey and new perspectives.pdf
+        page: 1
+        evidence: a survey and new perspectives
+      - path: covid-19/A systematic survey on deep learning and machine learning approaches of fake news detection in the pre- and post-COVID-19 pandemic.pdf
+        page: 2
+        evidence: This paper systematically reviews the existing fake news detection technologies
+      - path: covid-19/Covid-19 Fake News Detection- A Survey.pdf
+        page: 1
+        evidence: "Covid-19 Fake News Detection: A Survey"
+      - path: 基于传播意图特征的虚假新闻检测方法综述.pdf
+        page: 1
+        evidence: 基于传播意图特征的虚假新闻检测方法综述
+  - id: Q25
+    corpus: papers
+    kind: english
+    query: survey of fake news detection methods
+    intent: Q24 的英文查询
+    relevant: *surveys
+  - id: Q26
+    corpus: papers
+    kind: english_on_chinese_paper
+    query: adversarial graph augmentation contrastive learning fake news
+    intent: 对抗图增强对比学习的虚假新闻检测论文（中文论文，带英文摘要）
+    relevant:
+      - path: 基于对抗图增强对比学习的虚假新闻检测.pdf
+        page: 1
+        evidence: 该文提出了一种对抗图增强对比学习的方法
+  - id: Q27
+    corpus: papers
+    kind: cross_language
+    query: 登革热 气候因素 台湾 暴发预测
+    intent: Q01 的中文查询
+    relevant:
+      - path: Anno/Challenges and implications of predicting the spatiotemporal distribution of dengue fever outbreak in Chinese Taiwan using remote sensing data and dee.pdf
+        page: 1
+        evidence: predicting the spatiotemporal distribution of dengue fever
+      - path: Anno/Spatiotemporal dengue fever hotspots associated with climatic factors in Taiwan including outbreak predictions based on machine-learning.pdf
+        page: 1
+        evidence: climate-based model
+  - id: Q28
+    corpus: papers
+    kind: english
+    query: domain specific BERT pretrained on COVID tweets
+    intent: 在新冠推文上继续预训练 BERT 得到领域模型（COVID-Twitter-BERT）的论文
+    relevant:
+      - path: COVID-Twitter-BERT- A natural language processing model to analyse COVID-19 content on Twitter.pdf
+        page: 1
+        evidence: "COVID-Twitter-BERT: A natural language processing model"
+  - id: Q29
+    corpus: papers
+    kind: no_relevant
+    query: protein structure prediction
+    intent: 蛋白质结构预测；语料中没有相关研究
+    relevant: []
+  - id: Q30
+    corpus: papers
+    kind: no_relevant
+    query: 股票 价格 预测
+    intent: 股价预测；语料中没有相关研究，"预测"一词会造成误命中
+    relevant: []
+
+  # ---------- papers：细节查找（细节只在第 3 页及以后） ----------
+  - id: F01
+    corpus: papers
+    kind: full_text
+    query: Charlie Hebdo Germanwings Ottawa shooting rumour events
+    intent: 用 PHEME 中 Charlie Hebdo、Germanwings 等事件做实验的论文
+    relevant:
+      - path: Dong.pdf
+        page: 5
+        evidence: Germanwings
+  - id: F02
+    corpus: papers
+    kind: full_text
+    query: celebrity gossip Kanye Nintendo Switch fake examples
+    intent: 名人八卦假新闻示例中提到 Kanye、Nintendo Switch 的论文
+    relevant:
+      - path: 1708.07104v1.pdf
+        page: 4
+        evidence: Nintendo
+  - id: F03
+    corpus: papers
+    kind: full_text
+    query: SWAG commonsense inference TriviaQA
+    intent: 在 SWAG 上做常识推断实验、并提到 TriviaQA 的论文
+    relevant:
+      - path: Pre-training of Deep Bidirectional Transformers for Language Understanding.pdf
+        page: 7
+        evidence: SWAG
+  - id: F04
+    corpus: papers
+    kind: full_text
+    query: GSMaP JAXA satellite precipitation data
+    intent: 使用 JAXA 的 GSMaP 卫星降水数据的论文
+    relevant:
+      - path: Anno/Challenges and implications of predicting the spatiotemporal distribution of dengue fever outbreak in Chinese Taiwan using remote sensing data and dee.pdf
+        page: 3
+        evidence: GSMaP
+      - path: Anno/Spatiotemporal dengue fever hotspots associated with climatic factors in Taiwan including outbreak predictions based on machine-learning.pdf
+        page: 3
+        evidence: GSMaP
+  - id: F05
+    corpus: papers
+    kind: full_text
+    query: gargling handkerchief cough etiquette telework preventive actions
+    intent: 问卷里调查漱口、手帕、咳嗽礼仪、远程办公等预防行为的论文
+    relevant: &prevent
+      - path: covid-19/Early SNS-Based Monitoring System for the COVID-19 Outbreak in Japan A Population-Level Observational Study.pdf
+        page: 4
+        evidence: gargling
+      - path: covid-19/Large-scale epidemiological monitoring of the COVID-19 epidemic in Tokyo.pdf
+        page: 4
+        evidence: gargling
+  - id: F06
+    corpus: papers
+    kind: full_text
+    query: Diamond Princess cruise ship claim
+    intent: 用钻石公主号邮轮相关声明做示例的论文
+    relevant: &diamond
+      - path: covid-19/An Explainable Fake News Detector Based on Named Entity Recognition and Stance Classification Applied to COVID-19.pdf
+        page: 9
+        evidence: Diamond Princess
+  - id: F07
+    corpus: papers
+    kind: full_text
+    query: MobileBERT inference latency
+    intent: 比较 MobileBERT 推理延迟的论文
+    relevant:
+      - path: covid-19/Two Stage Transformer Model for COVID-19 Fake News Detection and Fact Checking.pdf
+        page: 8
+        evidence: latency
+  - id: F08
+    corpus: papers
+    kind: full_text
+    query: QAnon conspiracy theory
+    intent: 讨论 QAnon 阴谋论的论文
+    relevant:
+      - path: covid-19/A Diﬀerent Kind of Viral Threat_The Challenges to Peace Studies Posed by Viral Information on SNS Platforms.pdf
+        page: 7
+        evidence: QAnon
+  - id: F09
+    corpus: papers
+    kind: full_text
+    query: prebunking misinformation
+    intent: 讨论 prebunking（预先揭穿）的论文
+    relevant:
+      - path: The impact of misinformation on the COVID-19 pandemic.pdf
+        page: 8
+        evidence: prebunking
+  - id: F10
+    corpus: papers
+    kind: full_text
+    query: AAPD dataset focal loss
+    intent: 在 AAPD 数据集上实验并使用 focal loss 的论文
+    relevant:
+      - path: 2023.ccl-1.2.pdf
+        page: 7
+        evidence: AAPD
+  - id: F11
+    corpus: papers
+    kind: full_text
+    query: Cofacts fact checking platform data
+    intent: 使用台湾 Cofacts 事实核查平台数据的论文
+    relevant:
+      - path: covid-19/Using Fuzzy Clustering with Deep Learning Models for Detection of COVID-19 Disinformation.pdf
+        page: 16
+        evidence: Cofacts
+  - id: F12
+    corpus: papers
+    kind: full_text
+    query: MeCab morphological analysis geocoding
+    intent: 用 MeCab 分词并做地理编码的论文
+    relevant:
+      - path: Twitter-Based Influenza Detection After Flu Peak via Tweets With Indirect InformationText Mining Study.pdf
+        page: 5
+        evidence: MeCab
+  - id: F13
+    corpus: papers
+    kind: full_text
+    query: fastText ILINet influenza-like illness
+    intent: 用 fastText 分类推文并对照 ILINet 流感样病例数据的论文
+    relevant:
+      - path: out.pdf
+        page: 10
+        evidence: ILINet
+  - id: F14
+    corpus: papers
+    kind: full_text
+    query: eigenvector centrality baseline epidemic testing
+    intent: 以特征向量中心性作为基线来决定先检测哪些节点的论文
+    relevant:
+      - path: 强化学习/Controlling Graph Dynamics with Reinforcement Learning and Graph Neural Networks.pdf
+        page: 6
+        evidence: eigenvector centrality
+  - id: F15
+    corpus: papers
+    kind: full_text_cross_language
+    query: 钻石公主号邮轮
+    intent: F06 的中文查询
+    relevant: *diamond
+  - id: F16
+    corpus: papers
+    kind: full_text_cross_language
+    query: 漱口 咳嗽礼仪 居家办公
+    intent: F05 的中文查询
+    relevant: *prevent
+  - id: F17
+    corpus: papers
+    kind: full_text
+    query: 标签缺失 退化率 误导率
+    intent: 用退化率和误导率分析标签缺失影响的论文
+    relevant:
+      - path: 2023.ccl-1.2.pdf
+        page: 10
+        evidence: 退化率
+  - id: F18
+    corpus: papers
+    kind: full_text
+    query: 随机删边 随机删除节点 图增强策略
+    intent: 讨论随机删边、随机删除节点等图增强策略缺点的论文
+    relevant:
+      - path: 基于对抗图增强对比学习的虚假新闻检测.pdf
+        page: 7
+        evidence: 随机删边
+  - id: F19
+    corpus: papers
+    kind: full_text
+    query: 事实核查新闻数据集 各模型评估指标
+    intent: 在"事实核查新闻数据集"上报告各模型指标的论文
+    relevant:
+      - path: 基于多头注意力卷积Transformer的 假新闻检测.pdf
+        page: 8
+        evidence: 事实核查新闻数据集上各模型的评估指标
+
+  # ---------- mixed：混合格式资料库 ----------
+  - id: M01
+    corpus: mixed
+    kind: docx
+    query: 组会 陈静 汇报 消融实验
+    intent: 记有"下次组会由陈静汇报消融实验"的会议纪要
+    relevant:
+      - path: 会议/2026-09-组会纪要.docx
+        page: 1
+        evidence: 下次组会由陈静汇报消融实验结果
+  - id: M02
+    corpus: mixed
+    kind: pptx
+    query: Weibo21 学习率 实验设置
+    intent: 写有 Weibo21 和学习率设置的汇报幻灯片
+    relevant:
+      - path: 汇报/期中汇报.pptx
+        page: 3
+        evidence: Weibo21
+  - id: M03
+    corpus: mixed
+    kind: pptx_notes
+    query: 答辩 CLIP 特征
+    intent: 备注里写着答辩要解释 CLIP 特征的幻灯片
+    relevant:
+      - path: 汇报/期中汇报.pptx
+        page: 4
+        evidence: 为什么没有用 CLIP 特征
+  - id: M04
+    corpus: mixed
+    kind: xlsx
+    query: RoBERTa 本文方法 F1 主实验
+    intent: 主实验结果表
+    relevant:
+      - path: 数据/实验结果.xlsx
+        page: 1
+        evidence: RoBERTa
+  - id: M05
+    corpus: mixed
+    kind: xlsx
+    query: 温度系数 超参数设置
+    intent: 超参数表里温度系数的设置（网页里讲蒸馏温度的不算）
+    relevant:
+      - path: 数据/实验结果.xlsx
+        page: 2
+        evidence: 温度系数
+  - id: M06
+    corpus: mixed
+    kind: html
+    query: 知识蒸馏 教师模型 学生模型
+    intent: 讲知识蒸馏的网页
+    relevant:
+      - path: 网页/知识蒸馏入门.html
+        page: 1
+        evidence: 学生模型模仿教师模型
+  - id: M07
+    corpus: mixed
+    kind: no_relevant
+    query: quantumleap tracking
+    intent: 只出现在网页脚本里的词；网页正文没有，应无相关文件
+    relevant: []
+  - id: M08
+    corpus: mixed
+    kind: scanned_pdf
+    query: 杭州 出差 高铁票 报销
+    intent: 扫描版差旅报销单
+    relevant:
+      - path: 扫描/报销单.pdf
+        page: 1
+        evidence: 高铁票
+  - id: M09
+    corpus: mixed
+    kind: image
+    query: 白板 下周计划 GossipCop 基线
+    intent: 拍白板的照片（横着存，EXIF 方向）
+    relevant:
+      - path: 照片/白板.jpg
+        page: 1
+        evidence: GossipCop
+  - id: M10
+    corpus: mixed
+    kind: deep_page
+    query: A100 显卡 服务器配置
+    intent: 年度报告第 5 页附录里的服务器配置
+    relevant:
+      - path: 报告/年度报告.pdf
+        page: 5
+        evidence: A100
+  - id: M11
+    corpus: mixed
+    kind: cross_language
+    query: train ticket reimbursement Hangzhou
+    intent: M08 的英文查询
+    relevant:
+      - path: 扫描/报销单.pdf
+        page: 1
+        evidence: 高铁票
+  - id: M12
+    corpus: mixed
+    kind: markdown
+    query: 过平滑 图神经网络 读书笔记
+    intent: 记有图神经网络过平滑的读书笔记
+    relevant:
+      - path: 笔记/读书笔记.md
+        page: 1
+        evidence: 过平滑
