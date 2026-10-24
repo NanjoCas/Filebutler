@@ -44,6 +44,8 @@ class ScriptedClient:
         self.requests += 1
         self._learn(kw['messages'])
         item = self.steps.pop(0) if self.steps else '（脚本结束）'
+        if isinstance(item, str) and any(s['function']['name'] == 'finish_turn' for s in kw.get('tools') or []):
+            item = [('finish_turn', dict(mode='reply', reply=item))]  # the terminal call (routing redesign S5)
         if isinstance(item, str):
             msg = NS(content=item, tool_calls=None)
         else:

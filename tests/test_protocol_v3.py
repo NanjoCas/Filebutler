@@ -49,7 +49,7 @@ def execute(alias=PLAN):
 
 
 def finish(summary=''):
-    return step(call('finish_task', {'summary': summary}))
+    return step(call('finish_turn', {'mode': 'task', 'summary': summary}))
 
 
 # ============================================================================ compiler
@@ -124,11 +124,75 @@ def test_tool_surface_hides_retired_tools_and_stays_under_the_prompt_cap(tmp_pat
     names = {s['function']['name'] for s in schemas}
     assert {'set_task', 'edit_task', 'apply_task_edit', 'begin_step', 'move', 'rename', 'trash', 'make_dir',
             'apply_classification'}.isdisjoint(names)
-    assert {'start_task', 'revise_task', 'prepare_file_plan', 'execute_file_plan', 'finish_task', 'apply_dedup', 'ask_user'} <= names
+    assert {'start_task', 'revise_task', 'prepare_file_plan', 'execute_file_plan', 'finish_turn', 'apply_dedup'} <= names
+    assert not {'ask_user', 'finish_task'} & names  # one terminal surface (routing redesign S5)
     from agent.artifacts import ArtifactStore
     sb = H.Sandbox(tmp_path); sb.artifacts = ArtifactStore(sb)
     runtime = TaskRuntime('x', dict(task_db=str(tmp_path / 't.db')), sb, 'r')
     total = sum(len(json.dumps(s, ensure_ascii=False)) for s in schemas) + len(runtime.guidance()) + len(SYSTEM_PROMPT)
+    assert total <= PROMPT_CAP, total
+
+
+def test_the_visible_schemas_differ_from_pydantics_only_by_the_generated_titles(monkeypatch):
+    import agent.task_runtime as task_runtime
+    shown = visible_schemas()
+    assert '"title": "' not in json.dumps(shown, ensure_ascii=False)
+    monkeypatch.setattr(task_runtime, 'untitled', lambda node: node)
+    titled = visible_schemas()
+    assert '"title": "' in json.dumps(titled, ensure_ascii=False)
+    # Every description, enum, default and required field is kept: removing titles is all that differs.
+    assert [_drop_titles(s) for s in titled] == shown
+
+
+def _drop_titles(node):
+    if isinstance(node, dict):
+        return {k: _drop_titles(v) for k, v in node.items() if not (k == 'title' and isinstance(v, str))}
+    return [_drop_titles(v) for v in node] if isinstance(node, list) else node
+
+
+# ============================================================================ terminal (S5)
+
+def test_finish_turn_modes_are_checked_locally(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('你好', [step(call('finish_turn', dict(mode='task', summary='x')))], final='你好。')
+    assert '尚未登记任务' in client.calls('finish_turn')[0]['text']  # no task: mode=task is refused, then reply
+    _, client = session.run('问一下', [step(call('finish_turn', dict(mode='ask')))], final='好的。')
+    assert 'mode=ask 需要 question' in client.calls('finish_turn')[0]['text']
+    result, client = session.run('归档 a', [step(start([dict(kind='organize', description='归档 a')]),
+                                                 call('prepare_file_plan', dict(description='归档', actions=ARCHIVE_A), alias=PLAN)),
+                                            execute(), step(call('finish_turn', dict(mode='reply', reply='已归档。')))])
+    # A registered task is verified whichever mode ends it.
+    assert result.stop_reason == 'done' and result.runtime['task_status'] == 'completed'
+
+
+def test_calls_after_the_terminal_call_in_one_response_do_not_run(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = session.run('你好', [step(call('finish_turn', dict(mode='reply', reply='你好。')),
+                                               call('list_dir', dict(path='.')))])
+    assert result.final == '你好。' and result.stop_reason == 'answered'
+    assert client.calls('list_dir')[0]['text'].startswith('ERROR: TURN_CLOSED')
+
+
+def test_older_histories_calling_ask_user_still_work(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, _ = session.run('整理', [step(call('ask_user', dict(question='放哪里？', reason='missing_criterion', options=[
+        dict(label='Archive', actions=[]), dict(label='不动', actions=[])])))])
+    assert result.stop_reason == 'waiting_input' and result.report['question_id'].startswith('Q')
+
+
+def test_with_strict_terminal_off_the_v3_surface_and_words_come_back(tmp_path):
+    from agent.artifacts import ArtifactStore
+    sb = H.Sandbox(tmp_path); sb.artifacts = ArtifactStore(sb)
+    legacy = TaskRuntime('x', dict(task_db=str(tmp_path / 't.db'), strict_terminal=False), sb, 'r')
+    names = {s['function']['name'] for s in legacy.schemas(registry.schemas())}
+    assert {'ask_user', 'finish_task'} <= names and 'finish_turn' not in names
+    shown = legacy.guidance() + json.dumps(legacy.schemas(registry.schemas()), ensure_ascii=False)
+    assert 'finish_turn' not in shown and '用 ask_user 给 2–4 个具体选项' in shown and 'finish_task.reply' in shown
+    total = sum(len(json.dumps(s, ensure_ascii=False)) for s in legacy.schemas(registry.schemas())) \
+        + len(legacy.guidance()) + len(SYSTEM_PROMPT)
     assert total <= PROMPT_CAP, total
 
 
@@ -942,7 +1006,7 @@ def test_other_hidden_files_require_asking_first(tmp_path):
     _, client = session.run('移出并删除项目文件夹', [step(start([dict(kind='organize', description='移出并回收')]),
                                                    call('prepare_file_plan', TRASH_PROJECT))])
     text = client.calls('prepare_file_plan')[0]['text']
-    assert '非系统隐藏文件 .env' in text and 'ask_user' in text and 'consent=include_hidden' in text
+    assert '非系统隐藏文件 .env' in text and 'finish_turn(mode=ask)' in text and 'consent=include_hidden' in text
     assert (tmp_path / '项目/.env').is_file() and not session.approvals
 
 
@@ -977,7 +1041,7 @@ def test_declining_or_mismatched_consent_keeps_hidden_files(tmp_path):
     session = Session(tmp_path)
     session.run('移出并删除项目文件夹', [step(call('ask_user', ASK_HIDDEN))])
     _, client = session.run('B', [step(start([dict(kind='organize', description='移出')]), call('prepare_file_plan', TRASH_PROJECT))])
-    assert 'ask_user' in client.calls('prepare_file_plan')[0]['text']  # B carried no consent
+    assert 'finish_turn(mode=ask)' in client.calls('prepare_file_plan')[0]['text']  # B carried no consent
     session.run('再问一次', [step(call('ask_user', ASK_HIDDEN))])
     wrong = json.loads(json.dumps(TRASH_PROJECT)); wrong['actions'][1]['include_hidden'] = []
     _, client = session.run('A', [step(start([dict(kind='organize', description='移出')]), call('prepare_file_plan', wrong))])
@@ -1519,7 +1583,7 @@ def test_occupied_target_points_to_asking_with_a_free_name(tmp_path):
     _, client = session.run('把 Inbox/a.txt 移到 Archive', [step(start([dict(kind='organize', description='移动')]),
                                                               call('prepare_file_plan', CLASH_MOVE))])
     text = client.calls('prepare_file_plan')[0]['text']
-    assert '目标已存在' in text and 'ask_user' in text and 'Archive/a (1).txt' in text
+    assert '目标已存在' in text and 'finish_turn(mode=ask)' in text and 'Archive/a (1).txt' in text
     assert (tmp_path / 'Archive/a.txt').read_text() == 'older archived a'
 
 
@@ -1601,7 +1665,7 @@ MOVE_ONLY_A = dict(description='只移动 a', goal_ids=['organize_1'],
 
 
 def finish_with(unfinished, reply=''):
-    return step(call('finish_task', dict(summary='', reply=reply, unfinished=unfinished)))
+    return step(call('finish_turn', dict(mode='task', summary='', reply=reply, unfinished=unfinished)))
 
 
 def test_a_part_the_chosen_option_left_out_is_not_unfinished(tmp_path):

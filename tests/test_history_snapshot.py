@@ -32,7 +32,7 @@ def test_ten_turns_each_see_one_current_snapshot(tmp_path):
     assert len(users) == 10 and users[-1].startswith('第 10 个')
     calls = [tc['id'] for m in session.history for tc in m.get('tool_calls') or []]
     results = [m['tool_call_id'] for m in session.history if m['role'] == 'tool']
-    assert len(calls) == 4 and calls == results
+    assert len(calls) == 4 + 10 and calls == results  # and each turn's finish_turn
     assert [m['content'] for m in session.history if m['role'] == 'assistant' and m.get('content')][-1] == '回答 10'
     # A request grows by the turns, not by one more snapshot each turn.
     snapshot = len(json.dumps(snapshots(result.messages), ensure_ascii=False))

@@ -74,8 +74,9 @@ def step(*calls, trace_step=None):
 class Replay:
     """OpenAI-compatible fake client returning recorded tool calls one model turn at a time."""
 
-    def __init__(self, steps, ids=None, final=''):
-        self.steps, self.ids, self.final = list(steps), ids if ids is not None else {}, final
+    def __init__(self, steps, ids=None, final='', bare=False):
+        # bare: end with plain text even when finish_turn is offered (a model ignoring the protocol).
+        self.steps, self.ids, self.final, self.bare = list(steps), ids if ids is not None else {}, final, bare
         self.pending, self.log, self.requests = [], [], 0
         self.chat = NS(completions=NS(create=self.create))
 
@@ -100,7 +101,14 @@ class Replay:
     def create(self, **kw):
         self.requests += 1
         self.absorb(kw['messages'])
-        if not self.steps:
+        if not self.steps and self.final is not None and not self.bare and any(
+                s['function']['name'] == 'finish_turn' for s in kw.get('tools') or []):
+            # A compliant model ends the turn by finish_turn (routing redesign S5).
+            cid = f'replay_{self.requests}_end'
+            args = json.dumps(dict(mode='reply', reply=self.final or '完成。'), ensure_ascii=False)
+            self.pending.append((cid, dict(tool='finish_turn', arguments=args, sent=args, trace_step=None, status='ok', result_ids=[])))
+            msg = NS(content='', tool_calls=[NS(id=cid, function=NS(name='finish_turn', arguments=args))])
+        elif not self.steps:
             msg = NS(content=self.final, tool_calls=None)
         else:
             item = self.steps.pop(0)
@@ -137,12 +145,12 @@ class Session:
         self.approvals = []
         self.answer = 'y'
 
-    def run(self, instruction, steps, final=''):
+    def run(self, instruction, steps, final='', bare=False):
         self.turn += 1
         # As webapp.py: the full history is kept, and each run sees its projection.
         full = (self.history or [dict(role='system', content=SYSTEM_PROMPT)]) + [dict(role='user', content=instruction)]
         history, _ = prepare_history(full, self.cfg, self.store)
-        client = Replay(steps, self.ids, final)
+        client = Replay(steps, self.ids, final, bare=bare)
         approve = lambda request: self.approvals.append(request) or self.answer
         # As a page does: a letter of the question just shown is that button (an exact answer).
         from agent.interactions import receive

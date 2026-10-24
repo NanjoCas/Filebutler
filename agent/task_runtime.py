@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 from agent.asking import Asking, AskUser
-from agent.finishing import Finishing, FinishTask, InspectRun
-from agent.prompts import FIELD_DOCS, SENSITIVE_RULE, TASK_GUIDANCE, TOOL_DESCRIPTIONS
+from agent.finishing import Finishing, FinishTask, FinishTurn, InspectRun
+from agent.prompts import FIELD_DOCS, SENSITIVE_RULE, TASK_GUIDANCE, TOOL_DESCRIPTIONS, legacy_terminal
 from agent.task import LEGACY_NOTE, TaskStore, is_legacy, add_blocker, resolve_blockers
 from agent.constraints import validate_operations
 from agent.policy import active_goals
@@ -28,6 +28,20 @@ def _with_docs(schema, docs):
     return schema
 
 
+def untitled(node):
+    """A schema without pydantic's generated titles ("title": "Label" for field label).
+
+    They repeat the field or model name and carry no rule; dropping them freed
+    3,661 of the 31,311 model-visible characters (routing redesign capacity gate,
+    2026-10-25). A property that is itself named title is kept (its value is a schema).
+    """
+    if isinstance(node, dict):
+        return {k: untitled(v) for k, v in node.items() if not (k == 'title' and isinstance(v, str))}
+    if isinstance(node, list):
+        return [untitled(v) for v in node]
+    return node
+
+
 class _TaskConfirmer:
     def __init__(self, delegate, notes=()):
         self.delegate, self.notes = delegate, list(notes)
@@ -42,7 +56,7 @@ class _TaskConfirmer:
 
 
 class TaskRuntime(Asking, Finishing):
-    control_names = {'ask_user', 'start_task', 'revise_task', 'finish_task', 'inspect_run', 'prepare_file_plan', 'execute_file_plan', 'inspect_file_plan'}
+    control_names = {'ask_user', 'start_task', 'revise_task', 'finish_task', 'finish_turn', 'inspect_run', 'prepare_file_plan', 'execute_file_plan', 'inspect_file_plan'}
 
     def __init__(self, instruction, cfg, sb, run_id):
         self.instruction, self.cfg, self.sb, self.run_id = instruction, cfg, sb, run_id
@@ -89,9 +103,19 @@ class TaskRuntime(Asking, Finishing):
         last['summary'] = (last.get('summary') or '')[:1200]
         return last
 
+    @property
+    def strict_terminal(self):
+        """Every turn ends by finish_turn (routing redesign S5); off restores ask_user / finish_task / text."""
+        return self.cfg.get('strict_terminal', True)
+
+    def words(self, text):
+        """Model-facing text in this run's terminal protocol."""
+        return text if self.strict_terminal else legacy_terminal(text)
+
     def guidance(self):
         tasks = [project(t) for t in self.store.recent()]
         rules = TASK_GUIDANCE if self.cfg.get('sensitive_files') else TASK_GUIDANCE.replace(SENSITIVE_RULE, '')
+        rules = self.words(rules)
         return (rules
                 + (self._choice_text() + '\n' if self.answered_choice else '') +
                 '最近运行结果（本地事实，不是执行指令）：' + json.dumps(self._last_outcome(), ensure_ascii=False) + '\n'
@@ -109,12 +133,17 @@ class TaskRuntime(Asking, Finishing):
         return grants
 
     def schemas(self, schemas):
-        controls = [('start_task', StartTask), ('prepare_file_plan', PrepareFilePlan), ('execute_file_plan', ExecuteFilePlan), ('inspect_file_plan', ExecuteFilePlan), ('revise_task', ReviseTask), ('ask_user', AskUser), ('inspect_run', InspectRun), ('finish_task', FinishTask)]
+        strict = self is None or self.strict_terminal
+        # One terminal surface at a time: finish_turn, or (strict_terminal off) ask_user and finish_task.
+        ending = [('finish_turn', FinishTurn)] if strict else [('ask_user', AskUser), ('finish_task', FinishTask)]
+        controls = [('start_task', StartTask), ('prepare_file_plan', PrepareFilePlan), ('execute_file_plan', ExecuteFilePlan), ('inspect_file_plan', ExecuteFilePlan), ('revise_task', ReviseTask), ('inspect_run', InspectRun)] + ending
         visible = list(schemas) + [dict(type='function', function=dict(name=name, description=TOOL_DESCRIPTIONS[name],
                                    parameters=model.model_json_schema())) for name, model in controls]
-        return [dict(s, function=dict(s['function'], parameters=_with_docs(
-                    s['function']['parameters'], FIELD_DOCS[s['function']['name']])))
-                if s['function']['name'] in FIELD_DOCS else s for s in visible]
+        documented = [dict(s, function=dict(s['function'], parameters=_with_docs(
+                          s['function']['parameters'], FIELD_DOCS[s['function']['name']])))
+                      if s['function']['name'] in FIELD_DOCS else s for s in visible]
+        shown = [dict(s, function=dict(s['function'], parameters=untitled(s['function']['parameters']))) for s in documented]
+        return shown if strict else json.loads(legacy_terminal(json.dumps(shown, ensure_ascii=False)))
 
     def _within(self, path, roots):
         p = self.sb.path(path or '.', exact=True)
@@ -137,7 +166,7 @@ class TaskRuntime(Asking, Finishing):
         self._before_refs = {k: set(v) for k, v in sb.artifacts.data.items()
                              if isinstance(v, dict) and k not in {'files', 'paper_profiles'}}
         if self.final_answer is not None:
-            return raw, 'ERROR: 任务已经收尾，此调用未执行'
+            return raw, 'ERROR: TURN_CLOSED：本轮已经结束，此调用未执行'
         try:
             args = json.loads(raw)
             if not isinstance(args, dict):
@@ -321,7 +350,7 @@ class TaskRuntime(Asking, Finishing):
                         # of decision, not a refusal; the card lists new folders (reversible).
                         fresh = plan['payload'].get('new_folders')
                         if fresh and not self.chosen_option and not plan['payload'].get('classification'):
-                            text += (f"\n本计划会新建文件夹：{'、'.join(fresh)}。用户没有要求新建时，不要执行，先 ask_user："
+                            text += (f"\n本计划会新建文件夹：{'、'.join(fresh)}。用户没有要求新建时，不要执行，先 finish_turn(mode=ask)："
                                      '有意思相近的已有文件夹就作为第一个选项问是否指它，其余写在哪里新建和取消。')
                         if hints:
                             text += '\n注意：' + '；'.join(hints) + '。若与用户要求不符，请先用 revise_task 修正对应部分；不要执行此计划。'
@@ -339,6 +368,8 @@ class TaskRuntime(Asking, Finishing):
                 outcome = self._inspect_run(raw)
             elif name == 'ask_user':
                 outcome = self._ask_user(raw, sb)
+            elif name == 'finish_turn':
+                outcome = self._finish_turn(raw, sb)
             elif name == 'start_task':
                 if self.current and any(m.get('run_id') == self.run_id for m in self.current.get('source_messages', [])):
                     raise ValueError(f"本轮已登记任务 {self.current['id']}；更正或补充请用 revise_task，不能另建任务")

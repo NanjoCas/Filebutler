@@ -91,7 +91,8 @@ def test_event_callback_reports_real_work_in_order(files):
         [("read_file", {"path": "notes.md"})], "已读取。",
     ])), files, {}, Console(quiet=True), on_event=events.append)
     assert result.stop_reason == "answered"
-    assert [e["type"] for e in events] == ["llm_start", "llm_end", "tool_start", "tool_end", "llm_start", "llm_end"]
+    assert [e["type"] for e in events] == ["llm_start", "llm_end", "tool_start", "tool_end", "llm_start", "llm_end",
+                                          "tool_start", "task_updated", "tool_end"]  # the turn ends by finish_turn
     assert events[2]["call_id"] == events[3]["call_id"]
     assert events[2]["args"] == {"path": "notes.md"} and events[3]["ok"]
     assert not any("reasoning_content" in e for e in events)
@@ -214,7 +215,7 @@ def test_api_reports_model_start_before_completion_and_renders_saved_markdown(ui
     assert "<table>" in saved["messages"][-1]["html"]
     assert 'data-file-path="notes.md"' in saved["messages"][-1]["html"]
     assert saved["messages"][-1]["content"].startswith("| 文件")
-    assert len([e for e in saved["latest_turn"]["events"] if e["type"] == "tool_end"]) == 1
+    assert len([e for e in saved["latest_turn"]["events"] if e["type"] == "tool_end" and e["tool"] != "finish_turn"]) == 1
     with webapp._db() as db:
         history = json.loads(db.execute("SELECT history_json FROM conversations WHERE id=?", (cid,)).fetchone()[0])
     assert WEB_PRESENTATION_GUIDANCE in history[0]["content"]

@@ -59,7 +59,7 @@ def test_read_file_withholds_sensitive_contents_until_granted(tmp_path, name, te
     (tmp_path / name).write_text(text)
     r, sb = runtime(tmp_path)
     refused = read(sb, name)
-    assert '敏感文件' in refused and 'ask_user' in refused and text not in refused
+    assert '敏感文件' in refused and 'finish_turn(mode=ask)' in refused and text not in refused
     r.decisions = [choices.row('read', name, 'option')]
     assert text in read(sb, name)
 

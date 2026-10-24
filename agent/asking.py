@@ -238,14 +238,16 @@ class Asking:
             text = f"用户回答了你上一轮的提问“{a['question']}”：选择 {c['key']}. {c['label']}" + (f"（{c['detail']}）" if c['detail'] else '') + '。按此执行。'
             if self.current:
                 text += (f"已接回提问时的任务 {self.current['id']}（部分：{parts_text(self.current)}），不必重新登记；"
-                         '按此选择不做的部分在 finish_task.unfinished 写明。')
+                         '按此选择不做的部分在 finish_turn.unfinished 写明。')
             return text
         # Typed text may answer the question or start something else; nothing local tells them apart.
         return (f"你上一轮提问了“{a['question']}”，用户没有选择选项。本轮消息可能是对它的回答，也可能是新的请求："
                 '是回答就据此继续；是新请求就按新请求处理，不要沿用上一问的选项。')
 
     def _ask_user(self, raw, sb):
-        args = AskUser.model_validate_json(raw)
+        return self._ask(AskUser.model_validate_json(raw), sb)
+
+    def _ask(self, args, sb):
         choices = [dict(key=CHOICE_KEYS[i], label=o.label, detail=o.detail, consent=o.consent,
                         actions=None if o.actions is None else [a.model_dump() for a in o.actions])
                    for i, o in enumerate(args.options)]

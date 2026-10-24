@@ -29,7 +29,7 @@ class Action(StrictModel):
     destination: str | None = None
     include_metadata: bool = Field(False, description='仅 trash 文件夹：同意连同其中的系统元数据（.DS_Store 等）一起回收')
     include_hidden: list[str] = Field(default_factory=list, max_length=20,
-        description='仅 trash 文件夹：用户已通过 ask_user 同意一起回收的其他隐藏文件，逐个写出完整路径')
+        description='仅 trash 文件夹：用户已通过提问选项同意一起回收的其他隐藏文件，逐个写出完整路径')
     part: str = Field('', description='动作的部分ID；多个候选部分时必填')
 
     @model_validator(mode='after')
@@ -219,7 +219,7 @@ def tree_snapshot(folder, src, moved_out, action, consent):
             found = '；'.join(describe(f'{src}/{rel}', r, masked=False) for rel, r in sensitive.items())
             raise ValueError(f"{src} 含非系统隐藏文件 {_names(t['hidden'])}，可能是配置或密钥。"
                              + (f"本地检查：{found}。建议默认保留。" if found else '')
-                             + f"回收前必须先调用 ask_user 询问用户（subject 填 {src}，表示同意的选项设 consent=include_hidden）；不要猜测用户意愿")
+                             + f"回收前必须先调用 finish_turn(mode=ask) 询问用户（subject 填 {src}，表示同意的选项设 consent=include_hidden）；不要猜测用户意愿")
         if listed != set(t['hidden']):
             raise ValueError(f"include_hidden 必须逐个列出 {src} 中的全部隐藏文件，不多不少："
                              + _names([f'{src}/{p}' for p in t['hidden']], 20))
@@ -458,7 +458,7 @@ def prepare(runtime, args):
     except ValueError as exc:
         if not str(exc).startswith('目标已存在'): raise
         dst = str(exc).split('：', 1)[1]
-        raise ValueError(f"{exc}。同名文件的处理由用户决定：用户没交代时先 ask_user，给三个选项——"
+        raise ValueError(f"{exc}。同名文件的处理由用户决定：用户没交代时先 finish_turn(mode=ask)，给三个选项——"
                          f"保留两份（新文件改名为 {free_name(sb, dst, [s['destination'] for s in steps if s['destination']])}）、"
                          '不移动、覆盖（选项 actions 同时写 trash 旧文件和 move 新文件到原名；旧文件移入回收区，可撤销）') from exc
     # New folders are reversible and listed on the confirmation card; whether the user
@@ -469,7 +469,7 @@ def prepare(runtime, args):
     refused = [d for d in replaced if not any(_key(d) == _key(runtime._resolve(c)) for c in agreed)]
     if refused:
         raise ValueError(f"此计划会覆盖 {_names(refused)}：旧文件移入回收区，再放入新文件。覆盖必须由用户选择："
-                         '先调用 ask_user（subject 填被覆盖的文件），给出保留两份、不移动、覆盖三个选项；不要自行决定')
+                         '先调用 finish_turn(mode=ask)（subject 填被覆盖的文件），给出保留两份、不移动、覆盖三个选项；不要自行决定')
     steps = list(dirs.values()) + steps
     for i, row in enumerate(steps): row['id'] = f'{pid}:{i}'
     producers = ['file_plans'] + (['classification_plans'] if classification else [])

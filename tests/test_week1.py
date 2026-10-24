@@ -22,6 +22,9 @@ class FakeClient:
     def create(self, **kw):
         self.seen.append(list(kw["messages"]))  # 存快照，循环会继续往原列表追加
         item = self.script.pop(0)
+        if isinstance(item, str) and any(s["function"]["name"] == "finish_turn" for s in kw.get("tools") or []):
+            # A compliant model ends a turn by finish_turn (routing redesign S5), not bare text.
+            item = [("finish_turn", {"mode": "reply", "reply": item})]
         if isinstance(item, str):
             msg = NS(content=item, tool_calls=None)
         else:

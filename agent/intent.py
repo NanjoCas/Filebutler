@@ -30,7 +30,7 @@ LIMITS_ID = 'user_limits'
 class Part(StrictModel):
     id: str | None = Field(None, max_length=60, description='可省略，本地生成；revise_task 用同一 ID 替换该部分')
     kind: Kind = Field(description='find 查找并给证据；dedup 去重回收；organize 移动/改名/建目录/回收；'
-                                   'classify 形成分类方案；answer 只用于不改文件的提问（执行结果和顺带要告诉用户的内容写进 finish_task.reply）')
+                                   'classify 形成分类方案；answer 只用于不改文件的提问（执行结果和顺带要告诉用户的内容写进 finish_turn.reply）')
     description: str = Field(min_length=1, max_length=800)
     scope: list[str] = Field(default_factory=list, max_length=20,
         description='这部分涉及的目录；只是范围估计，不是用户限制，可留空')

@@ -105,7 +105,7 @@ def granted(sb, rel):
 
 
 def refusal(rel, why):
-    return (f"{rel} 是敏感文件（{'；'.join(why)}），默认不读取内容。需要读取时先 ask_user 请用户授权："
+    return (f"{rel} 是敏感文件（{'；'.join(why)}），默认不读取内容。需要读取时先 finish_turn(mode=ask) 请用户授权："
             f"同意的选项 actions 写 {{\"effect\": \"read\", \"path\": \"{rel}\"}}，授权只在本任务内有效；"
             '不需要内容时，按文件名整理即可，不要换工具或路径重试')
 

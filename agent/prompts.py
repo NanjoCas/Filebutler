@@ -24,12 +24,14 @@ SYSTEM_PROMPT = SYSTEM_V1.replace(
     '2. 一步一步执行：移动前确保目标文件夹存在（先 make_dir）。',
     '2. 文件改动通过 prepare_file_plan 列出全部对象，再 execute_file_plan 一次执行；父目录由本地创建。').replace(
     '没有删除工具；需要“删除”时用 trash 移入回收区。',
-    '没有删除工具；需要“删除”时在计划里用 trash 移入回收区。') + """
+    '没有删除工具；需要“删除”时在计划里用 trash 移入回收区。').replace(
+    '4. 完成后用一两句话总结你做了什么；如果是提问，直接回答。不要再调用工具。',
+    '4. 按任务协议说明结束本轮。') + """
 ## 任务协议
-- 区分询问与执行：解释、方案讨论直接回答；历史运行查询用 inspect_run。只有用户要求执行时才 start_task。
+- 区分询问与执行：只有用户要求执行时才 start_task；历史运行查询用 inspect_run。
 - start_task 只描述用户的要求：parts 分部分写清要做什么；limits 只放用户明确说出的限制，不要替用户添加规则或数量上限。
 - 完成条件、写入范围、目标归属由本地生成和核验，你不需要也无法填写。语义判断（查找相关性、分类）会标为待复核。
-- 指代不明、存在多个候选或冲突时，先说明情况并提问（questions），不要猜。
+- 指代不明、存在多个候选或冲突时，先提问，不要猜。
 - 用户更正时用 revise_task；不要另建任务绕开已有限制。
 - 使用已有 file:F / evidence:E / P / X 标识，不重复抄写长表；最终回复只做必要补充。
 - 失败或部分完成时直接说明具体原因和已执行范围，以本地结果为准。
@@ -90,9 +92,15 @@ FIELD_DOCS = {
 GUIDANCE_MARK = '【任务协议 v3】'
 # Shown only while config sensitive_files is on (off by default since 2026-10-24).
 SENSITIVE_RULE = ('敏感文件（凭据、证件、合同、财务、医疗，或含密钥、身份证号、卡号）不读内容，只按文件名整理；'
-                  '需要内容时 ask_user，同意项 actions 写 read 该文件，仅本任务有效。')
+                  '需要内容时 finish_turn(mode=ask)，同意项 actions 写 read 该文件，仅本任务有效。')
+# How a turn ends (routing redesign S5, 2026-10-25): one terminal call, never bare text.
+TURN_RULE = ('每轮最后调用 finish_turn 结束，不要只输出文字：解释、回答用 mode=reply；'
+             '要用户在几种做法中选择或确认（包括“要不要我……”）用 mode=ask 给出选项，不要把选项写在回复正文里；'
+             '登记了任务用 mode=task。查询历史运行原因用 inspect_run。\n')
+# With strict_terminal off (rollback): the v3 ending through ask_user / finish_task or text.
+LEGACY_TURN_RULE = '先区分询问与执行：解释、方案讨论直接回答；查询历史运行原因用 inspect_run。\n'
 TASK_GUIDANCE = (GUIDANCE_MARK + '\n'
-                 '先区分询问与执行：解释、方案讨论直接回答；查询历史运行原因用 inspect_run。\n'
+                 + TURN_RULE +
                  '要求执行时用 start_task 说明用户要做的事：parts 按部分列出（find/dedup/organize/classify/answer），'
                  'limits 只填用户明确说出的限制，不要自行添加数量上限或规则；notes 通常留空，每条都会让结果进入人工复核。无法确定的事放 questions，等待用户回答。'
                  '完成条件、写入范围和目标归属由本地生成，你不需要填写。\n'
@@ -106,11 +114,11 @@ TASK_GUIDANCE = (GUIDANCE_MARK + '\n'
                  '执行分类方案用 prepare_file_plan(classification_plan_id=精确 P 标识)；查找结论用 report_findings 给证据。\n'
                  '用户更正或补充要求时用 revise_task（同 ID 替换部分，或调整 limits），本地会请用户确认差异；'
                  '被更正的部分，旧计划不再计入，请据新要求准备新计划。不得另建任务绕开已有限制。\n'
-                 '最后调用 finish_task，由本地逐部分核验；语义判断（查找、分类、解释）会标为待复核。'
-                 '用户要你告诉他的内容（如哪些文件、数量、原因）写进 finish_task.reply，它会显示在主回复；'
-                 '用户要求的对象有没做到的（被拒绝、无法完成），写进 finish_task.unfinished，不要声称完成；'
+                 '最后调用 finish_turn(mode=task)，由本地逐部分核验；语义判断（查找、分类、解释）会标为待复核。'
+                 '用户要你告诉他的内容（如哪些文件、数量、原因）写进 finish_turn.reply，它会显示在主回复；'
+                 '用户要求的对象有没做到的（被拒绝、无法完成），写进 finish_turn.unfinished，不要声称完成；'
                  'summary 只作补充，放在详情。不复写本地生成的清单。\n'
-                 '请求不清楚时不要猜，调用 ask_user 给 2–4 个具体选项并允许用户补充，本轮随即结束、不写入。须问的情况：'
+                 '请求不清楚时不要猜，用 finish_turn(mode=ask) 给 2–4 个具体选项并允许用户补充，本轮随即结束、不写入。须问的情况：'
                  '有多个候选对象；标准没有可执行的界限（如“旧的”“大的”）；遇到冲突而用户没交代怎么处理；'
                  '要动的对象超出用户明确说的范围；无法按原样做到（如没有复制能力）。'
                  '惯例默认（保留原名、自动建父目录、回收可撤销）和能用只读工具查清的事实不必问；先查清事实，让选项具体。'
@@ -122,12 +130,12 @@ TASK_GUIDANCE = (GUIDANCE_MARK + '\n'
                  '每个选项写 actions（move/rename/trash/read 及路径，不做操作写空列表），本地会在用户看到前检查，做不到的退回给你改写；'
                  '所选选项约束下一轮计划，不能超出；完成以所选范围为准，选项不含的部分不必做，也不写进 unfinished。\n'
                  '回收文件夹：可见文件须由同一计划先移走（整个文件夹一次回收，不必逐个列子文件夹）；'
-                 '系统元数据（.DS_Store 等）在该 trash 动作设 include_metadata=true；其他隐藏文件（.env 等）先 ask_user'
+                 '系统元数据（.DS_Store 等）在该 trash 动作设 include_metadata=true；其他隐藏文件（.env 等）先 finish_turn(mode=ask)'
                  '（subject 填文件夹，同意项 consent=include_hidden），下一轮在 include_hidden 逐个列出；'
                  '隐藏文件夹、符号链接、应用包不能回收，如实告诉用户。'
                  '\n'
                  '某部分没有对象时不要跳过：用 selection 选中该范围，选到 0 个文件本地记为“无需操作”（多个部分写明 goal_ids）；'
-                 '无法这样证明时才用 finish_task.not_needed，结果待核实。'
+                 '无法这样证明时才用 finish_turn.not_needed，结果待核实。'
                  '批量处理用 selection，不必逐页 list_dir 查看全部文件名。\n')
 
 
@@ -139,6 +147,13 @@ TOOL_DESCRIPTIONS = {
     'inspect_file_plan': '只读查看计划清单、进度和失败原因。',
     'revise_task': '按用户更正修改已有任务的部分或限制；本地展示差异并请用户确认后生效。',
     'ask_user': '请求不清楚时向用户提问：给出 2–4 个选项并允许补充；本轮随即结束，不写入。',
+    'finish_turn': '结束本轮（每轮必须以它结束）：mode=reply 回复；mode=ask 提问并给选项，等待用户；mode=task 收尾并本地核验全部部分。',
     'inspect_run': '只读解释当前会话运行结果；finish=true 直接结束，复合请求可 false。',
     'finish_task': '收尾并本地核验全部部分；未满足条件不能标记完成。',
 }
+
+
+def legacy_terminal(text):
+    """The same words for strict_terminal off: ask_user / finish_task instead of finish_turn."""
+    return (text.replace(TURN_RULE, LEGACY_TURN_RULE).replace('finish_turn(mode=ask)', 'ask_user')
+            .replace('finish_turn(mode=task)', 'finish_task').replace('finish_turn.', 'finish_task.'))

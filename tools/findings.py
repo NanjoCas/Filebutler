@@ -25,7 +25,7 @@ class FindingsArgs(BaseModel):
 @tool('report_findings',
       '提交有原文依据的任务判断。每项提供 file_id、evidence_ids、任务关系标签 relation 和 reason；本地校验版本并生成文件链接表格。'
       '已有片段足够时不重复读取，未知候选用 uncertain，不能因检索低分排除。解释标为待复核；'
-      'byte_identity 需 related_file_ids，由本地实际比较字节。片段不能证明全文等价。V2 中仅完成子步骤，整项任务仍须 finish_task。', FindingsArgs, read_scope=finding_paths)
+      'byte_identity 需 related_file_ids，由本地实际比较字节。片段不能证明全文等价。它只给出结论，整项任务仍须 finish_turn(mode=task) 收尾。', FindingsArgs, read_scope=finding_paths)
 def report_findings(a, sb):
     artifacts = getattr(sb,'artifacts',None)
     runtime = getattr(sb,'runtime',None)

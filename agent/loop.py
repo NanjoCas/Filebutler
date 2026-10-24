@@ -18,6 +18,7 @@ import tools.inventory  # noqa: F401
 from agent.artifacts import ArtifactStore
 from agent.llm import LLM
 from agent.prompts import SYSTEM_PROMPT
+from agent.finishing import TERMINAL_REQUIRED
 from agent.outcomes import stop_report, close_messages, save_outcome
 from agent.repetition import RepeatDetector, NoProgressGuard
 from safety import names
@@ -120,6 +121,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
     llm_seconds = tool_seconds = 0.0
     failure_stage='准备运行'
     terminal_report={}
+    corrected = False  # strict terminal: one correction for a turn ended with bare text
     if repeats and history:
         for m in history:
             if m.get("role") == "user" or m.get("content", "").startswith("[本地撤销状态 run="):
@@ -158,7 +160,17 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
             console.rule(f"[dim]第 {step} 轮 · {llm.total_tokens - tokens_before} tokens · {time.time() - t0:.1f}s")
 
             if not msg.tool_calls:
-                runtime.finish_plain(msg.content)
+                if runtime.strict_terminal and not corrected:
+                    # Routing redesign S5: a turn ends by finish_turn. Bare text gets one
+                    # correction (it counts as a step); the draft is not shown as an answer.
+                    corrected = True
+                    messages.append({'role': 'system', 'content': TERMINAL_REQUIRED})
+                    emit('protocol_retry', step=step, reason='TERMINAL_REQUIRED')
+                    continue
+                if runtime.strict_terminal:
+                    runtime.unstructured(msg.content)
+                else:
+                    runtime.finish_plain(msg.content)
                 final, stop_reason = runtime.final_answer, runtime.stop_reason
                 messages[-1]['content'] = final
                 break
@@ -195,7 +207,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                         result = "ERROR: 本次运行未启用内容检索，请使用 search_files 和 read_file"
                     else:
                         executed = True
-                        result = runtime.dispatch(name, raw, sandbox, oplog, confirmer)
+                        result = runtime.words(runtime.dispatch(name, raw, sandbox, oplog, confirmer))
                     if repeat_count == 2:
                         result += "\n[重复调用提醒] 你已连续两次调用相同工具和参数，结果如上。请调整做法；再次原样调用将中止运行。"
                 runtime.after(name, result, sandbox)

@@ -205,18 +205,45 @@ TEXT_OPTIONS = ('根目录有 2 个测试文件夹——你说的“测试文件
                 'C. 先不动，只给我清单')
 
 
-@pytest.mark.xfail(strict=True, reason='routing redesign S5 (finish_turn) not enabled: plain-text options end as answered')
 def test_options_written_in_the_reply_do_not_end_as_an_answer(tmp_path):
+    # S5: a model that ends with bare text is corrected once; ending so again is not an answer.
     files_fixture(tmp_path)
     session = Session(tmp_path)
-    result, _ = session.run('删掉所有测试文件', [step(call('list_dir', dict(path='.')))], final=TEXT_OPTIONS)
-    assert result.stop_reason != 'answered'
+    result, client = session.run('删掉所有测试文件', [step(call('list_dir', dict(path='.')))], final=TEXT_OPTIONS, bare=True)
+    assert result.stop_reason == 'unstructured_terminal' and client.requests == 3
+    assert result.final.startswith('根目录有 2 个测试文件夹') and '没有形成完整的交互' in result.final
+    assert any(m['role'] == 'system' and 'TERMINAL_REQUIRED' in m['content'] for m in result.messages)
 
 
-def test_options_written_in_the_reply_leave_no_question_to_answer(tmp_path):
-    # Pins today's behaviour of the gap above: nothing records what A meant.
+def test_a_model_corrected_once_asks_with_buttons(tmp_path):
     files_fixture(tmp_path)
     session = Session(tmp_path)
+    ask = dict(question='你说的测试文件指哪些？', reason='multiple_candidates', subject=['.'], options=[
+        dict(label='只回收测试文件夹', actions=[]), dict(label='先不动', actions=[])])
+
+    class Corrected(H.Replay):
+        def create(self, **kw):
+            if any(m['role'] == 'system' and 'TERMINAL_REQUIRED' in (m.get('content') or '') for m in kw['messages']):
+                self.steps = [step(call('finish_turn', dict(mode='ask', question=ask)))]
+                self.bare = False
+            return super().create(**kw)
+
+    from agent.interactions import receive
+    _, cfg = receive(session.cfg, session.sb, '删掉所有测试文件')
+    client = Corrected([], session.ids, TEXT_OPTIONS, bare=True)
+    from rich.console import Console
+    import io
+    from agent.llm import LLM
+    from agent.loop import run_agent
+    result = run_agent('删掉所有测试文件', LLM({'model': 'fake'}, client=client), session.sb, cfg,
+                       Console(file=io.StringIO()), artifacts=session.store)
+    assert result.stop_reason == 'waiting_input' and result.report['question_id'].startswith('Q')
+    assert [c['label'] for c in result.report['choices']] == ['只回收测试文件夹', '先不动']
+
+
+def test_with_strict_terminal_off_plain_text_still_ends_as_an_answer(tmp_path):
+    # The rollback path of S5 (strict_terminal: false): v3's ask_user / finish_task / text.
+    files_fixture(tmp_path)
+    session = Session(tmp_path, cfg=dict(H.CFG, strict_terminal=False))
     result, _ = session.run('删掉所有测试文件', [step(call('list_dir', dict(path='.')))], final=TEXT_OPTIONS)
     assert result.stop_reason == 'answered' and result.final.startswith('根目录有 2 个测试文件夹')
-    assert TaskRuntime('A', session.cfg, session.sb, 'next').answered_choice is None

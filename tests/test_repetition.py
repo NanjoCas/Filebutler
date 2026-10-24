@@ -57,13 +57,13 @@ def test_different_call_resets_count(tmp_path, middle):
         [("list_dir", {})], [("list_dir", {})], "完成",
     ])
     assert res.stop_reason == "answered"
-    assert [r["repeat_count"] for r in rows if "tool" in r] == [1, 2, 1, 1, 2]
+    assert [r["repeat_count"] for r in rows if r.get("tool") not in (None, "finish_turn")] == [1, 2, 1, 1, 2]
 
 
 def test_detection_can_be_disabled_for_ablation(tmp_path):
     res, _, _, rows = run(tmp_path, [[("list_dir", {})]] * 4 + ["完成"],
                           repeat_detection=False)
-    assert res.stop_reason == "answered" and res.tool_calls == 4
+    assert res.stop_reason == "answered" and res.tool_calls == 5  # four list_dir and the finish_turn that ends it
     assert all(r["executed"] for r in rows if "tool" in r)
     assert not any("重复调用提醒" in m["content"] for m in res.messages if m["role"] == "tool")
 

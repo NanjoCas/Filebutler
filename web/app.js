@@ -347,7 +347,7 @@ const DISPLAY_LABELS = {done: "已完成", answered: "已回答", confirm: "请�
 function outcomeLabel(result) {
   const shown = DISPLAY_LABELS[result?.report?.display];
   if (shown) return shown;
-  return ({done: "已完成", answered: "已完成", explained: "已完成", partial: "没有完成", needs_review: "请确认结果", waiting_input: "等你回答", cancelled: "已取消", cost_budget:'没有完成：费用达上限', token_budget:'没有完成：Token 达上限', max_steps:'没有完成：执行轮数达上限', repeated_call:'没有完成：重复调用', repair_limit:'没有完成：连续失败无进展', exception:'运行失败', unverified_answer: "没有完成：未形成可核验结果"})[result?.stop_reason] || "已停止";
+  return ({done: "已完成", answered: "已完成", explained: "已完成", partial: "没有完成", needs_review: "请确认结果", waiting_input: "等你回答", cancelled: "已取消", cost_budget:'没有完成：费用达上限', token_budget:'没有完成：Token 达上限', max_steps:'没有完成：执行轮数达上限', repeated_call:'没有完成：重复调用', repair_limit:'没有完成：连续失败无进展', exception:'运行失败', unverified_answer: "没有完成：未形成可核验结果", unstructured_terminal: "没有完成：回复格式不完整"})[result?.stop_reason] || "已停止";
 }
 function eventSteps(events) {
   const steps = [], indexes = new Map();

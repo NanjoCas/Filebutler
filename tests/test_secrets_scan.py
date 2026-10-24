@@ -81,7 +81,7 @@ def test_model_sees_kind_and_line_but_never_the_value(tmp_path):
     _, client = session.run('删除项目文件夹', [step(start([dict(kind='organize', description='回收')]),
                                                  call('prepare_file_plan', PLAN_ARGS))])
     text = client.calls('prepare_file_plan')[0]['text']
-    assert '第 2 行疑似GitHub 令牌' in text and '建议默认保留' in text and 'ask_user' in text
+    assert '第 2 行疑似GitHub 令牌' in text and '建议默认保留' in text and 'finish_turn(mode=ask)' in text
     assert GITHUB not in text and 'ghp_****' not in text
     assert (tmp_path / '项目/.config_backup').is_file()  # a finding never lets the file through
 

@@ -210,7 +210,7 @@ def test_projection_does_not_erase_persisted_transcript(ui, monkeypatch):
     assert done.wait(5)
     with webapp._db() as db:
         saved = json.loads(db.execute('SELECT history_json FROM conversations WHERE id=?', (cid,)).fetchone()[0])
-    assert len([m for m in saved if m['role'] == 'tool']) == 5
+    assert len([m for m in saved if m['role'] == 'tool']) == 6  # five calls and the finish_turn
     assert len([m for m in fake.seen[0] if m['role'] == 'tool']) < 5  # the request is projected
     assert saved[-1]['content'] == 'new reply'
     trace = ui.get(f'/api/turns/{tid}/trace').json()

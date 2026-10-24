@@ -1,13 +1,22 @@
-"""Ending a run: finish_task's local verification, the chosen option's scope,
-inspect_run, a plain final answer and an interrupted run (a mixin of TaskRuntime)."""
+"""Ending a run: finish_turn (reply, question or task), finish_task's local
+verification, the chosen option's scope, inspect_run, a plain final answer and an
+interrupted run (a mixin of TaskRuntime).
+
+Routing redesign S5 (2026-10-25): with strict_terminal on (default) every turn ends
+by finish_turn. ask_user and finish_task are no longer shown to the model; calls to
+them from older histories still run through the same code (_ask, _finish).
+"""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+from typing import Literal
+
 from pydantic import Field
 
 from agent import choices
+from agent.asking import AskUser
 from agent.intent import parts_text
 from agent.reporting import build_report
 from agent.task import StrictModel, task_state
@@ -29,6 +38,22 @@ class FinishTask(StrictModel):
     not_needed: list[Unfinished] = Field(default_factory=list, max_length=10,
         description='因为没有对象而不需要操作、又无法用空选择集计划证明的部分；结果只会是待核实，不会是完成。'
                     '能用 prepare_file_plan 的选择集证明为空时优先用它')
+
+
+class FinishTurn(StrictModel):
+    mode: Literal['reply', 'ask', 'task'] = Field(
+        description='reply 回答或说明；ask 提问并等待用户选择；task 已登记任务时收尾，本地逐部分核验')
+    reply: str = Field('', max_length=12000, description='给用户的主回复。mode=task 时只写用户要你告诉他的内容'
+                       '（如哪些文件、数量、无法执行的原因），不要复述已执行的操作')
+    question: AskUser | None = Field(None, description='mode=ask 必填：问题和 2–4 个选项')
+    summary: str = FinishTask.model_fields['summary']
+    unfinished: list[Unfinished] = FinishTask.model_fields['unfinished']
+    not_needed: list[Unfinished] = FinishTask.model_fields['not_needed']
+
+
+TERMINAL_REQUIRED = ('[本地协议] TERMINAL_REQUIRED：刚才的回复没有调用 finish_turn，用户还看不到。'
+                     '请调用 finish_turn 重新给出：直接回答用 mode=reply；要用户选择或确认用 mode=ask 并给出选项；'
+                     '已登记任务用 mode=task。')
 
 
 class InspectRun(StrictModel):
@@ -79,25 +104,69 @@ class Finishing:
             self.current['interruption_reason'] = reason
             self.store.checkpoint(self.current)
 
+    def _finish_turn(self, raw, sb):
+        args = FinishTurn.model_validate_json(raw)
+        if args.mode == 'ask':
+            if not args.question:
+                raise ValueError('mode=ask 需要 question：问题和 2–4 个选项')
+            return self._ask(args.question, sb)
+        if args.question:
+            raise ValueError('只有 mode=ask 才填 question；要用户选择请用 mode=ask')
+        if self.current:
+            # A registered task is always verified, whichever mode ends it.
+            if args.mode == 'reply':
+                detail = self.current.get('policy', {}).get('output', {}).get('detail')
+                limit = 12000 if detail == 'full' else 1200
+                return self._finish(FinishTask(summary=(args.summary or args.reply)[:limit],
+                                               reply=args.reply[:2000] if args.summary else '',
+                                               unfinished=args.unfinished, not_needed=args.not_needed), sb)
+            if len(args.reply) > 2000:
+                raise ValueError('mode=task 的 reply 最多 2000 字；其余放 summary')
+            return self._finish(FinishTask(summary=args.summary, reply=args.reply,
+                                           unfinished=args.unfinished, not_needed=args.not_needed), sb)
+        if args.mode == 'task':
+            raise ValueError('尚未登记任务，不能用 mode=task 收尾；直接回答用 mode=reply')
+        if args.unfinished or args.not_needed:
+            raise ValueError('未登记任务时没有部分可写 unfinished / not_needed')
+        if not args.reply.strip():
+            raise ValueError('mode=reply 需要 reply')
+        self._reply(args.reply)
+        return registry.ToolResult(status='ok', text='OK: 已回复用户，本轮结束')
+
+    def unstructured(self, content):
+        """Strict terminal: the model ended with bare text twice. The draft is kept, the
+        turn is not an answer, and nothing more runs (routing redesign 4.1)."""
+        if self.current:
+            self.interrupt('unstructured_terminal')
+        draft = (content or '').strip()
+        self.final_answer = ((draft + '\n\n') if draft else '') + '这一轮的回复没有形成完整的交互（可能缺少需要你选择的选项），请重试或换个说法。'
+        self.stop_reason = 'unstructured_terminal'
+        self.report = dict(version=1, state='unstructured_terminal', summary=self.final_answer, sections=[])
+
     def finish_plain(self, content):
         if self.current:
             detail = self.current.get('policy', {}).get('output', {}).get('detail')
             self.dispatch('finish_task', json.dumps({'summary': (content or '')[:12000 if detail == 'full' else 1200]}),
                           self.sb, None, None)
         if self.final_answer is None:
-            if self.blocked and self.operations:
-                self.final_answer = '本轮存在被拦截的操作，未形成可核验的任务记录，不能确认完成。'
-                self.stop_reason = 'unverified_answer'
-                return
-            self.final_answer = content or '本轮没有返回内容。'
-            if self.blocked:
-                # Without a task no write was opened. Keep the reply (often a
-                # question for the user) and state the local facts beside it.
-                reason = self.blocked_reasons[-1].splitlines()[0][:200] if self.blocked_reasons else ''
-                self.final_answer += (f'\n\n本轮未执行任何文件操作；{self.blocked} 次调用被拦截'
-                                      + ('，最近原因：' + reason if reason else '') + '。')
-            self.stop_reason = 'answered'
-            self.report = dict(version=1, state='answered', summary=self.final_answer, sections=[])
+            self._reply(content or '本轮没有返回内容。')
+
+    def _reply(self, content):
+        """An answer without a task: the reply, with the local facts of any blocked call."""
+        if self.blocked and self.operations:
+            self.final_answer = '本轮存在被拦截的操作，未形成可核验的任务记录，不能确认完成。'
+            self.stop_reason = 'unverified_answer'
+            return
+        self.final_answer = content
+        if self.blocked:
+            # Without a task no write was opened. Keep the reply (often a
+            # question for the user) and state the local facts beside it.
+            reason = self.blocked_reasons[-1].splitlines()[0][:200] if self.blocked_reasons else ''
+            self.final_answer += (f'\n\n本轮未执行任何文件操作；{self.blocked} 次调用被拦截'
+                                  + ('，最近原因：' + reason if reason else '') + '。')
+        self.stop_reason = 'answered'
+        self.report = dict(version=1, state='answered', summary=self.final_answer, sections=[])
+        self.finished = True  # later calls in the same response are TURN_CLOSED and leave this reply alone
 
     def _inspect_run(self, raw):
         args=InspectRun.model_validate_json(raw)
@@ -115,7 +184,9 @@ class Finishing:
         return registry.ToolResult(status='ok',text='OK: '+explanation)
 
     def _finish_task(self, raw, sb):
-        args = FinishTask.model_validate_json(raw)
+        return self._finish(FinishTask.model_validate_json(raw), sb)
+
+    def _finish(self, args, sb):
         if not self.current:
             raise ValueError('尚未登记任务，不能声称完成')
         unknown = [u.part_id for u in args.unfinished + args.not_needed if u.part_id not in {g['id'] for g in self.current['goals']}]

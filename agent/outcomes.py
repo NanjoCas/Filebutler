@@ -24,7 +24,7 @@ def stop_reason_text(reason, cfg, llm, error=None):
     if kind in known:return known[kind]
     if isinstance(error,OSError) and error.errno:return f'本地文件操作失败：{os.strerror(error.errno)}'
     if error:return '程序内部出错，后续步骤已停止'
-    return {'unverified_answer':'未形成可核验的任务记录','operation_error':'文件操作未成功，请核对执行记录'}.get(reason,reason)
+    return {'unverified_answer':'未形成可核验的任务记录','operation_error':'文件操作未成功，请核对执行记录','unstructured_terminal':'回复没有形成完整的交互'}.get(reason,reason)
 
 
 def stop_report(reason, cfg, llm, runtime=None, oplog=None, error=None, stage=None):
