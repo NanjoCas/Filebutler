@@ -67,7 +67,6 @@ def _plan(store, plan_id):
 
 
 def _profile(sb, fid, policy=None):
-    from tools.fs_read import _pdf_pages
     store = _store(sb)
     path, row = store.resolve(fid, allow_trash=False)
     policy = policy or evidence_policy(sb)
@@ -77,8 +76,8 @@ def _profile(sb, fid, policy=None):
         if not old.get('evidence_id') or store.resolve_evidence(old['evidence_id']):
             return old, True
     try:
-        from agent.document_cache import pdf_pages as cached_pages
-        pages = cached_pages(sb, path, pages=policy.pdf_pages, extractor=_pdf_pages)
+        from agent.extract import units
+        pages = units(sb, path, pages=policy.pdf_pages)
         candidates = []
         for page, text in enumerate(pages, 1):
             hit = re.search(r'abstract\b|摘\s*要', text, re.I)

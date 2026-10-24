@@ -18,7 +18,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from safety.sandbox import Sandbox
-from tools.fs_read import _existing, _paginate, _pdf_pages
+from tools.fs_read import _existing, _paginate
 from tools.registry import ToolError, tool
 from tools.scopes import paths
 from agent.policy import evidence_policy
@@ -81,8 +81,8 @@ class PaperIndex:
                 if not cached or cached[0] != signature or cached[2] != pdf_pages:
                     stats["extracted"] += 1
                     try:
-                        from agent.document_cache import pdf_pages as cached_pages
-                        pages = cached_pages(sb, p, pages=pdf_pages, extractor=_pdf_pages)
+                        from agent.extract import units
+                        pages = units(sb, p, pages=pdf_pages)
                         terms = Counter(tokenize("\n".join(pages)))
                         paper = Paper(pages, terms, sum(terms.values()))
                     except Exception as e:

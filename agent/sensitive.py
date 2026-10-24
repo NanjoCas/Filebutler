@@ -127,11 +127,11 @@ def file_reasons(sb, rel, pdf_pages=2):
 
 
 def _text(sb, path, pdf_pages):
+    from agent.extract import READABLE_EXTS, TEXT_EXTS, units
     try:
-        if path.suffix.lower() == '.pdf':
-            from agent.document_cache import pdf_pages as cached_pages
-            from tools.fs_read import _pdf_pages
-            text = '\n'.join(cached_pages(sb, path, pages=pdf_pages, extractor=_pdf_pages))
+        # Documents through the shared extractor (a docx is a zip: its raw bytes hold no text).
+        if path.suffix.lower() in READABLE_EXTS - TEXT_EXTS:
+            text = '\n'.join(units(sb, path, pages=pdf_pages))
         else:
             with path.open('rb') as stream:
                 data = stream.read(64 * 1024)

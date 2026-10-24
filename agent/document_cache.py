@@ -1,4 +1,4 @@
-"""Content-addressed PDF extraction cache shared across chats in one library.
+"""Content-addressed text extraction cache shared across chats in one library.
 
 Only parsed text is shared. Conversation IDs, evidence and authorizations are not.
 Failed parses are never cached; source versions are checked before and after use.
@@ -12,6 +12,16 @@ from agent.artifacts import digest, signature
 
 
 def pdf_pages(sb, path, *, start=1, pages=2, extractor):
+    versions=[]
+    for package in ('PyMuPDF', 'pypdf'):
+        try: versions.append(importlib.metadata.version(package))
+        except importlib.metadata.PackageNotFoundError: versions.append('absent')
+    return cached(sb, path, [start, pages, versions, 1], lambda p: extractor(p, start=start, pages=pages))
+
+
+def cached(sb, path, parts, extract):
+    """extract(path) -> list[str], cached under the file's content hash plus parts
+    (what was extracted and by which extractor version)."""
     path = sb.path(sb.rel(Path(path)), exact=True)
     if path.is_symlink() or any(x.startswith('.') for x in Path(sb.rel(path)).parts):
         raise ValueError('不能缓存隐藏文件或符号链接')
@@ -21,11 +31,7 @@ def pdf_pages(sb, path, *, start=1, pages=2, extractor):
         if cursor.is_symlink(): raise ValueError('不能缓存符号链接')
     before = signature(path)
     sha = digest(path)
-    versions=[]
-    for package in ('PyMuPDF', 'pypdf'):
-        try: versions.append(importlib.metadata.version(package))
-        except importlib.metadata.PackageNotFoundError: versions.append('absent')
-    key = json.dumps([sha, start, pages, versions, 1])
+    key = json.dumps([sha, *parts])
     folder = sb.root/'.oplog'
     database = folder/'document-cache.sqlite3'
     stats = getattr(sb, '_document_cache_stats', None)
@@ -36,6 +42,7 @@ def pdf_pages(sb, path, *, start=1, pages=2, extractor):
         if folder.is_symlink() or database.is_symlink(): raise OSError('cache path is symlink')
         folder.mkdir(exist_ok=True)
         db = sqlite3.connect(database, timeout=2)
+        # The table keeps its first name so caches written before other formats stay valid.
         db.execute('CREATE TABLE IF NOT EXISTS pdf_text (key TEXT PRIMARY KEY, pages TEXT NOT NULL)')
         row = db.execute('SELECT pages FROM pdf_text WHERE key=?', (key,)).fetchone()
         if row:
@@ -51,7 +58,7 @@ def pdf_pages(sb, path, *, start=1, pages=2, extractor):
         if db: db.close(); db = None
     try:
         stats['misses'] += 1
-        result = extractor(path, start=start, pages=pages)
+        result = extract(path)
         if signature(path) != before: raise ValueError('抽取期间源文件变化，请重新读取')
         if db:
             encoded = json.dumps(result, ensure_ascii=False)

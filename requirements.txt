@@ -5,6 +5,8 @@ pymupdf              # read_file 优先用它解析 PDF（AGPL-3.0；闭源商�
 pyyaml
 rich
 Pillow
+python-pptx          # 读 pptx（MIT）
+openpyxl             # 读 xlsx（MIT）
 pytest
 fpdf2
 fastapi>=0.115,<1
