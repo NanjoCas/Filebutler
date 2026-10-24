@@ -307,8 +307,12 @@ const TOOL_LABELS = {
   paper_profiles: "批量获取论文片段", submit_classification: "保存分类计划并生成表格", apply_classification: "本地批量执行分类计划",
   begin_step: "准备当前任务步骤", make_dir: "创建文件夹", move: "移动文件", rename: "重命名文件", trash: "移入回收区",
 };
+// Labels say what the user does next (agent/reporting.display_state); task states are unchanged.
+const DISPLAY_LABELS = {done: "已完成", answered: "已回答", confirm: "请确认结果", waiting: "等你回答", unfinished: "没有完成", cancelled: "已取消"};
 function outcomeLabel(result) {
-  return ({done: "已完成", answered: "已回复", partial: "部分完成", needs_review: "结果待核实", waiting_input: "等待补充信息", cancelled: "已取消", cost_budget:'费用达上限，已中止', token_budget:'Token 达上限，已中止', max_steps:'执行轮数达上限', repeated_call:'重复调用，已中止', repair_limit:'连续失败无进展，已中止', exception:'运行失败', unverified_answer: "未形成可核验结果"})[result?.stop_reason] || "已停止";
+  const shown = DISPLAY_LABELS[result?.report?.display];
+  if (shown) return shown;
+  return ({done: "已完成", answered: "已完成", explained: "已完成", partial: "没有完成", needs_review: "请确认结果", waiting_input: "等你回答", cancelled: "已取消", cost_budget:'没有完成：费用达上限', token_budget:'没有完成：Token 达上限', max_steps:'没有完成：执行轮数达上限', repeated_call:'没有完成：重复调用', repair_limit:'没有完成：连续失败无进展', exception:'运行失败', unverified_answer: "没有完成：未形成可核验结果"})[result?.stop_reason] || "已停止";
 }
 function eventSteps(events) {
   const steps = [], indexes = new Map();

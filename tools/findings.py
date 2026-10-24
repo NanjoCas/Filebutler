@@ -82,11 +82,11 @@ def report_findings(a, sb):
             artifacts.resolve(finding.file_id, allow_trash=False)
             reason = '本地 SHA256 比对通过：'+str(len(finding.related_file_ids))+' 个其他文件与本文件字节一致。'
         else:
-            reason = '模型判断（待复核）：'+reason
+            reason = '模型判断：'+reason
         lines.append(f'| {link} | {label(kinds.get(finding.relation, finding.relation))} | {label(reason)} {sources} |')
     if not a.findings:
         lines=['当前证据不足以确认相关论文。未命中或低分不能证明不相关。']
     if a.note: lines+=['',label(a.note)]
-    lines+=['','证据范围：'+'；'.join(sorted(scopes))+'。语义解释仍需复核，片段不证明穷尽；只有显式本地校验的结论才标为机械事实。']
+    lines+=['','证据范围：'+'；'.join(sorted(scopes))+'。判断只依据所引片段，不代表已查遍全部文件。']
     runtime.final_answer='\n'.join(lines)
     return 'OK: 已校验证据并生成结果表格。'
