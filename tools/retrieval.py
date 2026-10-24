@@ -170,9 +170,11 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
               f"范围外：跳过非PDF文件={stats['non_pdf']}（不是无文字层PDF），跳过符号链接={stats['symlinks']}\n"
               f"有词项重合 {stats.get('matched', 0)} 篇，候选 {len(hits)} 篇；低分不证明主题不相关，不能保证找全。")
     artifacts = getattr(sb, 'artifacts', None)
-    from agent.sensitive import reasons, granted
+    from agent.sensitive import enabled, reasons, granted
     def withheld(hit):
         """Why this hit's text is not shown: a sensitive file the user has not granted."""
+        if not enabled(sb):
+            return ''
         text = '\n'.join(sb._paper_index.cache[sb.path(hit['path'])][1].pages)
         why = reasons(hit['path'], text)
         return '；'.join(why) if why and not granted(sb, hit['path']) else ''

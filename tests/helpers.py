@@ -127,7 +127,8 @@ class Replay:
 class Session:
     """One temporary library + artifact store + history, like eval/live_policy.py."""
 
-    def __init__(self, root):
+    def __init__(self, root, cfg=None):
+        self.cfg = cfg or CFG
         self.sb = Sandbox(root)
         self.store = ArtifactStore(self.sb)
         self.history = []
@@ -140,10 +141,10 @@ class Session:
         self.turn += 1
         # As webapp.py: the full history is kept, and each run sees its projection.
         full = (self.history or [dict(role='system', content=SYSTEM_PROMPT)]) + [dict(role='user', content=instruction)]
-        history, _ = prepare_history(full, CFG, self.store)
+        history, _ = prepare_history(full, self.cfg, self.store)
         client = Replay(steps, self.ids, final)
         approve = lambda request: self.approvals.append(request) or self.answer
-        result = run_agent(instruction, LLM({'model': 'fake'}, client=client), self.sb, CFG,
+        result = run_agent(instruction, LLM({'model': 'fake'}, client=client), self.sb, self.cfg,
                            Console(file=io.StringIO()), artifacts=self.store, history=history,
                            oplog=OpLog(self.sb, f'v3_{self.turn}'),
                            confirmer=Confirmer('always', ask_action=approve))

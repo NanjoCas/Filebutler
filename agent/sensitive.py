@@ -12,6 +12,10 @@ fixed local rules, never by the model:
 
 Names stay visible and files can still be moved; only contents are withheld
 (read_file, search snippets, classification cards).
+
+User decision 2026-10-24: off by default (config sensitive_files: false); what the
+model may read is left to the user, who chooses the library folder. With it off,
+no file is treated as sensitive and the task guidance leaves out the rule.
 """
 from __future__ import annotations
 
@@ -85,6 +89,12 @@ def reasons(rel, text=None):
     return found
 
 
+def enabled(sb):
+    """The checks run only when the run's config turns them on (sensitive_files)."""
+    runtime = getattr(sb, 'runtime', None)
+    return bool(runtime is not None and runtime.cfg.get('sensitive_files'))
+
+
 def granted(sb, rel):
     """The user granted reading this file (or a folder holding it) in the current task."""
     runtime = getattr(sb, 'runtime', None)
@@ -103,6 +113,8 @@ def refusal(rel, why):
 def file_reasons(sb, rel, pdf_pages=2):
     """reasons() for a file on disk: name, then text extracted locally (PDF: first pages).
     Cached per file version (size, mtime): about 25 ms per PDF otherwise."""
+    if not enabled(sb):
+        return []
     found = reasons(rel)
     path = sb.path(rel, exact=True)
     try: st = path.stat()
