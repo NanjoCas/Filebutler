@@ -14,9 +14,21 @@ function applyDevMode() {
 const api = async (url, options = {}) => {
   const response = await fetch(url, {headers: {"Content-Type": "application/json"}, ...options});
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `请求失败 (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(typeof data.detail === "string" ? data.detail : `请求失败 (${response.status})`);
+    error.status = response.status; throw error;
+  }
   return data;
 };
+// One id per submission (routing redesign S2): kept with the text until the server's
+// receipt arrives, so a retry after a lost response or a reload is the same message
+// and never starts a second run. A changed text or choice is a new message.
+const pendingKey = cid => `fb-pending-${cid}`;
+function loadPending(cid) { try { return JSON.parse(localStorage.getItem(pendingKey(cid)) || "null"); } catch { return null; } }
+function savePending(cid, pending) {
+  try { pending ? localStorage.setItem(pendingKey(cid), JSON.stringify(pending)) : localStorage.removeItem(pendingKey(cid)); } catch {}
+}
+function newMessageId() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 // Names are shown with invisible and direction-changing characters made visible, as the
 // confirmation card does (safety/names.py VISIBLE): otherwise "invoice" + U+202E + "txt.exe"
 // displays as "invoiceexe.txt". Only the text changes; paths used to open files stay raw.
@@ -87,7 +99,7 @@ function buildMessage(message) {
     item.append(details);
   }
   if (message.role === "assistant" && message.report?.choices?.length) {
-    // ask_user options: a click sends the letter, which the server resolves to the option.
+    // ask_user options: a click sends the exact question and option ids; the letter is display only.
     const bar = node("div", "choice-buttons");
     for (const choice of message.report.choices) {
       const button = node("button", "choice-button"); button.type = "button";
@@ -95,7 +107,14 @@ function buildMessage(message) {
       const notes = [choice.detail, ...(choice.warnings || []).map(w => `⚠ ${w}`)].filter(Boolean);
       if (notes.length) button.append(node("span", "choice-note", notes.join("　")));
       if (choice.local) button.append(node("span", "choice-local", "系统补充"));
-      button.onclick = () => { bar.classList.add("settled"); $("message-input").value = choice.key; sendMessage(); };
+      button.onclick = () => {
+        bar.classList.add("settled");
+        const report = message.report;
+        if (report.question_id && choice.option_id) {
+          sendMessage({content: `选择 ${choice.key}：${choice.label}`,
+                       response: {question_id: report.question_id, version: report.question_version || 1, option_id: choice.option_id}});
+        } else { $("message-input").value = choice.key; sendMessage(); }  // an old page's question: sent as text, grants nothing
+      };
       bar.append(button);
     }
     if (message.report.allow_other) bar.append(node("span", "choice-hint", "或在下方直接输入你的要求"));
@@ -247,6 +266,9 @@ async function openConversation(id, animateLast = false) {
       addRunActions(latest, epoch);
     }
   } else setStatus("");
+  // A submission whose receipt never arrived: offered again, with the same id.
+  const unsent = loadPending(id);
+  if (unsent && !currentTurn && !unsent.response && !$("message-input").value) { $("message-input").value = unsent.content; autoGrow(); }
   $("send-button").disabled = !!currentTurn;
   loadConversations().catch(err => showError(err.message));
 }
@@ -257,25 +279,38 @@ async function newConversation() {
   const conv = await api("/api/conversations", {method: "POST", body: "{}"});
   await openConversation(conv.id); $("message-input").focus();
 }
-async function sendMessage() {
-  const input = $("message-input"), content = input.value.trim();
+async function sendMessage(choice = null) {
+  const input = $("message-input"), content = choice ? choice.content : input.value.trim();
+  const response = choice ? choice.response : null;
   if (!content || !currentConversation || currentTurn || submitting) return;
   const cid = currentConversation, epoch = viewEpoch;
-  submitting = true; $("send-button").disabled = true; input.value = ""; autoGrow();
+  const previous = loadPending(cid);
+  const same = previous && previous.content === content && JSON.stringify(previous.response || null) === JSON.stringify(response);
+  const pending = same ? previous : {id: newMessageId(), content, response};
+  savePending(cid, pending);
+  submitting = true; $("send-button").disabled = true; if (!choice) { input.value = ""; autoGrow(); }
   // The previous turn's status card and run bar belong above this message, not below it.
   $("agent-activity")?.remove(); document.querySelectorAll("#messages > .run-actions, #messages > .raw-trace").forEach(el => el.remove());
   appendMessage({role: "user", content});
   updateActivity({id: "submitting", status: "queued", events: [], result: {}}); setStatus("提交中…", "running");
   try {
-    const response = await api(`/api/conversations/${cid}/messages`, {method: "POST", body: JSON.stringify({content})});
+    const receipt = await api(`/api/conversations/${cid}/messages`, {method: "POST",
+      body: JSON.stringify({content, client_message_id: pending.id, response})});
+    savePending(cid, null);
     if (epoch !== viewEpoch) return;
-    currentTurn = response.turn_id; submitting = false;
+    submitting = false;
+    if (!receipt.turn_id) { await openConversation(cid, true); return; }  // received earlier; its run is being set up
+    currentTurn = receipt.turn_id;
     await pollTurn(cid, currentTurn, epoch);
   } catch (err) {
+    // The server decided (stale question, conflict, invalid): this id is spent. A network
+    // failure keeps it, so sending the same text again is a retry of this message.
+    if (err.status && err.status < 500) savePending(cid, null);
     if (epoch !== viewEpoch) return;
     submitting = false; currentTurn = null; $("send-button").disabled = false;
     updateActivity({id: "submitting", status: "failed", events: [], error: err.message});
-    input.value = content; autoGrow(); showError(err.message); setStatus("发送失败", "failed");
+    if (!choice) { input.value = content; autoGrow(); }
+    showError(err.message); setStatus("发送失败", "failed");
   }
 }
 function showError(text) { $("messages").append(node("div", "run-card error-card", text)); }

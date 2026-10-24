@@ -387,6 +387,10 @@ def run_suite(cases, out, cfg, total_cap, llm_for, mode):
                 def observe(event):
                     events.append(event)
                     if event['type'] == 'llm_end': requests.append(event)
+                # A scripted click is the button of the question just shown: an exact answer
+                # (routing redesign S2). Anything else is received as typed text.
+                from agent.interactions import receive
+                _, turn_cfg = receive(turn_cfg, sb, instruction, pressed=(chosen or {}).get('key'))
                 try:
                     result = run_agent(instruction, llm, sb, turn_cfg, Console(file=io.StringIO()), artifacts=store, history=history,
                                        oplog=OpLog(sb, f"{case['id']}_{index+1}"), confirmer=Confirmer('always', ask_action=approve),

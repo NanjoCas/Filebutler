@@ -49,6 +49,13 @@ def main():
     run_p = sub.add_parser("run", help="执行一条整理指令")
     run_p.add_argument("instruction")
     run_p.add_argument("--confirm", choices=["always", "risky", "never"], help="临时覆盖 config 里的确认模式")
+    run_p.add_argument("--message-id", help="精确重试上一次提交时用它的消息 ID；参数有变化须换新 ID")
+    answer_p = sub.add_parser("answer", help="回答上一轮的提问（按问题和选项 ID）")
+    answer_p.add_argument("--question", required=True, help="问题 ID（Q 开头）")
+    answer_p.add_argument("--option", required=True, help="选项 ID（O 开头）")
+    answer_p.add_argument("--version", type=int, default=1)
+    answer_p.add_argument("--message-id", help="精确重试时用原消息 ID")
+    answer_p.add_argument("--confirm", choices=["always", "risky", "never"], help="临时覆盖 config 里的确认模式")
     search_p = sub.add_parser("search", help="本地 BM25 论文主题检索，不调用模型 API")
     search_p.add_argument("query", help="主题关键词，英文论文优先用英文")
     search_p.add_argument("--path", default=".", help="沙盒内子目录")
@@ -130,17 +137,46 @@ def main():
         console.print(Text(result))
         if result.startswith("ERROR"):
             sys.exit(1)
-    elif args.cmd == "run":
+    elif args.cmd in ("run", "answer"):
+        import uuid
+        from agent.interactions import InteractionError, receive
+        sb = Sandbox(cfg["sandbox"])
+        message_id = args.message_id or uuid.uuid4().hex
+        if args.cmd == "answer":
+            response = dict(question_id=args.question, version=args.version, option_id=args.option)
+            content = f"选择选项 {args.option}"
+        else:
+            response, content = None, args.instruction
+        # Every command is one received message (routing redesign S2): a retry with the
+        # same --message-id returns the first receipt and does not run again.
+        try:
+            receipt, run_cfg = receive(cfg, sb, content, client_message_id=message_id, response=response)
+        except InteractionError as exc:
+            console.print(Text(f"ERROR: {exc}", style="red"))
+            sys.exit(1)
+        if receipt["existing"]:
+            console.print(f"[dim]消息 {message_id} 已在之前接收（状态 {receipt['status']}，run {receipt['run_id']}），没有再次运行。")
+            return
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
         logs = ROOT / "logs"
         logs.mkdir(exist_ok=True)
-        console.print(f"[bold]指令：[/]{args.instruction}  [dim](run {run_id}, 模型 {cfg['model']})")
-        sb = Sandbox(cfg["sandbox"])
+        console.print(f"[bold]指令：[/]{content}  [dim](run {run_id}, 消息 {message_id}, 模型 {cfg['model']})")
+        from agent.interactions import Interactions, store_for
+        repo = Interactions(store_for(cfg, sb))
+        repo.claim(receipt["run_request_id"], "cli", run_id)
         # 用 Text 输出提示：内容里的 [ ] 不会被 rich 当成样式标记吞掉
         confirmer = Confirmer(args.confirm or cfg.get("confirm", "risky"), cfg.get("confirm_threshold", 10),
                               ask=lambda q: console.input(Text(q, style="bold yellow")))
-        run_agent(args.instruction, LLM(cfg), sb, cfg, console,
-                  trace_path=logs / f"{run_id}.trace.jsonl", oplog=OpLog(sb, run_id), confirmer=confirmer)
+        try:
+            result = run_agent(content, LLM(cfg), sb, run_cfg, console,
+                               trace_path=logs / f"{run_id}.trace.jsonl", oplog=OpLog(sb, run_id), confirmer=confirmer)
+        finally:
+            repo.finish(receipt["run_request_id"], "ended")
+        report = getattr(result, "report", {}) or {}
+        if report.get("question_id"):
+            for choice in report.get("choices", []):
+                console.print(Text(f"选 {choice['key']}：python main.py answer --question {report['question_id']} "
+                                   f"--option {choice['option_id']}"))
         console.print(f"[dim]撤销本次运行：python main.py undo {run_id}")
     elif args.cmd == "undo":
         for line in undo(Sandbox(cfg["sandbox"]), args.run_id):

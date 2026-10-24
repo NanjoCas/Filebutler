@@ -1,4 +1,5 @@
 """Latency accounting, safe cache reuse, bounded retries and archival; no API spend."""
+import uuid
 import json
 import threading
 from types import SimpleNamespace as NS
@@ -139,7 +140,7 @@ def install_model(monkeypatch, script):
 def test_undo_sync_idempotent_partial_and_visible_after_reload(ui, monkeypatch, files):
     fake, done = install_model(monkeypatch, ['之前已完成'])
     cid = ui.post('/api/conversations').json()['id']
-    tid = ui.post(f'/api/conversations/{cid}/messages', json={'content': 'test'}).json()['turn_id']
+    tid = ui.post(f'/api/conversations/{cid}/messages', json={'client_message_id': uuid.uuid4().hex, 'content': 'test'}).json()['turn_id']
     assert done.wait(5)
     turn = ui.get(f'/api/turns/{tid}').json()
     # Simulate a logged directory operation that cannot be undone because it now has content.
@@ -155,7 +156,7 @@ def test_undo_sync_idempotent_partial_and_visible_after_reload(ui, monkeypatch, 
         h = json.loads(db.execute('SELECT history_json FROM conversations WHERE id=?', (cid,)).fetchone()[0])
     assert sum(has_undo([m], turn['run_id']) for m in h) == 1
     done.clear(); fake.script.append('知道撤销了')
-    ui.post(f'/api/conversations/{cid}/messages', json={'content': '继续'})
+    ui.post(f'/api/conversations/{cid}/messages', json={'client_message_id': uuid.uuid4().hex, 'content': '继续'})
     assert done.wait(5)
     assert has_undo(fake.seen[-1], turn['run_id'])
 
@@ -191,7 +192,7 @@ def test_legacy_undo_backfilled_before_next_request(ui, monkeypatch):
                                 {'role': 'assistant', 'content': '已完成'}]), cid))
         db.execute('INSERT INTO turns(id,conversation_id,run_id,status,created_at,updated_at,result_json) VALUES(?,?,?,?,?,?,?)',
                    ('legacy', cid, 'legacy-run', 'completed', webapp._now(), webapp._now(), json.dumps({'undo': ['还原 a → b']})))
-    ui.post(f'/api/conversations/{cid}/messages', json={'content': '重做'})
+    ui.post(f'/api/conversations/{cid}/messages', json={'client_message_id': uuid.uuid4().hex, 'content': '重做'})
     assert done.wait(5) and has_undo(fake.seen[0], 'legacy-run')
     assert any('不是当前文件快照' in m.get('content', '') for m in fake.seen[0])
     assert [m for m in fake.seen[0] if m['role'] == 'user'][-1] == {'role': 'user', 'content': '重做'}
@@ -205,7 +206,7 @@ def test_projection_does_not_erase_persisted_transcript(ui, monkeypatch):
     original = history_fixture()[:-1]
     with webapp._db() as db:
         db.execute('UPDATE conversations SET history_json=? WHERE id=?', (json.dumps(original), cid))
-    tid = ui.post(f'/api/conversations/{cid}/messages', json={'content': 'next'}).json()['turn_id']
+    tid = ui.post(f'/api/conversations/{cid}/messages', json={'client_message_id': uuid.uuid4().hex, 'content': 'next'}).json()['turn_id']
     assert done.wait(5)
     with webapp._db() as db:
         saved = json.loads(db.execute('SELECT history_json FROM conversations WHERE id=?', (cid,)).fetchone()[0])
@@ -234,7 +235,7 @@ def test_submission_failure_releases_conversation(ui, monkeypatch):
     def fail(*a, **kw): raise RuntimeError('closed pool')
     monkeypatch.setattr(webapp.POOL, 'submit', fail)
     with pytest.raises(RuntimeError):
-        ui.post(f'/api/conversations/{cid}/messages', json={'content': 'test'})
+        ui.post(f'/api/conversations/{cid}/messages', json={'client_message_id': uuid.uuid4().hex, 'content': 'test'})
     assert cid not in webapp.ACTIVE_CONVERSATIONS
     assert ui.get(f'/api/conversations/{cid}').json()['latest_turn']['status'] == 'failed'
 
@@ -282,7 +283,7 @@ def test_immediate_undo_waits_for_completion_save(ui, monkeypatch, files):
     monkeypatch.setattr(webapp, '_event', event)
     fake, done = install_model(monkeypatch, [[('trash', {'path': 'notes.md'})], 'done'])
     cid = ui.post('/api/conversations').json()['id']
-    tid = ui.post(f'/api/conversations/{cid}/messages', json={'content': '清理'}).json()['turn_id']
+    tid = ui.post(f'/api/conversations/{cid}/messages', json={'client_message_id': uuid.uuid4().hex, 'content': '清理'}).json()['turn_id']
     assert terminal.wait(5)
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(ui.post, f'/api/turns/{tid}/undo')

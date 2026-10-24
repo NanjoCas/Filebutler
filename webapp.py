@@ -85,6 +85,9 @@ def _init_db():
         );
         CREATE INDEX IF NOT EXISTS turns_conversation ON turns(conversation_id, created_at);
         """)
+        if 'run_request_id' not in {r[1] for r in db.execute('PRAGMA table_info(turns)')}:
+            db.execute("ALTER TABLE turns ADD COLUMN run_request_id TEXT")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS turns_run_request ON turns(run_request_id)")
         columns = {r[1] for r in db.execute('PRAGMA table_info(conversations)')}
         if 'artifacts_json' not in columns:
             db.execute("ALTER TABLE conversations ADD COLUMN artifacts_json TEXT NOT NULL DEFAULT '{}'")
@@ -179,8 +182,18 @@ def _get_conversation(conversation_id: str):
     return row
 
 
+class ExactResponse(BaseModel):
+    question_id: str = Field(min_length=1, max_length=40)
+    version: int = Field(ge=1)
+    option_id: str = Field(min_length=1, max_length=40)
+
+
 class NewMessage(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
+    # One id per submission, made by the page before sending and kept for its retries
+    # (routing redesign S2). Without it the page is older than the server.
+    client_message_id: str | None = Field(None, min_length=8, max_length=100)
+    response: ExactResponse | None = None
 
 
 class Confirmation(BaseModel):
@@ -188,7 +201,7 @@ class Confirmation(BaseModel):
     confirmation_id: str | None = None
 
 
-def _run_turn(state: TurnState, instruction: str, history: list[dict]):
+def _run_turn(state: TurnState, instruction: str, history: list[dict], received: dict | None = None):
     with _conversation_lock(state.conversation_id):
         confirmer = None
         terminal_status = "failed"
@@ -216,6 +229,7 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
 
         try:
             cfg = _config()
+            cfg.update(received or {})  # receipt, request, run request and exact answer ids
             state.status = "running"
             _event(state.id, {"type": "started", "message": "Agent 正在处理"})
             LOG_DIR.mkdir(exist_ok=True)
@@ -284,6 +298,9 @@ def _run_turn(state: TurnState, instruction: str, history: list[dict]):
             # Publish terminal state and release the workspace activity guard together.
             # An immediate undo must wait for the final save, not race it or get a
             # spurious "still running" response after the UI reports completion.
+            if received and received.get('run_request_id'):
+                try: _interactions(state.conversation_id).finish(received['run_request_id'], 'ended')
+                except Exception: pass  # the turn's own state is saved below either way
             with ACTIVE_LOCK:
                 state.status = terminal_status
                 try:
@@ -317,6 +334,39 @@ def startup():
     with _db() as db:
         db.execute("""UPDATE turns SET status='failed', error='服务重启，任务中断；如有写操作可尝试撤销', updated_at=?
                      WHERE status IN ('queued','running','waiting_confirmation')""", (_now(),))
+    _recover_outbox()
+
+
+def _recover_outbox():
+    """Run requests the restart left behind (routing redesign S2, 4.4): a running one
+    has an unknown result and stays interrupted, never replayed; one accepted but not
+    yet started gets its web turn now and runs once."""
+    from agent.interactions import Interactions, recover
+    from agent.task import TaskStore
+    cfg = _config()
+    root = Path(cfg['sandbox'])
+    path = Path(cfg.get('task_db') or root / '.oplog' / 'tasks.sqlite3')
+    if not path.exists():
+        return
+    for pending in recover(TaskStore(path, root, 'startup')):
+        with _db() as db:
+            row = db.execute("SELECT * FROM conversations WHERE id=?", (pending['session'],)).fetchone()
+            turn = db.execute("SELECT id FROM turns WHERE run_request_id=?", (pending['run_request_id'],)).fetchone()
+        repo = Interactions(TaskStore(path, root, pending['session']))
+        if row is None or turn is not None:
+            # The conversation is gone, or its turn was created and has just been marked
+            # interrupted above: the request does not run.
+            repo.finish(pending['run_request_id'], 'interrupted')
+            continue
+        receipt = repo.receipt(pending['receipt_id'])
+        payload = json.loads(receipt['payload_json'])
+        with ACTIVE_LOCK:
+            if pending['session'] in ACTIVE_CONVERSATIONS:
+                continue
+            ACTIVE_CONVERSATIONS.add(pending['session'])
+        _start_turn(pending['session'], row, payload['content'],
+                    dict(receipt_id=receipt['receipt_id'], request_id=receipt['request_id'],
+                         run_request_id=pending['run_request_id'], answer_id=receipt['answer_id']))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -553,17 +603,70 @@ def get_conversation(conversation_id: str):
             "updated_at": row["updated_at"], "messages": display, "latest_turn": active}
 
 
+def _interactions(conversation_id):
+    from agent.interactions import Interactions
+    return Interactions(_tasks(conversation_id))
+
+
+ERROR_STATUS = {'IDEMPOTENCY_CONFLICT': 409, 'QUESTION_STALE': 409, 'QUESTION_ALREADY_ANSWERED': 409,
+                'INVALID_ARGUMENTS': 422}
+
+
+def _receipt_reply(receipt):
+    """What a submission gets back, first time or on a retry: the same run."""
+    return {"turn_id": receipt.get("ui_turn_id"), "run_id": receipt.get("run_id"), "status": receipt["status"],
+            "receipt_id": receipt["receipt_id"], "run_request_id": receipt["run_request_id"],
+            "existing": receipt["existing"]}
+
+
 @app.post("/api/conversations/{conversation_id}/messages", status_code=202)
 def send_message(conversation_id: str, body: NewMessage):
+    """Receive a message once (routing redesign S2, 4.4).
+
+    Order: access to the conversation; a known message id returns its original
+    receipt and run (whatever the question or task is now); only a first submission
+    is checked against the running conversation and the open question, consumes an
+    exact answer and starts a run. A second run never starts for one message.
+    """
+    from agent.interactions import InteractionError
     content = body.content.strip()
     if not content:
         raise HTTPException(422, "消息不能为空")
+    row = _get_conversation(conversation_id)
+    if not body.client_message_id:
+        raise HTTPException(426, "页面版本过旧，请刷新后重新发送")
+    response = body.response.model_dump() if body.response else None
+    repo = _interactions(conversation_id)
+    try:
+        known = repo.known(body.client_message_id, content, response)
+    except InteractionError as exc:
+        raise HTTPException(ERROR_STATUS[exc.code], str(exc)) from exc
+    if known:
+        return _receipt_reply(known)
     with ACTIVE_LOCK:
         if conversation_id in ACTIVE_CONVERSATIONS:
             raise HTTPException(409, "该对话已有任务运行中")
-        row = _get_conversation(conversation_id)
         ACTIVE_CONVERSATIONS.add(conversation_id)
+    try:
+        receipt = repo.accept(body.client_message_id, content, response)
+    except InteractionError as exc:
+        with ACTIVE_LOCK:
+            ACTIVE_CONVERSATIONS.discard(conversation_id)
+        raise HTTPException(ERROR_STATUS[exc.code], str(exc)) from exc
+    except Exception:
+        with ACTIVE_LOCK:
+            ACTIVE_CONVERSATIONS.discard(conversation_id)
+        raise
+    if receipt["existing"]:  # a concurrent retry got here first
+        with ACTIVE_LOCK:
+            ACTIVE_CONVERSATIONS.discard(conversation_id)
+        return _receipt_reply(receipt)
+    return _start_turn(conversation_id, row, content, receipt)
 
+
+def _start_turn(conversation_id, row, content, receipt):
+    """Create the web turn of an accepted run request and run it (the outbox step).
+    The caller holds the conversation's ACTIVE_CONVERSATIONS slot."""
     state = None
     try:
         history = json.loads(row["history_json"])
@@ -589,10 +692,19 @@ def send_message(conversation_id: str, body: NewMessage):
         with _db() as db:
             db.execute("UPDATE conversations SET title=?, updated_at=?, history_json=? WHERE id=?",
                        (title, now, json.dumps(history, ensure_ascii=False), conversation_id))
-            db.execute("INSERT INTO turns(id,conversation_id,run_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                       (turn_id, conversation_id, run_id, "queued", now, now))
-        POOL.submit(_run_turn, state, content, history)
-        return {"turn_id": turn_id, "run_id": run_id, "status": "queued"}
+            db.execute("INSERT INTO turns(id,conversation_id,run_id,status,created_at,updated_at,run_request_id) VALUES(?,?,?,?,?,?,?)",
+                       (turn_id, conversation_id, run_id, "queued", now, now, receipt["run_request_id"]))
+        repo = _interactions(conversation_id)
+        repo.attach_turn(receipt["run_request_id"], turn_id)
+        if not repo.claim(receipt["run_request_id"], "web", run_id):
+            raise RuntimeError("运行请求已被处理")
+        received = dict(receipt_id=receipt["receipt_id"], request_id=receipt["request_id"],
+                        run_request_id=receipt["run_request_id"])
+        if receipt.get("answer_id"):
+            received["answer_id"] = receipt["answer_id"]
+        POOL.submit(_run_turn, state, content, history, received)
+        return {"turn_id": turn_id, "run_id": run_id, "status": "queued", "receipt_id": receipt["receipt_id"],
+                "run_request_id": receipt["run_request_id"], "existing": False}
     except Exception:
         try:
             if state is not None:

@@ -158,11 +158,27 @@ def test_the_pending_question_survives_a_restart_and_stays_in_its_conversation(t
     session = Session(tmp_path)
     session.run('把 b.txt 移到 Archive', [step(call('ask_user', ASK_B))])
     # A new process: a fresh sandbox and runtime over the same library and task store.
-    restarted = TaskRuntime('B', dict(H.CFG), H.Sandbox(tmp_path), 'after_restart')
+    from agent.interactions import receive
+    sb = H.Sandbox(tmp_path)
+    _, cfg = receive(dict(H.CFG), sb, '选择 B：覆盖', pressed='B')
+    restarted = TaskRuntime('选择 B：覆盖', cfg, sb, 'after_restart')
     assert restarted.answered_choice['chosen']['label'] == '覆盖'
     assert restarted.decisions == [dict(kind='overwrite', target='Archive/b.txt', source='option', revision=None, note='')]
-    other = TaskRuntime('B', dict(H.CFG, task_session='another-conversation'), H.Sandbox(tmp_path), 'other')
-    assert other.answered_choice is None
+    _, cfg = receive(dict(H.CFG, task_session='another-conversation'), sb, 'B', pressed='B')
+    assert cfg.get('answer_id') is None
+    assert TaskRuntime('B', cfg, sb, 'other').answered_choice is None
+
+
+def test_a_bare_letter_without_a_question_token_grants_no_option(tmp_path):
+    # Routing redesign S2: a letter typed or sent without the question's ids is text.
+    from agent.interactions import receive
+    clash_b(tmp_path)
+    session = Session(tmp_path)
+    session.run('把 b.txt 移到 Archive', [step(call('ask_user', ASK_B))])
+    _, cfg = receive(dict(H.CFG), session.sb, 'B')
+    runtime = TaskRuntime('B', cfg, session.sb, 'typed')
+    assert runtime.answered_choice['chosen'] is None and runtime.answered_choice['text'] == 'B'
+    assert all(d['source'] == 'text' for d in runtime.decisions)  # the card still confirms text consent
 
 
 def test_an_answer_whose_files_changed_meanwhile_writes_nothing_unchecked(tmp_path):

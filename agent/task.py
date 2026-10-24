@@ -211,6 +211,8 @@ class TaskStore:
             db.execute('''CREATE TABLE IF NOT EXISTS run_outcomes (
                 run_id TEXT NOT NULL, root TEXT NOT NULL, session TEXT NOT NULL,
                 data_json TEXT NOT NULL, PRIMARY KEY(run_id,root,session))''')
+            from agent.interactions import migrate
+            migrate(self.path, db)  # message receipts, questions, answers (routing redesign S2)
 
     @contextmanager
     def connect(self):

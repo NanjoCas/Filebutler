@@ -1,4 +1,5 @@
 """Stop reports, immutable run evidence and diagnostic-only turns; no network."""
+import uuid
 import copy
 import json
 import threading
@@ -88,7 +89,7 @@ def test_web_failure_is_a_saved_chat_reply_with_accurate_status(ui,files,monkeyp
         if ev['type']=='failed':finished.set()
     monkeypatch.setattr(webapp,'_event',event)
     cid=ui.post('/api/conversations').json()['id']
-    tid=ui.post(f'/api/conversations/{cid}/messages',json={'content':'核对资料'}).json()['turn_id']
+    tid=ui.post(f'/api/conversations/{cid}/messages',json={'client_message_id': uuid.uuid4().hex, 'content':'核对资料'}).json()['turn_id']
     assert finished.wait(5)
     conv=ui.get(f'/api/conversations/{cid}').json();turn=ui.get(f'/api/turns/{tid}').json()
     assert turn['status']=='failed' and turn['result']['stop_reason']=='exception'
@@ -114,7 +115,7 @@ def test_legacy_budget_stop_can_be_inspected_without_resuming(ui,files,monkeypat
         original(tid,ev)
         if ev['type'] in {'completed','failed'}:finished.set()
     monkeypatch.setattr(webapp,'_event',event)
-    tid=ui.post(f'/api/conversations/{cid}/messages',json={'content':'上次为何停止'}).json()['turn_id']
+    tid=ui.post(f'/api/conversations/{cid}/messages',json={'client_message_id': uuid.uuid4().hex, 'content':'上次为何停止'}).json()['turn_id']
     assert finished.wait(5)
     turn=ui.get(f'/api/turns/{tid}').json()
     assert turn['result']['stop_reason']=='done' and '费用预算上限' in turn['final']

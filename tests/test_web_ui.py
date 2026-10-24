@@ -1,4 +1,5 @@
 """Web rendering and live step events; fake models, temporary files, no API spend."""
+import uuid
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -201,7 +202,7 @@ def test_api_reports_model_start_before_completion_and_renders_saved_markdown(ui
             finished.set()
     monkeypatch.setattr(webapp, "_event", notify)
     cid = ui.post("/api/conversations").json()["id"]
-    turn = ui.post(f"/api/conversations/{cid}/messages", json={"content": "查看笔记"}).json()
+    turn = ui.post(f"/api/conversations/{cid}/messages", json={"client_message_id": uuid.uuid4().hex, "content": "查看笔记"}).json()
     try:
         assert entered.wait(3)
         live = ui.get(f"/api/turns/{turn['turn_id']}").json()
@@ -243,7 +244,7 @@ def test_ui_confirmation_remains_interactive_with_live_steps(ui, monkeypatch, fi
         if event["type"] in ("completed", "failed"): finished.set()
     monkeypatch.setattr(webapp, "_event", notify)
     cid = ui.post("/api/conversations").json()["id"]
-    tid = ui.post(f"/api/conversations/{cid}/messages", json={"content": "创建目录"}).json()["turn_id"]
+    tid = ui.post(f"/api/conversations/{cid}/messages", json={"client_message_id": uuid.uuid4().hex, "content": "创建目录"}).json()["turn_id"]
     assert waiting.wait(4)
     turn = ui.get(f"/api/turns/{tid}").json()
     assert turn["pending_confirmation"] and turn["events"][-2]["type"] == "tool_start"
@@ -322,7 +323,7 @@ def test_delete_refuses_running_or_pending_confirmation(ui, monkeypatch, files):
     monkeypatch.setattr(webapp, "_event", notify)
     cid = ui.post("/api/conversations").json()["id"]
     other = ui.post("/api/conversations").json()["id"]
-    tid = ui.post(f"/api/conversations/{cid}/messages", json={"content": "创建目录"}).json()["turn_id"]
+    tid = ui.post(f"/api/conversations/{cid}/messages", json={"client_message_id": uuid.uuid4().hex, "content": "创建目录"}).json()["turn_id"]
     assert waiting.wait(4)
     refused = ui.delete(f"/api/conversations/{cid}")
     assert refused.status_code == 409 and "等待确认" in refused.json()["detail"]
@@ -350,7 +351,7 @@ def test_delete_refuses_queued_turn_and_blocks_new_messages_after(ui):
     finally:
         webapp.ACTIVE_CONVERSATIONS.discard(cid)
     assert ui.delete(f'/api/conversations/{cid}').status_code == 200
-    assert ui.post(f'/api/conversations/{cid}/messages', json={'content': '还在吗'}).status_code == 404
+    assert ui.post(f'/api/conversations/{cid}/messages', json={'client_message_id': uuid.uuid4().hex, 'content': '还在吗'}).status_code == 404
     assert ui.get(f'/api/conversations/{cid}/tasks').status_code == 404
 
 

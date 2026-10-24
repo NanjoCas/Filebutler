@@ -144,7 +144,11 @@ class Session:
         history, _ = prepare_history(full, self.cfg, self.store)
         client = Replay(steps, self.ids, final)
         approve = lambda request: self.approvals.append(request) or self.answer
-        result = run_agent(instruction, LLM({'model': 'fake'}, client=client), self.sb, self.cfg,
+        # As a page does: a letter of the question just shown is that button (an exact answer).
+        from agent.interactions import receive
+        key = instruction.strip().upper()
+        _, cfg = receive(self.cfg, self.sb, instruction, pressed=key if len(key) == 1 else None)
+        result = run_agent(instruction, LLM({'model': 'fake'}, client=client), self.sb, cfg,
                            Console(file=io.StringIO()), artifacts=self.store, history=history,
                            oplog=OpLog(self.sb, f'v3_{self.turn}'),
                            confirmer=Confirmer('always', ask_action=approve))

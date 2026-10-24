@@ -44,15 +44,33 @@ class Asking:
     """Needs the TaskRuntime state: store, current, operations, sb paths (_resolve)."""
 
     def _answered_choice(self, instruction):
-        """The user's reply to the last ask_user, resolved locally when it is a single letter."""
-        try: last = self.store.outcome()
-        except ValueError: return None
-        asked = last.get('pending_choice')
-        if not asked: return None
-        key = instruction.strip().upper().rstrip('。.）)').lstrip('（(')
-        chosen = next((c for c in asked['choices'] if c['key'] == key), None)
-        return dict(question=asked['question'], chosen=chosen, text=None if chosen else instruction.strip(),
-                    subject=asked.get('subject', []), task_id=last.get('task_id'))
+        """The user's reply to the last ask_user.
+
+        Since routing redesign S2 an option is chosen only by an exact answer the
+        message was received with (cfg answer_id: question id, version and option id,
+        agent/interactions.py). Typed text, a bare letter included, chooses nothing:
+        the run is told it may be the answer, and it grants no option's consent.
+        """
+        from agent.interactions import Interactions
+        repo = Interactions(self.store)
+        if self.cfg.get('answer_id'):
+            question, option = repo.answered(self.cfg['answer_id'])
+            asked = question['data']
+            return dict(question=asked['question'], chosen=option, text=None, subject=asked.get('subject', []),
+                        task_id=question['task_id'], question_id=question['question_id'])
+        if self.cfg.get('receipt_id'):
+            question = repo.replied_to(self.cfg['receipt_id'])
+            if not question: return None
+            asked = question['data']
+        else:
+            # Not received through a receipt (a library caller): the last run's question, unchosen.
+            try: last = self.store.outcome()
+            except ValueError: return None
+            asked = last.get('pending_choice')
+            if not asked: return None
+            question = dict(task_id=last.get('task_id'), question_id=asked.get('question_id'))
+        return dict(question=asked['question'], chosen=None, text=instruction.strip(), subject=asked.get('subject', []),
+                    task_id=question['task_id'], question_id=question['question_id'])
 
     def _resume_asked_task(self):
         """A chosen option goes back to the task its question was asked in, with its
@@ -251,12 +269,18 @@ class Asking:
         text = '\n'.join(prefix + lines)
         subject = [self._resolve(p) for p in args.subject]
         for path in subject: sb.path(path, exact=True)
-        self.pending_choice = dict(question=args.question, reason=args.reason, choices=choices,
-                                   allow_other=args.allow_other, subject=subject)
+        from agent.interactions import Interactions
+        # Stable question and option ids: an answer names them exactly (routing redesign S2).
+        self.pending_choice = Interactions(self.store).record_question(
+            dict(question=args.question, reason=args.reason, choices=choices, allow_other=args.allow_other, subject=subject),
+            run_id=self.run_id, task_id=(self.current or {}).get('id'), task_revision=(self.current or {}).get('revision'),
+            request_id=self.cfg.get('request_id'))
+        choices = self.pending_choice['choices']
         if self.current:
             self.current.update(status='waiting_input', pending_choice=self.pending_choice)
             self.store.checkpoint(self.current)
         self.final_answer, self.stop_reason, self.finished = text, 'waiting_input', True
         self.report = dict(version=1, state='waiting_input', summary=text, question=question, sections=[],
-                           choices=choices, allow_other=args.allow_other)
+                           choices=choices, allow_other=args.allow_other,
+                           question_id=self.pending_choice['question_id'], question_version=self.pending_choice['version'])
         return registry.ToolResult(status='ok', text='OK: 已向用户提问，本轮结束，等待用户回答')
