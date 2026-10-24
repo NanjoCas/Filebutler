@@ -66,7 +66,9 @@ def test_read_tools(sb):
     assert "个隐藏项未显示" in listing and ".DS_Store" in listing
     assert "牛奶" in d("read_file", {"path": "购物清单.txt"})          # GBK 编码
     assert "<file_content>" in d("read_file", {"path": "说明.txt"})
-    assert "file_info" in d("read_file", {"path": "IMG_2041.jpg"})
+    # Since 2026-10-24 images are read by local OCR; this one is a blank 64x48 picture.
+    image = d("read_file", {"path": "IMG_2041.jpg"})
+    assert "没有识别到文字" in image or "无法识别图片文字" in image
     info = d("file_info", {"path": "IMG_2041.jpg"})
     assert "MD5" in info and "64x48" in info
     assert "页数: 3" in d("file_info", {"path": "季度报告.pdf"})

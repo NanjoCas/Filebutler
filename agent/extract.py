@@ -9,7 +9,8 @@ Formats (plan 2026-10-24, docs/feature-plan-2026-10-24.md):
   read, the 2 failures were a lock file and a text file named .docx);
 - pptx: python-pptx, a unit per slide with its notes;
 - xlsx: openpyxl (values, not formulas), a unit per sheet, rows as tab-separated lines;
-- html: tags removed (stdlib html.parser).
+- html: tags removed (stdlib html.parser);
+- images, and PDF pages with almost no text layer: local OCR (agent/ocr.py).
 Everything but plain text is cached by content (agent/document_cache).
 """
 import importlib.metadata
@@ -19,13 +20,15 @@ import subprocess
 import zipfile
 from html.parser import HTMLParser
 
+from agent import ocr
 from tools.registry import ToolError
 
 TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml", ".py", ".rst"}
 TEXTUTIL_EXTS = {".docx", ".doc", ".rtf", ".odt"}
 OFFICE_EXTS = TEXTUTIL_EXTS | {".pptx", ".xlsx"}
 HTML_EXTS = {".html", ".htm"}
-READABLE_EXTS = {".pdf"} | TEXT_EXTS | OFFICE_EXTS | HTML_EXTS
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".gif", ".bmp", ".webp"}
+READABLE_EXTS = {".pdf"} | TEXT_EXTS | OFFICE_EXTS | HTML_EXTS | IMAGE_EXTS
 
 VERSION = 1             # bump when an extractor's output changes
 TEXTUTIL_TIMEOUT = 30   # seconds
@@ -40,7 +43,16 @@ def units(sb, path, *, start=1, pages=2):
     from tools import fs_read
     ext = path.suffix.lower()
     if ext == ".pdf":
-        return pdf_pages(sb, path, start=start, pages=pages, extractor=fs_read._pdf_pages)
+        found = pdf_pages(sb, path, start=start, pages=pages, extractor=fs_read._pdf_pages)
+        return [_scanned(sb, path, start + i, text) if len(text.strip()) < ocr.MIN_TEXT else text
+                for i, text in enumerate(found)]
+    if ext in IMAGE_EXTS:
+        if not ocr.budget(sb):
+            ocr.stats(sb)["skipped"] += 1
+            raise ToolError(f"{path.name} 本次没有时间识别文字，稍后重试")
+        result = cached(sb, path, ["ocr-image", VERSION, ocr.version()], ocr.image_text)
+        ocr.stats(sb)["images"] += 1
+        return result
     if ext in TEXT_EXTS:
         return [decode(path.read_bytes())]
     if path.name.startswith("~$"):
@@ -51,6 +63,23 @@ def units(sb, path, *, start=1, pages=2):
         extractor = _textutil if ext in TEXTUTIL_EXTS else _pptx if ext == ".pptx" else _xlsx
         return cached(sb, path, ["office", ext, VERSION, _package_version(ext)], _guarded(extractor))
     raise ToolError(f"不支持读取 {ext or '无后缀'} 文件的内容，请用 file_info 查看基本信息")
+
+
+def _scanned(sb, path, page, text):
+    """A PDF page with (almost) no text layer: its OCR text, or the original text when
+    OCR is unavailable, fails or is out of time (counted in ocr.stats)."""
+    from agent.document_cache import cached
+    counts = ocr.stats(sb)
+    if not ocr.budget(sb):
+        counts["skipped"] += 1
+        return text
+    try:
+        found = cached(sb, path, ["pdf-ocr", page, VERSION, ocr.version()], lambda p: ocr.pdf_page_text(p, page))[0]
+    except (ToolError, ValueError):
+        counts["failed"] += 1
+        return text
+    counts["pages"] += 1
+    return found if len(found.strip()) > len(text.strip()) else text
 
 
 def decode(raw):
