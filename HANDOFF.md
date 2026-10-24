@@ -15,6 +15,7 @@
 - **2026-10-23 链路方案二（回答接回提问的任务）完成**（`2636a19`、`5adc89c`）：回放测试 `tests/test_answer_replays.py`，8 个通过，2 个以 xfail 记录已知缺口：① 只针对 b 的选项会约束整份下一计划；④ 重发字母会回答当前待答的新问题，网页已防住。修复两处：点选项回答时接回提问时的任务（`asking._resume_asked_task`），上一轮的操作并入 `operation_history`；选了"什么都不做"时，只结掉模型在 `finish_task.unfinished`/`not_needed` 里点名的写入部分（`finishing._record_chosen_scope`），answer 部分仍自动结掉。历史证据（第 30 轮及以前）：24 次跨轮提问中 23 次发生在登记任务之前，所有选项都描述整件事。第 36 轮真实复验 6/6，约 ¥0.13，见第 7 节。
 - **2026-10-24 功能增加方案**（未实施）：`docs/feature-plan-2026-10-24.md`，包括读 Office 文档、OCR、模糊语义搜索。第 9 节有 3 个待定问题。
 - **2026-10-24 功能方案阶段 0、1 完成**：新增统一抽取层 `agent/extract.py`，read_file、search_content、paper_profiles、敏感规则都从这里取文字；`agent/document_cache.cached` 按内容缓存所有格式，PDF 键不变，旧缓存仍然有效。read_file 新增支持 docx/doc/rtf/odt（macOS textutil）、pptx（python-pptx，每张幻灯片一个单元，含备注、表格、分组）、xlsx（openpyxl，取值而不是公式，每表最多 5000 行）、html（去掉标签）、rst。锁文件、损坏或加密文件、解压后超过 300MB 的文件给出明确错误。本机 160 个文件中 158 个读取成功，失败的 2 个是测试假文件。搜索还只索引 PDF（阶段 3 再扩大）。离线测试 424 passed、2 xfailed；没有做真实复验。
+- **2026-10-24 状态显示按"用户下一步做什么"重排，内部状态不动**（用户决定）：`agent/reporting.display_state` 给报告加上 `display` 字段，取值为 done / answered / confirm / waiting / unfinished / cancelled。只读任务（没有执行过文件操作）即使是 needs_review，也显示为"已回答"，回复里不再写"这一轮的结果待核实"；改动过文件的任务显示"请确认结果"。网页标签（`web/app.js` outcomeLabel、`web/tasks.js`）统一为：已完成 / 已回答 / 请确认结果 / 等你回答 / 没有完成 / 已取消。查找结果表里的"模型判断（待复核）"改为"模型判断"。起因是第 37 轮：同一个问题，模型登记了查找任务、引用了片段的反而显示"待核实"，直接回答的却没有任何提示。任务状态、核验和评测判定都没变，第 37 轮仍记为 13/15。
 - **2026-10-24 敏感文件检测默认关闭**（用户决定：先不做，交给用户自己选资料库范围）：新配置 `sensitive_files: false`。关闭时文件名、内容规则都不运行，任务协议不再显示敏感文件规则（`SENSITIVE_RULE`），所有文件正常读取；设为 `true` 恢复 2026-10-22 的行为。带 `sensitive` 标签的 4 个冻结场景由 `eval/live_policy.py` 单独打开。离线测试 412 passed、2 xfailed；没有做真实复验。
 - **第 20 轮：两套盲测各 3 次 + v2 对照**：v3 47/48 = 97.9%（95% 区间 89.1%–99.6%），v2 35/48 = 72.9%（59.0%–83.4%）；费用 ¥0.575 对 ¥0.978。
 - 其余真实复验（DeepSeek `deepseek-flash`，每组 1 次）：
@@ -192,7 +193,8 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | `policy_live_20261023_33_v3_goalids_*/`、`_33b_r{1,2}_*` | 无 goal_ids 时拒绝（`b0f17bb`）后，重跑历史上省略过 goal_ids 的 10 个场景：8/10，两组失败都在 start_task 前多问、与修复无关，各重跑 2 次 4/4；多 organize 计划主动写 goal_ids 4/5，被拒后一次改对；约 ¥0.26 |
 | `policy_live_20261023_34_r{1,2,3}_v3_parts/`、`_34_v3_parts_*` | 按部分核验（`b39323b`）后：新场景 `--suite parts`（归档+改名、平铺+回收）6/6，回归 5 组 5/5；多部分计划 8/8 在动作上写了 part，执行的操作全部只归属一个部分；归档+改名 3 次中 2 次先被"缺 goal_ids"拒一次；约 ¥0.20。新场景不是盲测 |
 | `policy_live_20261023_35_r{1,2,3}_v3_snapshot_revise/` | 方案三（`912b9a6`）后重跑 `--suite revise` 3 次：6/6；与第 32 轮对比第二轮首次请求输入 -21%、整轮 prompt token -13~24%、未命中缓存 token +40~50%、费用 ¥0.157→0.170 |
-| `policy_live_20261023_36_r{1,2,3}_v3_answer/` | 方案二（`2636a19`）后新场景 `--suite answer`（只有一处冲突时选"什么都不做"；两个文件中只有 b 冲突时选"b 不移动"）3 次 6/6，约 ¥0.13（¥0.046/0.040/0.041）。风险路径没有被触发：选"先不移动"后，模型登记的是 answer 部分；接回任务真实生效 1 次。新场景在修复后编写，不是盲测（最新） |
+| `policy_live_20261023_36_r{1,2,3}_v3_answer/` | 方案二（`2636a19`）后新场景 `--suite answer`（只有一处冲突时选"什么都不做"；两个文件中只有 b 冲突时选"b 不移动"）3 次 6/6，约 ¥0.13（¥0.046/0.040/0.041）。风险路径没有被触发：选"先不移动"后，模型登记的是 answer 部分；接回任务真实生效 1 次。新场景在修复后编写，不是盲测 |
+| `policy_live_20261024_37_r{1,2,3}_v3_office/`、`_37_v3_regression/` | 阶段 0、1（`9893ed0`）后，新场景 `--suite office`（docx、pptx 表格、xlsx 数值、html 截止时间、在 4 个未点名文件里找一个标记词）3 次 13/15：15 次答案全部正确，每次都用 read_file 直接读 Office 文件；找标记词时模型一次并行读完 4 个文件。2 次失败都在 `off_find_marker`：模型登记了 find 部分，用 report_findings 报告"提到"关系，按现有规则判为 needs_review（模型的判断待复核）；没有登记任务的那次是 answered。回归 8/8。费用 office ¥0.055/0.026/0.029，回归 ¥0.186，合计约 ¥0.30。新场景在改动之后编写，不是盲测（最新） |
 
 每个目录有 `manifest.json`（配置、输入、代码与原论文哈希）、`report.json`（含旧口径 `passed_local`）、`judgement.json`（新判定）和逐场景脱敏历史、trace、事件、确认记录。**总验收看 `overall_accepted` 和退出码，不看 `passed_local`。**
 
