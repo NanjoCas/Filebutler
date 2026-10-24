@@ -28,7 +28,11 @@ class TaskPolicy(PolicyModel):
 
 
 def active_goals(runtime):
-    """The goal a write serves: the only goal, or the only one verifying its receipt."""
+    """The goal a write serves: the part the call names (routing redesign S4), the only
+    goal, or the only one verifying its receipt."""
+    named = getattr(runtime, '_part', None)
+    if named:
+        return [named]
     goals = (runtime.current or {}).get('goals', [])
     if len(goals) == 1:
         return [goals[0]['id']]

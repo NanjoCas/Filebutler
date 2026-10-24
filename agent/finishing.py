@@ -40,6 +40,11 @@ class FinishTask(StrictModel):
                     '能用 prepare_file_plan 的选择集证明为空时优先用它')
 
 
+class EvidenceBinding(StrictModel):
+    part: str = Field(description='查找部分的 ID')
+    refs: list[str] = Field(min_length=1, max_length=20, description='支持该部分结论的 E 标识')
+
+
 class FinishTurn(StrictModel):
     mode: Literal['reply', 'ask', 'task'] = Field(
         description='reply 回答或说明；ask 提问并等待用户选择；task 已登记任务时收尾，本地逐部分核验')
@@ -49,6 +54,8 @@ class FinishTurn(StrictModel):
     summary: str = FinishTask.model_fields['summary']
     unfinished: list[Unfinished] = FinishTask.model_fields['unfinished']
     not_needed: list[Unfinished] = FinishTask.model_fields['not_needed']
+    evidence_bindings: list[EvidenceBinding] = Field(default_factory=list, max_length=10,
+        description='多个查找部分时，逐个写明哪些证据支持哪个部分；同一证据可写在多个部分')
 
 
 TERMINAL_REQUIRED = ('[本地协议] TERMINAL_REQUIRED：刚才的回复没有调用 finish_turn，用户还看不到。'
@@ -112,6 +119,8 @@ class Finishing:
             return self._ask(args.question, sb)
         if args.question:
             raise ValueError('只有 mode=ask 才填 question；要用户选择请用 mode=ask')
+        if args.evidence_bindings:
+            self._bind_evidence(args.evidence_bindings)
         if self.current:
             # A registered task is always verified, whichever mode ends it.
             if args.mode == 'reply':
@@ -132,6 +141,33 @@ class Finishing:
             raise ValueError('mode=reply 需要 reply')
         self._reply(args.reply)
         return registry.ToolResult(status='ok', text='OK: 已回复用户，本轮结束')
+
+    def _bind_evidence(self, bindings):
+        """Claims of evidence for find parts (routing redesign S4, 6.3). Each claim is
+        checked locally: the part verifies evidence, and the evidence is this session's,
+        still at the version it was taken from. A valid claim does not make the answer
+        right; the semantic review stays."""
+        if not self.current:
+            raise ValueError('未登记任务时没有部分可写 evidence_bindings')
+        from agent.verifier import CONSUMERS
+        goals = {g['id']: g for g in self.current['goals']}
+        artifacts = self.sb.artifacts
+        claims = []
+        for b in bindings:
+            goal = goals.get(b.part)
+            if not goal:
+                raise ValueError(f'evidence_bindings 引用了不存在的部分：{b.part}；当前部分：' + parts_text(self.current))
+            if not any(c['kind'] in CONSUMERS['evidence'] for c in goal['conditions']):
+                raise ValueError(f'部分 {b.part} 不由证据核验，不能绑定证据')
+            for ref in b.refs:
+                eid = ref.removeprefix('evidence:')
+                try: artifacts.resolve_evidence(eid)
+                except ValueError as exc:
+                    raise ValueError(f'证据 {ref} 不能用于部分 {b.part}：{exc}') from exc
+                claims.append(dict(collection='evidence', id=eid, goal_ids=[b.part], claimed=True, run_id=self.run_id))
+        known = {(r['collection'], r['id'], tuple(r.get('goal_ids', []))) for r in self.current.get('references', [])}
+        self.current.setdefault('references', []).extend(
+            c for c in claims if (c['collection'], c['id'], tuple(c['goal_ids'])) not in known)
 
     def unstructured(self, content):
         """Strict terminal: the model ended with bare text twice. The draft is kept, the

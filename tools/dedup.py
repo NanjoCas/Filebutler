@@ -320,6 +320,7 @@ class ApplyDedupArgs(BaseModel):
     group_ids: list[str] | None = Field(None, description="要处理的组 ID；省略则处理符合条件的全部组")
     include_similar: bool = Field(False, description="只有用户已明确同意按近似版本合并时才设 true；默认仅处理 bytes/text")
     keepers: dict[str, str] = Field(default_factory=dict, description="可选：组 ID 到明确保留路径的映射；必须是该组成员")
+    part: str = Field('', description="去重属于的部分ID；多个去重部分时必填")
 
 
 @tool("apply_dedup",
@@ -379,6 +380,7 @@ class DeduplicateArgs(BaseModel):
     mode: Literal['bytes','text'] = Field('text',description='文件字节完全相同用 bytes，论文文字相同用 text；不处理近似版本')
     keep: Literal['longest_text','shortest_name'] = 'longest_text'
     keep_files: list[str] = Field(default_factory=list,description='用户明确要求保留的文件，传 file:F标识或工具确认的原路径；不确定时使用分步查重')
+    part: str = Field('', description='去重属于的部分ID；多个去重部分时必填')
 
 
 @tool('deduplicate',

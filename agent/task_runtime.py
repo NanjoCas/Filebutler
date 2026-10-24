@@ -81,6 +81,7 @@ class TaskRuntime(Asking, Finishing):
         self._journal_offset = 0
         self._usage = None
         self._producers = ()
+        self._part = None  # the part a write tool's call names (routing redesign S4)
         self._attributions = None
         self._pretask = []  # read-only facts observed before any task existed in this run
         self.pending_choice = None
@@ -161,6 +162,7 @@ class TaskRuntime(Asking, Finishing):
         self._source_kinds = {}
         self._usage = None
         self._producers = ()
+        self._part = None
         if self._oplog and self._oplog.path.exists():
             self._journal_offset = len(self._oplog.path.read_text().splitlines())
         self._before_refs = {k: set(v) for k, v in sb.artifacts.data.items()
@@ -202,12 +204,24 @@ class TaskRuntime(Asking, Finishing):
                 self._usage = tool.usage
             if tool.writes:
                 self._producers = tool.produces
+                self._part = self._named_part(args.get('part'), tool) if args.get('part') else None
                 self._check_write(tool, args)
             return raw, None
         except (ValueError, SandboxError, KeyError, registry.ToolError) as exc:
             self.blocked += 1
             self.blocked_reasons.append(str(exc))
             return raw, 'ERROR: ' + str(exc)
+
+    def _named_part(self, part, tool):
+        """The part a write tool's call names: one of the task's, proved by this tool's receipt."""
+        from agent.verifier import CONSUMERS
+        goals = {g['id']: g for g in (self.current or {}).get('goals', [])}
+        if part not in goals:
+            raise ValueError(f'part 引用了不存在的部分：{part}；当前部分：' + parts_text(self.current or dict(goals=[])))
+        kinds = {k for p in tool.produces for k in CONSUMERS.get(p, ())}
+        if not any(c['kind'] in kinds for c in goals[part]['conditions']):
+            raise ValueError(f'部分 {part} 的完成条件不能由 {tool.name} 的回执满足；请写明对应的去重部分')
+        return part
 
     def _check_write(self, tool, args):
         if not self.current:
@@ -221,8 +235,8 @@ class TaskRuntime(Asking, Finishing):
         effects = set(tool.effects)
         goal_ids = active_goals(self)
         if not goal_ids:
-            raise ValueError('有多个部分都可能由这次写入完成，本地无法确定归属；'
-                             '请用 revise_task 把同类部分合并为一个，或改用 prepare_file_plan')
+            raise ValueError('AMBIGUOUS_GOAL：有多个部分都可能由这次写入完成，本地无法确定归属；'
+                             '请在参数 part 写明属于哪个部分（当前部分：' + parts_text(self.current) + '）')
         # Goal-scoped prohibitions are checked per attributed action below.
         forbidden = {e for c in self.current['constraints'] if not c.get('goal_ids') for e in c['forbidden_effects']}
         if effects & forbidden or not effects.issubset(self.current['allowed_effects']):

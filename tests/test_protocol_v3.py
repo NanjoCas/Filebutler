@@ -530,15 +530,41 @@ def test_dedup_part_is_attributed_by_its_receipt_without_begin_step(tmp_path):
     assert client.requests == 3
 
 
-def test_two_parts_verifying_receipts_still_need_an_explicit_step(tmp_path):
+def test_two_dedup_parts_need_the_part_each_call_serves(tmp_path):
+    # Routing redesign S4: a receipt proves the part its call names; without one, nothing is written.
     duplicates_fixture(tmp_path)
+    (tmp_path / 'Other').mkdir()
+    (tmp_path / 'Other/x.txt').write_text('same x'); (tmp_path / 'Other/x_copy.txt').write_text('same x')
     session = Session(tmp_path)
-    _, client = session.run('清理', [
-        step(start([dict(kind='dedup', description='a'), dict(kind='dedup', description='b')]),
-             call('deduplicate', dict(path='Inbox', mode='bytes', keep='shortest_name'))), finish()])
+    parts = [dict(id='inbox', kind='dedup', description='Inbox 去重'), dict(id='other', kind='dedup', description='Other 去重')]
+    _, client = session.run('清理', [step(start(parts), call('deduplicate', dict(path='Inbox', mode='bytes', keep='shortest_name')))])
     text = client.calls('deduplicate')[0]['text']
-    assert '无法确定归属' in text and 'revise_task' in text and 'begin_step' not in text
-    assert (tmp_path / 'Inbox/copy_of_a.txt').is_file()
+    assert 'AMBIGUOUS_GOAL' in text and 'part' in text and (tmp_path / 'Inbox/copy_of_a.txt').is_file()
+    result, client = session.run('清理', [
+        step(start(parts), call('deduplicate', dict(path='Inbox', mode='bytes', keep='shortest_name', part='inbox'))),
+        finish()])
+    checks = {c['goal_id']: c['passed'] for c in session.sb.runtime.current['checks']}
+    assert checks == {'inbox': True, 'other': False}  # one receipt proves one part
+    assert not (tmp_path / 'Inbox/copy_of_a.txt').exists() and (tmp_path / 'Other/x_copy.txt').is_file()
+    _, client = session.run('清理', [step(start(parts), call('deduplicate', dict(path='Inbox', mode='bytes', part='nope')))])
+    assert '不存在的部分' in client.calls('deduplicate')[0]['text']
+
+
+def test_two_find_parts_are_proved_by_the_evidence_each_one_claims(tmp_path):
+    holdout_fixture(tmp_path, 'notes_combo')
+    session = Session(tmp_path)
+    parts = [dict(id='photo', kind='find', description='光合作用笔记'), dict(id='other', kind='find', description='其他笔记')]
+    run = lambda finish_call: session.run('找笔记', [step(*read_calls(['note_01.txt', 'note_02.txt'])),
+                                                  step(start(parts)), step(finish_call)])
+    # Without claims the evidence cannot be split between two find parts.
+    run(call('finish_turn', dict(mode='task')))
+    assert not any(c['passed'] for c in session.sb.runtime.current['checks'])
+    result, client = run(call('finish_turn', dict(mode='task', evidence_bindings=[
+        dict(part='photo', refs=['Eaaaaaaaaa00']), dict(part='other', refs=['evidence:Eaaaaaaaaa01'])])))
+    assert errors(client) == [], errors(client)
+    assert all(c['passed'] for c in session.sb.runtime.current['checks'])
+    _, client = run(call('finish_turn', dict(mode='task', evidence_bindings=[dict(part='photo', refs=['Enot-real-id'])])))
+    assert '证据 Enot-real-id 不能用于部分 photo' in client.calls('finish_turn')[0]['text']
 
 
 def test_projection_shows_parts_not_raw_conditions(tmp_path):
