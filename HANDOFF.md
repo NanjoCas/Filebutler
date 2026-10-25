@@ -80,7 +80,7 @@
       - 工具报错非 s5 每轮 0.35（第 44 轮 0.24），主要是 real_classification 模型选了 `view=evidence`，把"名称=doc_02"当路径读了 8 次。不是这次改动引入的。
       - 修复后离线 529 项通过。
     - **第 46 轮修复复验**（`41e28a8`，`policy_live_20261025_46_r{1,2}_{s5,answer}`，¥0.34）：问题写进任务后按按钮回答的情况出现 2 次，都正常完成；"任务仍有待确认问题"拦截 0 次、重复提问 0 次。v3 12/18、v4 13/18；没过的是 explain_after_write 两个（场景预期错）、`ans_do_nothing`（旧判定）和 r2 `s5_skip_b`（模型没给"只移动 a"选项，评测退到"都不动"，评测场景问题）。
-- 2026-10-25 已推送到 `optimize/completion-binding`（含 S5 审计修复和第 42、43 轮）；远端 master 仍停在 `a489b21`，是否合并待用户决定。推送前用 `git status -sb` 确认。
+- 2026-10-25 用户要求合并：`master` 从 `a489b21` 快进到 `6f103e8`（与 `optimize/completion-binding` 相同，无合并提交）；之后用户要求直接在 `master` 上工作。推送前用 `git status -sb` 确认。
 - **2026-10-24 功能方案阶段 0、1 完成**：新增统一抽取层 `agent/extract.py`，read_file、search_content、paper_profiles、敏感规则都从这里取文字；`agent/document_cache.cached` 按内容缓存所有格式，PDF 键不变，旧缓存仍然有效。read_file 新增支持 docx/doc/rtf/odt（macOS textutil）、pptx（python-pptx，每张幻灯片一个单元，含备注、表格、分组）、xlsx（openpyxl，取值而不是公式，每表最多 5000 行）、html（去掉标签）、rst。锁文件、损坏或加密文件、解压后超过 300MB 的文件给出明确错误。本机 160 个文件中 158 个读取成功，失败的 2 个是测试假文件。第 37 轮 office 13/15（答案 15/15 正确）。
 - **2026-10-24 功能方案阶段 2（OCR）完成**（`2ee7b3f`）：没有新增 Python 依赖。`agent/ocr_vision.swift` 调用 macOS Vision 在本机识别，第一次使用时由 swiftc 编译到 `.cache/`；没有 macOS 或编译器时提示"无法识别"。read_file 可以读图片（会按 EXIF 方向转正）和文字少于 20 字的 PDF 页，结果里注明"本地 OCR 识别，可能有错字"，识别结果按页缓存。search_content 每次调用最多花 20 秒识别扫描页，剩下的下次检索继续。本机 70 张图片 0 失败，平均 0.33 秒；19 份 PDF 中有 26 个扫描页，25 页识别出文字，每页约 1 秒；真实论文首页渲染后识别，与文字层的相似度为 0.94。测试图片如果用 Hiragino 字体，英文里的 d 会被认成 a，所以评测改用 Arial Unicode。离线测试 434 passed；第 38 轮 ocr 15/15。
 - **2026-10-24 功能方案阶段 3（全文 BM25）完成**：先冻结检索评测集（`6c29b17`，`eval/retrieval_set_20261024.yaml`，61 题：E12 原题 12、新增主题 18、只在第 3 页以后才有的细节 19、混合格式 12；混合格式资料库由 `eval/retrieval_mixed.py` 生成；真实论文复制到临时目录再测，不往 `data/real` 写缓存），再改 `tools/retrieval.py`：检索所有能读的格式的全文（PDF、文本、Office、网页，图片和扫描页本地 OCR），按 500 字分段计 BM25，文件取最好的一段；非 PDF 的命中只给 offset（对应 read_file 的 offset）。去掉了 `pdf_pages` 参数，提示总字数 31,209→30,956。`python -m eval.retrieval_set --out <新目录>`：Recall@5 全部 52.9%→78.4%（细节 63.2%→89.5%，混合格式 9.1%→90.9%，E12 仍为 81.8%，跨语言 4.2%→8.3%）；整篇打分 76.0%、MRR 0.772，分段 500 字 78.4%、MRR 0.738，两者融合只差 1–2 题，选分段是因为召回最高、查询快约 8 倍（19ms 对 145ms）。代价：第一次建索引变慢，51 篇论文 + 12 个混合文件冷启动 6.3 秒（原来 1.5 秒），换会话读 sqlite 缓存 0.5 秒；资料库很大时第一次检索会很慢，没有设时间上限。题目和标注由同一人写成，不是盲测。
@@ -109,7 +109,7 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 仓库根目录 | `/Users/nanjo/Desktop/projects/DocAgent/filebutler` |
-| 当前分支 | `optimize/completion-binding`（从 `master` 的 `a489b21` 分出），**未合并回 `master`** |
+| 当前分支 | `master`（2026-10-25 由 `optimize/completion-binding` 快进合并；该分支保留，不再使用） |
 | GitHub | https://github.com/NanjoCas/Filebutler；推送前先确认本地是否有未推送的提交（`git status -sb`） |
 | origin fetch / push | `https://github.com/NanjoCas/Filebutler.git` / `git@github.com:NanjoCas/Filebutler.git` |
 
@@ -546,4 +546,4 @@ zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --cases p1_swap 
 
 ## 11. 新对话可直接使用的接手提示
 
-> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `optimize/completion-binding`，只有协议 v3，529 项离线测试通过；功能方案阶段 0–3 和路由改造 S0–S8 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）和第 44 轮回归（32/34）；S6–S8 已实施，浏览器验收 6/6；第 45 轮真实验收 v3 61/72、v4 63/72，发现并修复了已答问题残留和工具结果序列化两处问题，第 46 轮复验修复生效。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
+> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `master`，只有协议 v3，529 项离线测试通过；功能方案阶段 0–3 和路由改造 S0–S8 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）和第 44 轮回归（32/34）；S6–S8 已实施，浏览器验收 6/6；第 45 轮真实验收 v3 61/72、v4 63/72，发现并修复了已答问题残留和工具结果序列化两处问题，第 46 轮复验修复生效。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
