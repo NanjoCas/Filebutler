@@ -46,7 +46,7 @@ CONTROL_SCAN = {'prepare_file_plan', 'inspect_file_plan'}
 POSITIVE_RELATIONS = ('method', 'survey', '方法相关', '综述入口')
 DEFAULT_WARN = dict(requests=15, cost=0.08, active_seconds=40, answer_chars=800)
 JUDGE_VERSION = 'v3+v4.1'
-# Frozen 2026-10-25 (docs/s6-state-dimensions-2026-10-25.md 3). A v3 status accepts a
+# Frozen 2026-10-25 (docs/s6-s8-implementation-2026-10-25.md 3). A v3 status accepts a
 # run in any of these states; "done" no longer requires a read-only answer's
 # semantics to be reviewed (7: it is answered, its answer is checked separately),
 # and a write waiting for the user's confirmation is still not "done".

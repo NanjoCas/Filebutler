@@ -308,9 +308,12 @@ async function sendMessage(choice = null) {
     if (err.status && err.status < 500) savePending(cid, null);
     if (epoch !== viewEpoch) return;
     submitting = false; currentTurn = null; $("send-button").disabled = false;
-    updateActivity({id: "submitting", status: "failed", events: [], error: err.message});
+    // No response at all: the message never reached the server, so nothing ran (browser acceptance 2026-10-25).
+    const message = err.status ? err.message : "网络连接失败，消息没有发出。恢复连接后点发送，会作为同一条消息重发，不会重复执行。";
+    if (err.status) updateActivity({id: "submitting", status: "failed", events: [], error: message});
+    else $("agent-activity")?.remove();
     if (!choice) { input.value = content; autoGrow(); }
-    showError(err.message); setStatus("发送失败", "failed");
+    showError(message); setStatus("发送失败", "failed");
   }
 }
 function showError(text) { $("messages").append(node("div", "run-card error-card", text)); }

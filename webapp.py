@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import io
 import mimetypes
+import os
 import sys
 import threading
 import time
@@ -38,17 +39,20 @@ from web_render import FileCatalog, WEB_PRESENTATION_GUIDANCE, render_markdown  
 from web_confirm import build_confirmation  # noqa: E402
 
 WEB_DIR = ROOT / "web"
-STATE_DIR = ROOT / ".filebutler-ui"
+# FILEBUTLER_HOME: another folder for config.yaml, UI state, logs and a relative sandbox,
+# so a test instance (eval/browser_acceptance.py) never touches the real ones.
+HOME = Path(os.environ.get("FILEBUTLER_HOME") or ROOT).resolve()
+STATE_DIR = HOME / ".filebutler-ui"
 DB_PATH = STATE_DIR / "state.sqlite3"
-LOG_DIR = ROOT / "logs"
+LOG_DIR = HOME / "logs"
 MAX_PREVIEW_CHARS = 1800
 POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="filebutler")
 
 
 def _config() -> dict:
-    path = ROOT / "config.yaml"
+    path = HOME / "config.yaml"
     cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
-    cfg["sandbox"] = str((ROOT / cfg["sandbox"]).resolve())
+    cfg["sandbox"] = str((HOME / cfg["sandbox"]).resolve())
     return cfg
 
 
@@ -576,7 +580,10 @@ def get_conversation(conversation_id: str):
     for message in history:
         if message.get("role") == "system" and message.get("content", "").startswith(UNDO_MARK):
             report = json.loads(message["content"].rsplit("\n", 1)[-1])
-            label = "历史撤销记录（之后可能已有新操作）" if "历史撤销事件补录" in message["content"] else "撤销结果（跳过项未还原）"
+            skipped = sum(line.startswith("跳过") for line in report)
+            # Browser acceptance 2026-10-25: "跳过项未还原" read as if something was skipped when nothing was.
+            label = ("历史撤销记录（之后可能已有新操作）" if "历史撤销事件补录" in message["content"]
+                     else f"撤销结果（{skipped} 项未能还原，见下）" if skipped else "撤销结果（已全部还原）")
             display.append({"role": "event", "content": label + "：\n" + "\n".join(report)})
         elif message.get("role") == "user":
             display.append({"role": "user", "content": message.get("content", "")})
