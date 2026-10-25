@@ -228,7 +228,9 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 outcome = runtime._outcome or registry.ToolResult(status='error', text=result,
                                                                    error_code=registry.error_code(result))
                 outcome.text = result  # Keep repeat warnings added after dispatch.
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": outcome.model_dump_json()})
+                registry.typed(outcome, f"{runtime.run_id}:{tc.id}")
+                runtime.record_result(name, outcome)
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": outcome.for_model()})
                 ok = outcome.status == 'ok'
                 if repair_guard and stop_reason not in {'repair_limit', 'repeated_call'}:
                     task = runtime.current or {}
@@ -259,6 +261,9 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                         "active_ms": round(max(0, tool_elapsed - tool_wait) * 1000), "wait_ms": round(tool_wait * 1000),
                         "repeat_count": repeat_count,
                         "executed": executed,
+                        "result_id": outcome.result_id, "error_code": outcome.error_code,
+                        "error_class": outcome.error_class, "references": outcome.references[:20],
+                        "operation_refs": len(outcome.operation_refs), "progress": outcome.progress,
                     }, ensure_ascii=False) + "\n")
 
             if runtime.final_answer is not None:

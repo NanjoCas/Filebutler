@@ -161,6 +161,14 @@ def build_report(task, model_summary, records, reply=''):
         title = '最终统计' if record['tool']=='inventory_files' else '文件与证据'
         if record['tool']=='inventory_files' and record.get('samples',1)>1: title += f"（同一请求 {record['samples']} 次，展示最后一次）"
         sections.append(dict(title=title, markdown=record['text']))
+    # Search coverage for a find part (S7): the counts in the details, and a known gap in the answer.
+    from agent import coverage
+    finds = any(c.get('kind') == 'evidence_valid' for g in task.get('goals', []) for c in g.get('conditions', []))
+    ledgers = task.get('coverage') or {}
+    gap = ''
+    if finds and ledgers:
+        sections.append(dict(title='检索覆盖', markdown=coverage.table(ledgers)))
+        gap = '\n'.join(filter(None, (coverage.gap_line(coverage.summary(l)) for l in ledgers.values())))
     errors = [o for o in task['observations'] if o['status']!='ok']
     if errors:
         sections.append(dict(title=f'过程提示（{len(errors)} 次失败或拦截）', markdown='\n\n'.join(
@@ -208,6 +216,8 @@ def build_report(task, model_summary, records, reply=''):
         summary += '\n\n' + (reply if len(reply) <= 1500 else reply[:1500] + '…')
     if state in {'partial', 'waiting_input'} and model_summary and not reply and model_summary[:1200] not in summary:
         summary += '\n\n说明：'+_clause(model_summary, 1200)+'。'
+    if gap:
+        summary += '\n\n' + gap
     # Unresolved blockers (control rejections, plan failures and failed writes)
     # are current reasons. A failed write stays visible even when the task is
     # otherwise complete, until the same call or object later succeeds. When the

@@ -294,6 +294,8 @@ class Finishing:
                                                    items=[u.model_dump() for u in args.unfinished],
                                                    not_needed=[u.model_dump() for u in args.not_needed])
         self._record_chosen_scope()
+        if getattr(self, 'coverage', None) and not self.current.get('coverage'):
+            self.current['coverage'] = self.coverage  # searched before the task existed (S7)
         self.current['checks'] = verify_task(self.current, sb)
         state = task_state(self.current)
         self.current['status'] = state

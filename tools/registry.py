@@ -55,10 +55,93 @@ class Tool:
 
 
 class ToolResult(BaseModel):
+    """One tool call's result (routing redesign S6b, 8.2). The model sees only
+    ``for_model()``: status, text, error_code, retryable, as before; the rest stays
+    local (trace, observations) and is produced by tools and executors only."""
     status: Literal['ok', 'error']
     text: str
     error_code: str | None = None
     retryable: bool = False
+    result_id: str | None = None
+    data: dict = {}
+    references: list[dict] = []     # [{kind, id}] objects this call issued, from the artifact store
+    operation_refs: list[str] = []  # journal:<run>:<line> of the writes this call recorded
+    progress: dict | None = None    # {completed, remaining, unknown}: step ids of a partial execution
+    error_class: str | None = None  # one of ERROR_CLASSES
+    recovery: dict | None = None    # {action, target}; never an authorisation to retry by itself
+    display_ref: str | None = None
+
+    def for_model(self):
+        return json.dumps(dict(status=self.status, text=self.text, error_code=self.error_code, retryable=self.retryable),
+                          ensure_ascii=False)
+
+
+# The minimal error classes (8.2). The specific code (AMBIGUOUS_GOAL, TURN_CLOSED, ...)
+# stays in error_code; error_class groups it for recovery and statistics.
+ERROR_CLASSES = ('INVALID_ARGUMENTS', 'AMBIGUOUS_GOAL', 'QUESTION_STALE', 'IDEMPOTENCY_CONFLICT', 'OUT_OF_SCOPE',
+                 'CONSENT_REQUIRED', 'TASK_REVISION_CONFLICT', 'PLAN_STALE', 'LIBRARY_BUSY', 'USER_DECLINED',
+                 'CONFIRMATION_TIMEOUT', 'BUDGET_EXCEEDED', 'EXTRACTION_FAILED', 'PARTIAL_EXECUTION',
+                 'OUTCOME_UNKNOWN', 'INTERNAL_ERROR')
+# (error class, retryable, recovery action) by specific code, then by the wording local
+# checks already use. First match wins; order matters (partial execution before declines).
+_BY_CODE = {
+    'INVALID_ARGUMENTS': ('INVALID_ARGUMENTS', False, 'replan'),
+    'AMBIGUOUS_GOAL': ('AMBIGUOUS_GOAL', False, 'replan'),
+    'UNRESOLVED_QUESTION_SCOPE': ('AMBIGUOUS_GOAL', False, 'replan'),
+    'QUESTION_STALE': ('QUESTION_STALE', False, 'none'), 'QUESTION_ALREADY_ANSWERED': ('QUESTION_STALE', False, 'none'),
+    'IDEMPOTENCY_CONFLICT': ('IDEMPOTENCY_CONFLICT', False, 'none'),
+    'INPUT_RELATION_REQUIRED': ('CONSENT_REQUIRED', False, 'ask'),
+    'TURN_CLOSED': ('INVALID_ARGUMENTS', False, 'none'),
+    'TERMINAL_REQUIRED': ('INVALID_ARGUMENTS', False, 'replan'),
+    'USER_DECLINED': ('USER_DECLINED', False, 'none'),
+    # Not approved without a decline: the card timed out or was interrupted (S1 keeps which, in error_code).
+    'CONFIRMATION_TIMEOUT': ('CONFIRMATION_TIMEOUT', False, 'none'),
+    'CONFIRMATION_INTERRUPTED': ('CONFIRMATION_TIMEOUT', False, 'none'),
+    'RUN_INTERRUPTED': ('OUTCOME_UNKNOWN', False, 'reconcile'),
+    'INVALID_RESULT': ('INTERNAL_ERROR', False, 'none'),
+}
+_BY_TEXT = (
+    (('中途停止', '只执行了一部分', '部分执行', '已回收', '已执行的步骤保留'), ('PARTIAL_EXECUTION', False, 'reconcile')),
+    (('结果不明', '未确认是否完成', '执行中断'), ('OUTCOME_UNKNOWN', False, 'reconcile')),
+    (('用户拒绝', 'USER_DECLINED'), ('USER_DECLINED', False, 'none')),
+    (('超时',), ('CONFIRMATION_TIMEOUT', False, 'none')),  # the user retries explicitly (8.1)
+    (('已有计划正在执行', '资料库正有另一项'), ('LIBRARY_BUSY', True, 'retry')),
+    (('任务版本已改变', '任务已修订', 'revision'), ('TASK_REVISION_CONFLICT', False, 'replan')),
+    (('计划已过期', '文件变化', '已变化', '请重新检索', '请重新查询'), ('PLAN_STALE', False, 'replan')),
+    (('预算', '费用上限'), ('BUDGET_EXCEEDED', False, 'none')),
+    (('超出', '越权', '不在允许', '读取范围', '写入范围', '不能引用隐藏', '回收区', '符号链接'), ('OUT_OF_SCOPE', False, 'replan')),
+    (('必须由用户选择', '需用户授权', '用户授权', '不会覆盖', '先问', '先 finish_turn(mode=ask)'), ('CONSENT_REQUIRED', False, 'ask')),
+    (('无法读取', '读取失败', '已加密', '损坏', '无法识别', '不是有效的'), ('EXTRACTION_FAILED', False, 'none')),
+)
+
+
+def classify(code, text):
+    """(error_class, retryable, recovery) of a failed call, from its code and wording."""
+    body = (text or '').removeprefix('ERROR: ')
+    if code in _BY_CODE and code not in {'TOOL_ERROR', 'CONTROL_REJECTED'}:
+        return _BY_CODE[code]
+    head = body.split(':', 1)[0].split('：', 1)[0]
+    if head.endswith(('Error', 'Exception')) and head.isidentifier():
+        return ('INTERNAL_ERROR', False, 'retry')  # an unexpected exception, by its class name
+    for words, typed in _BY_TEXT:
+        if any(w in body for w in words):
+            return typed
+    if code in _BY_CODE:
+        return _BY_CODE[code]
+    return ('INVALID_ARGUMENTS', False, 'replan')  # a request the tool refused as stated
+
+
+def typed(outcome, result_id=None):
+    """Fill the local fields a result needs before it is recorded: an ID, and for an
+    error its class, retryability and recovery. Existing values are kept."""
+    if result_id and not outcome.result_id:
+        outcome.result_id = result_id
+    if outcome.status == 'error' and not outcome.error_class:
+        cls, retry, action = classify(outcome.error_code, outcome.text)
+        outcome.error_class = cls
+        outcome.retryable = outcome.retryable or retry
+        outcome.recovery = outcome.recovery or dict(action=action, target=None)
+    return outcome
 
 
 def _failure(text, code='TOOL_ERROR'):
@@ -101,7 +184,32 @@ def dispatch(name: str, raw_args: str, sandbox: Sandbox,
     return dispatch_result(name, raw_args, sandbox, oplog, confirmer).text
 
 
+REFERENCE_KINDS = ('evidence', 'receipts', 'classification_plans', 'catalogs')
+
+
+def _issued_ids(artifacts):
+    return {k: set(artifacts.data.get(k, {})) for k in REFERENCE_KINDS} if artifacts else {}
+
+
 def dispatch_result(name, raw_args, sandbox, oplog=None, confirmer=None):
+    """Like ``_dispatch``, and the result names the objects this call issued (S6b, 8.2):
+    references come from the artifact store at the producing call, not from a later
+    guess over everything that changed."""
+    artifacts = getattr(sandbox, 'artifacts', None)
+    before = _issued_ids(artifacts)
+    lines = len(oplog.path.read_text().splitlines()) if oplog and oplog.path.exists() else 0
+    result = _dispatch(name, raw_args, sandbox, oplog, confirmer)
+    if artifacts:
+        after = _issued_ids(artifacts)
+        result.references = result.references or [dict(kind=k, id=i) for k in REFERENCE_KINDS
+                                                   for i in sorted(after[k] - before[k])]
+    if oplog and oplog.path.exists():
+        count = len(oplog.path.read_text().splitlines())
+        result.operation_refs = result.operation_refs or [f'journal:{oplog.path.stem}:{n}' for n in range(lines, count)]
+    return result
+
+
+def _dispatch(name, raw_args, sandbox, oplog=None, confirmer=None):
     """JSON 解析 → pydantic 校验 → 执行（工具内做沙盒路径检查；批量写入由本地确认、执行、记日志）→ 截断。
     任何错误都转成一句 ERROR 文本返回给模型，不让程序崩溃。"""
     t = TOOLS.get(name)
@@ -204,7 +312,12 @@ def _trash_batch_locked(plan: TrashBatch, sandbox: Sandbox, oplog: OpLog | None,
         if artifacts:
             artifacts.receipt(groups=reference_groups, moved=moved, keeps=plan.keeps,
                               verified=False, error=message, scan=plan.scan)
-        return 'ERROR: ' + message
+        # What ran stays done and journalled (undoable); what did not is named, never re-run blindly.
+        done = [src for src, _ in moved]
+        return ToolResult(status='error', text='ERROR: ' + message, error_code='PARTIAL_EXECUTION' if done else 'TOOL_ERROR',
+                          error_class='PARTIAL_EXECUTION' if done else None,
+                          recovery=dict(action='reconcile', target=None) if done else None,
+                          progress=dict(completed=done, remaining=[p for p in plan.paths if p not in done], unknown=[]))
     for path in plan.paths:
         try:
             _, ops = trash(TrashArgs(path=path), sandbox)

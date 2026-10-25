@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from safety.sandbox import Sandbox
 from tools.fs_read import _existing, _paginate
-from tools.registry import ToolError, tool
+from tools.registry import ToolError, ToolResult, tool
 from tools.scopes import paths
 
 OCR_SECONDS = 20  # OCR time per search; scanned pages left over are recognised by the next one
@@ -98,7 +98,9 @@ class PaperIndex:
         readable = READABLE_EXTS if self.formats == "all" else {".pdf"}
         papers, live = {}, set()
         stats = dict(files=0, indexed=0, failed=0, empty=0, unsupported=0, symlinks=0, extracted=0)
-        for directory, dirs, files in os.walk(base, followlinks=False):
+        # Per-file state for the coverage summary (S7, 9): rel -> (version, state, pending, ocr_failed).
+        self.states, walk_errors = {}, []
+        for directory, dirs, files in os.walk(base, followlinks=False, onerror=walk_errors.append):
             parent = Path(directory)
             stats["symlinks"] += sum((parent / d).is_symlink() for d in dirs if not d.startswith("."))
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and not (parent / d).is_symlink())
@@ -111,6 +113,7 @@ class PaperIndex:
                     continue
                 if p.suffix.lower() not in readable:
                     stats["unsupported"] += 1
+                    self.states[sb.rel(p)] = (None, "unsupported", 0, 0)
                     continue
                 p = sb.path(sb.rel(p))  # 抽取前再次走沙盒检查
                 stats["files"] += 1
@@ -120,7 +123,7 @@ class PaperIndex:
                 cached = self.cache.get(p)
                 if not cached or cached[0] != signature:
                     stats["extracted"] += 1
-                    skipped = ocr.stats(sb)["skipped"]
+                    before = dict(ocr.stats(sb))
                     try:
                         pages = units(sb, p, pages=self.pdf_pages)
                         terms = Counter(tokenize("\n".join(pages)))
@@ -129,9 +132,13 @@ class PaperIndex:
                     except Exception as e:
                         paper = Paper([], Counter(), 0, type(e).__name__)
                     # Scanned pages and images left for lack of time are recognised by a later search.
-                    complete = ocr.stats(sb)["skipped"] == skipped
-                    self.cache[p] = (signature if complete else None, paper)
+                    after = ocr.stats(sb)
+                    pending, ocr_failed = after["skipped"] - before["skipped"], after["failed"] - before["failed"]
+                    self.cache[p] = (signature if not pending else None, paper, pending, ocr_failed)
                 paper = self.cache[p][1]
+                pending, ocr_failed = (self.cache[p][2], self.cache[p][3]) if len(self.cache[p]) > 2 else (0, 0)
+                state = "failed" if paper.error else "pending_ocr" if pending else "empty" if not paper.length else "indexed"
+                self.states[sb.rel(p)] = ((st.st_size, st.st_mtime_ns), state, pending, ocr_failed)
                 if paper.error:
                     stats["failed"] += 1
                 elif not paper.length:
@@ -141,6 +148,7 @@ class PaperIndex:
                     stats["indexed"] += 1
         # 子目录查询后可丢弃其他目录缓存，避免把过期路径/已删除内容保留在索引里。
         self.cache = {p: v for p, v in self.cache.items() if p in live}
+        stats["enumeration_complete"] = not walk_errors
         return papers, stats
 
     def search(self, sb: Sandbox, query: str, path: str = ".", top_k: int = 5, match: str = "any"):
@@ -181,6 +189,45 @@ class PaperIndex:
         return hits[:top_k], stats
 
 
+INDEX_REVISION = f"bm25-chunk{CHUNK}-extract1"
+STRATEGY = "bm25"
+
+
+def coverage(index, scope, stats, hits, top_k, query):
+    """What one search covered (S7, 9): counted from each file's index state, not from
+    this call's OCR delta, so pages left by an earlier search still count as pending.
+    ``extract_complete`` is about extraction, never about having found everything."""
+    import hashlib
+    states = index.states
+    snapshot = hashlib.sha256(json.dumps(sorted((rel, s[0]) for rel, s in states.items()), default=list)
+                              .encode()).hexdigest()[:12]
+    count = Counter(s[1] for s in states.values())
+    pending = sum(s[2] for s in states.values())
+    ocr_failed = sum(s[3] for s in states.values())
+    scan = hashlib.sha256(f"{scope}|{snapshot}|{INDEX_REVISION}".encode()).hexdigest()[:10]
+    return dict(scan_id="S" + scan, scope=scope, snapshot_id=snapshot, index_revision=INDEX_REVISION,
+                enumeration_complete=stats.get("enumeration_complete", True),
+                indexed_files=count["indexed"], failed_files=count["failed"], empty_files=count["empty"],
+                unsupported_files=count["unsupported"], pending_ocr_units=pending, ocr_failed_units=ocr_failed,
+                extract_complete=not (count["failed"] or count["pending_ocr"] or ocr_failed),
+                matched_files=stats.get("matched", 0), returned_files=len(hits),
+                candidate_truncated=stats.get("matched", 0) > len(hits),
+                query_terms=sorted(set(tokenize(query)))[:20], strategy=STRATEGY,
+                files={rel: dict(version=list(s[0]) if s[0] else None, state=s[1]) for rel, s in states.items()},
+                candidates=[h["path"] for h in hits])
+
+
+def coverage_line(c):
+    """One line for the model and the report: what is not covered, in facts."""
+    gaps = []
+    if not c["enumeration_complete"]: gaps.append("有文件夹无法列出")
+    if c["pending_ocr_units"]: gaps.append(f"{c['pending_ocr_units']} 个扫描页或图片尚未识别（再次检索会继续）")
+    if c["ocr_failed_units"]: gaps.append(f"{c['ocr_failed_units']} 个扫描页或图片识别失败")
+    if c["failed_files"]: gaps.append(f"{c['failed_files']} 个文件读取失败")
+    if c["candidate_truncated"]: gaps.append(f"有词项重合 {c['matched_files']} 个、只返回 {c['returned_files']} 个")
+    return ("覆盖缺口：" + "；".join(gaps) + "。不能据此说范围内没有其他相关文件") if gaps else ""
+
+
 def best_snippet(pages, query_terms, idf, unit=None, start=0, end=None):
     """Best 240-character window (step 120) in one unit's [start, end), or in every unit."""
     # 在原文窗口上评分，偏移可直接交给 read_file；不在规范化后的字符串上计算偏移。
@@ -219,14 +266,24 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
     if not hasattr(sb, "_paper_index"):
         sb._paper_index = PaperIndex()
     hits, stats = sb._paper_index.search(sb, a.query, a.path, a.top_k, a.match)
+    covered = coverage(sb._paper_index, sb.rel(_existing(sb, a.path)) or '.', stats, hits, a.top_k, a.query)
     header = (f"OK: BM25 全文检索\n"
               f"覆盖：文件={stats['files']}，已索引={stats['indexed']}，读取失败={stats['failed']}，没有文字={stats['empty']}；"
               f"不支持的格式={stats['unsupported']}（压缩包等），跳过符号链接={stats['symlinks']}\n"
               f"有词项重合 {stats.get('matched', 0)} 个文件，候选 {len(hits)} 个；低分不证明主题不相关，不能保证找全。")
-    if any(stats.get(k) for k in ('ocr_pages', 'ocr_images', 'ocr_skipped', 'ocr_failed')):
+    pending, failed = covered['pending_ocr_units'], covered['ocr_failed_units']
+    if stats.get('ocr_pages') or stats.get('ocr_images') or pending or failed:
+        # Pending and failed pages are counted from the files' index state, so pages an
+        # earlier search left still show here (9: not from this call's delta alone).
         header += (f"\n本地 OCR：{stats['ocr_pages']} 个扫描页、{stats['ocr_images']} 张图片已识别"
-                   + (f"，{stats['ocr_skipped']} 个因时间上限未识别（再次检索会继续）" if stats['ocr_skipped'] else '')
-                   + (f"，{stats['ocr_failed']} 个识别失败" if stats['ocr_failed'] else ''))
+                   + (f"，{pending} 个因时间上限未识别（再次检索会继续）" if pending else '')
+                   + (f"，{failed} 个识别失败" if failed else ''))
+    gap = coverage_line(dict(covered, pending_ocr_units=0, ocr_failed_units=0))
+    if gap: header += "\n" + gap
+    return ToolResult(status='ok', text=_content_results(a, sb, hits, header), data=dict(coverage=covered))
+
+
+def _content_results(a, sb, hits, header):
     where = lambda h: (f"page={h['page']} " if h['page'] else '') + f"offset={h['offset']}"
     artifacts = getattr(sb, 'artifacts', None)
     from agent.sensitive import enabled, reasons, granted

@@ -2,7 +2,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from tools.registry import ToolError, tool
+from tools.registry import ToolError, ToolResult, tool
 from tools.scopes import finding_paths
 from agent.artifacts import label
 
@@ -88,5 +88,7 @@ def report_findings(a, sb):
         lines=['当前证据不足以确认相关论文。未命中或低分不能证明不相关。']
     if a.note: lines+=['',label(a.note)]
     lines+=['','证据范围：'+'；'.join(sorted(scopes))+'。判断只依据所引片段，不代表已查遍全部文件。']
-    runtime.final_answer='\n'.join(lines)
-    return 'OK: 已校验证据并生成结果表格。'
+    # The table travels in the result (S6b); the controller shows it, the tool never ends the turn.
+    # references name what a call issued; the evidence it cites was issued by earlier reads.
+    cited=[eid for finding in a.findings for eid in finding.evidence_ids]
+    return ToolResult(status='ok', text='OK: 已校验证据并生成结果表格。', data=dict(display='\n'.join(lines), cited=cited))

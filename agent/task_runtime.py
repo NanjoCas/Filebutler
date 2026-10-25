@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 from agent.asking import Asking, AskUser
@@ -86,6 +87,10 @@ class TaskRuntime(Asking, Finishing):
         self._epochs = {}  # request id -> cancel epoch this run started under
         self._attributions = None
         self._pretask = []  # read-only facts observed before any task existed in this run
+        self.results = {}  # result_id -> typed result summary (S6b), recorded once
+        self.reference_shadow = []  # calls whose issued references differ from the old diff
+        self.coverage = None  # search coverage ledger before a task holds it (S7)
+        self._last_observation = None
         self.pending_choice = None
         self.answered_choice = self._answered_choice(instruction)
         self._resume_asked_task()
@@ -606,6 +611,8 @@ class TaskRuntime(Asking, Finishing):
                 except ValueError: pass  # A stale task cannot overwrite the newer version.
             outcome = registry.ToolResult(status='error', text='ERROR: ' + str(exc),
                                            error_code=registry.error_code(str(exc)))
+            if name == 'execute_file_plan':
+                self._plan_progress(raw, outcome)
         if outcome.status == 'ok' and name in self.control_names and self.current:
             self._resolve_blockers(name, raw)
             try: self.store.checkpoint(self.current)
@@ -628,15 +635,27 @@ class TaskRuntime(Asking, Finishing):
     def after(self, name, result, sb):
         if self.finished:
             return
-        # Legacy report tools may set final_answer. They finish a sub-step only.
+        self._last_observation = None
+        typed = self._outcome if name in registry.TOOLS else None
+        # A tool's table for the user comes in its result (S6b); a legacy tool that still
+        # sets final_answer finishes a sub-step only.
+        if typed is not None and typed.status == 'ok' and typed.data.get('display'):
+            self.capture_output(name, typed.data['display'])
         if name not in self.control_names and self.final_answer:
             self.capture_output(name, self.final_answer)
             self.final_answer = None
         if name in self.control_names:
             return
         refs = []
+        # The objects the call issued, as its result names them; the old diff over the
+        # artifact store runs beside it and any difference is recorded (8.2 shadow check).
+        issued = {(r['kind'], r['id']) for r in typed.references} if typed is not None else None
+        guessed = {(k, i) for k, before in self._before_refs.items() for i in set(sb.artifacts.data[k]) - before}
+        if issued is not None and issued != {g for g in guessed if g[0] in registry.REFERENCE_KINDS}:
+            self.reference_shadow.append(dict(tool=name, issued=sorted(issued), guessed=sorted(guessed)))
         for collection, before in self._before_refs.items():
-            ids = set(sb.artifacts.data[collection]) - before
+            ids = ({i for k, i in issued if k == collection} if issued is not None
+                   else set(sb.artifacts.data[collection]) - before)
             tool = registry.TOOLS.get(name)
             for field, target in tool.reference_inputs if tool else ():
                 if target == collection and self._args.get(field) in sb.artifacts.data[collection]:
@@ -660,6 +679,7 @@ class TaskRuntime(Asking, Finishing):
                                                 status=outcome.status, error_code=outcome.error_code,
                                                 summary=result.splitlines()[0][:300] if result else '',
                                                 references=refs, goal_ids=active_goals(self), run_id=self.run_id))
+        self._last_observation = self.current['observations'][-1]
         if tool and tool.writes:
             if outcome.status == 'ok':
                 self._resolve_blockers(name, json.dumps(self._args))
@@ -673,6 +693,65 @@ class TaskRuntime(Asking, Finishing):
         self.current['output_records'] = self.output_records
         self.current['operations'] = self.operations
         self.store.checkpoint(self.current)
+
+    def _plan_progress(self, raw, outcome):
+        """A stopped plan's steps: done (journalled, kept, undoable), still owed, and in flight
+        (outcome unknown: settled by the next execute's recovery, never replayed blindly)."""
+        try: plan = self.store.file_plan(ExecuteFilePlan.model_validate_json(raw).plan_id)
+        except ValueError: return
+        steps = [s['id'] for s in plan['payload']['steps']]
+        done = [s for s in steps if s in plan['progress']]
+        unknown = [plan['inflight']] if plan.get('inflight') else []
+        outcome.progress = dict(completed=done, remaining=[s for s in steps if s not in done and s not in unknown],
+                                unknown=unknown)
+        if unknown:
+            outcome.error_class, outcome.recovery = 'OUTCOME_UNKNOWN', dict(action='reconcile', target=plan['id'])
+        elif done:
+            outcome.error_class, outcome.recovery = 'PARTIAL_EXECUTION', dict(action='reconcile', target=plan['id'])
+
+    def _cover(self, name, outcome):
+        """The coverage ledger (S7, 9.1): per scope, which files a search enumerated and
+        which of them were reviewed (read, or cited), excluded (with why) or not reviewed.
+        A changed library makes a new snapshot; unchanged files keep their review, marked
+        inherited, and new or changed ones start unreviewed. Local facts only."""
+        from agent.coverage import record_scan, record_review
+        ledger = (self.current or {}).get('coverage') or self.coverage
+        if name == 'search_content' and outcome.data.get('coverage'):
+            ledger = record_scan(ledger, outcome.data['coverage'], self.current.get('request_id') if self.current
+                                 else self.cfg.get('request_id'))
+        elif name == 'read_file' and self._args.get('path'):
+            ledger = record_review(ledger, self.sb, [self._args['path']], '读过正文')
+        elif name == 'report_findings' and outcome.data.get('cited'):
+            files = self.sb.artifacts.data['files']
+            evidence = self.sb.artifacts.data['evidence']
+            paths = [files[evidence[e]['file_id']]['path'] for e in outcome.data['cited']
+                     if e in evidence and evidence[e]['file_id'] in files]
+            ledger = record_review(ledger, self.sb, paths, '引用片段')
+        else:
+            return
+        self.coverage = ledger
+        if self.current is not None and ledger:
+            self.current['coverage'] = ledger
+
+    def record_result(self, name, outcome):
+        """The typed result of one call, recorded once by its result_id (S6b): the
+        observation this call made gets its ID, error class and recovery, and the run
+        keeps a bounded ledger for the trace and reports."""
+        if not outcome.result_id or outcome.result_id in self.results:
+            return
+        row = dict(tool=name, status=outcome.status, error_code=outcome.error_code, error_class=outcome.error_class,
+                   recovery=(outcome.recovery or {}).get('action'), references=outcome.references[:20],
+                   operations=len(outcome.operation_refs), progress=outcome.progress)
+        self.results[outcome.result_id] = row
+        if outcome.status == 'ok':
+            self._cover(name, outcome)
+        obs = getattr(self, '_last_observation', None)
+        if obs is not None and self.current and obs.get('run_id') == self.run_id and 'result_id' not in obs:
+            obs.update(result_id=outcome.result_id, error_class=outcome.error_class, recovery=row['recovery'],
+                       **({'progress': outcome.progress} if outcome.progress else {}))
+            try: self.store.checkpoint(self.current)
+            except ValueError: pass  # a stale task cannot overwrite the newer version
+        self._last_observation = None
 
     def _consumers(self, collection):
         """Bind a new object to the step goals whose conditions verify that collection."""
@@ -690,4 +769,6 @@ class TaskRuntime(Asking, Finishing):
                     task_status=self.current['status'] if self.current else 'not_registered',
                     document_cache=getattr(self.sb, '_document_cache_stats', {}),
                     usage=self.current.get('usage', {}) if self.current else {},
+                    error_classes=dict(Counter(r['error_class'] for r in self.results.values() if r['error_class'])),
+                    reference_shadow_mismatches=len(self.reference_shadow),
                     checks=self.current.get('checks', []) if self.current else [])
