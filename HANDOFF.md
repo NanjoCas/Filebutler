@@ -55,6 +55,17 @@
         - 旧版 `s5_explain_after_write` 仍然先提问，原因同上。
         - `s5_explain_after_write_v2` 两次都是 needs_review。模型移动 a 之后重新看了 Inbox，回答"还剩 2 个"，文件和回答检查都通过。按设计，任务里的 answer 部分一律需要人工判断（`agent/intent.py:25`），预期写成 done 是写错了。冻结预期不改。
       - **用户决定**（10-25）：先保持现状，回答类部分本地无法核验，仍然标出来让用户看；是否允许用 evidence_bindings 绑定本轮工具结果判 done，放到 S6 再议。
+    - **第 44 轮回归**（`53137ce`，`policy_live_20261025_44_r{1,2}_A_{regression,answer,parts,ocr}`，¥0.60；做法和第 41 轮相同，可以直接对比）：
+      - **通过率**：32/34（第 41 轮 31/34）。regression 16/16（15/16）、ocr 10/10、parts 4/4、answer 2/4。
+      - **工具报错**：7 次（第 41 轮 5 次），disposition 类 0 次（第 41 轮 2 次），都是零散错误，模型下一步就改对了：部分 ID 写错 3 次（`organize`、`organize-1`、`p2`），非法 JSON 1 次，不存在的页 1 次，把文件当文件夹 1 次，同名冲突被拦后转为提问 1 次。
+      - **严格结束**：TERMINAL_REQUIRED 0 次。
+      - **费用**：¥0.60（第 41 轮 ¥0.67）。
+      - **`ans_do_nothing` 失败（r2）**：已知问题。模型没登记任务、直接回答，业务结果是 by_choice，文件也没动，但旧判定要求 done，所以失败。旧判定不改。
+      - **`ans_skip_b` 失败（r1），是评测选错了选项**：
+        - 模型给了"只移动 a.txt"（C）。另一个选项 A 把 b 写成 `rename Inbox/b.txt → Archive/b (1).txt`。
+        - 第一条匹配规则只排除 `move b`，所以 A、C 都命中，第一条规则判为有歧义；于是退到第二条规则，选了 D"都不动"。
+        - 系统按 D 正确处理（by_choice，没有改动），但场景要求 a 被移走，所以文件检查失败。
+        - 冻结场景不改。新版评测的 `eval/live_policy.py` `_declares` 应把 move 和 rename 当成同一种写入（`lacks` 里写 move 时也排除 rename），并把这次计为评测错误。
     - 仍未做：S6（流程/结果/核验状态拆分、结构化工具结果与恢复）、S7（检索覆盖账本）、S8（浏览器验收与联调）。**还没有浏览器验收**：真实模型复验见第 40–43 轮；停止按钮和网页显示还没在浏览器里测；提示余量只剩 159–263 字。
 - 2026-10-25 已推送到 `optimize/completion-binding`（含 S5 审计修复和第 42、43 轮）；远端 master 仍停在 `a489b21`，是否合并待用户决定。推送前用 `git status -sb` 确认。
 - **2026-10-24 功能方案阶段 0、1 完成**：新增统一抽取层 `agent/extract.py`，read_file、search_content、paper_profiles、敏感规则都从这里取文字；`agent/document_cache.cached` 按内容缓存所有格式，PDF 键不变，旧缓存仍然有效。read_file 新增支持 docx/doc/rtf/odt（macOS textutil）、pptx（python-pptx，每张幻灯片一个单元，含备注、表格、分组）、xlsx（openpyxl，取值而不是公式，每表最多 5000 行）、html（去掉标签）、rst。锁文件、损坏或加密文件、解压后超过 300MB 的文件给出明确错误。本机 160 个文件中 158 个读取成功，失败的 2 个是测试假文件。第 37 轮 office 13/15（答案 15/15 正确）。
@@ -69,7 +80,7 @@
 - **第 20 轮：两套盲测各 3 次 + v2 对照**：v3 47/48 = 97.9%（95% 区间 89.1%–99.6%），v2 35/48 = 72.9%（59.0%–83.4%）；费用 ¥0.575 对 ¥0.978。其余功能验收每组多数只跑过 1 次，逐轮见第 7 节。
 - 用户 2026-10-22 决定：**单个计划超过 500 项不做自动分批**。
 - 下一步候选（2026-10-25）：
-  - 第 43 轮修复后还没跑 regression、answer、parts、ocr 回归；费用另行授权。
+  - 评测选项匹配：move 和 rename 不分，会让规则命中多个选项、退到兜底规则（第 44 轮 `ans_skip_b`）。改动要放进新版判定或新场景，不改冻结场景。
   - 浏览器验收：选择按钮、停止按钮、断网重试、刷新，以及"已按你的选择处理"的显示。
   - S6：流程、结果、核验三种状态拆分，判定器版本化（新旧两套口径同时报告）；`no_answer` 这类"查过、没找到"怎样表达，以及任务里的 answer 部分能否凭本轮工具结果判 done（第 43 轮 v2），都放进这一步。
   - `unfinished` 字段说明被压缩后，可能是 `no_answer` 失败的原因之一，可以恢复原来的完整说明（约 40 字）。
@@ -519,4 +530,4 @@ zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --cases p1_swap 
 
 ## 11. 新对话可直接使用的接手提示
 
-> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `optimize/completion-binding`，只有协议 v3，488 项离线测试通过；功能方案阶段 0–3 和路由改造 S0–S5 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
+> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `optimize/completion-binding`，只有协议 v3，488 项离线测试通过；功能方案阶段 0–3 和路由改造 S0–S5 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）和第 44 轮回归（32/34）。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
