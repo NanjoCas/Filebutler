@@ -81,6 +81,7 @@ def save_outcome(runtime, reason, final, cfg, llm, *, error=None):
     data=dict(run_id=runtime.run_id,stop_reason=reason,summary=final,cost=llm.cost,tokens=llm.total_tokens,
               task_id=runtime.current['id'] if runtime.current else None,error_type=type(error).__name__ if error else None,
               purpose='inspection' if runtime.inspected_run and not runtime.current and not runtime.operations else 'action',
-              pending_choice=getattr(runtime,'pending_choice',None))
+              pending_choice=getattr(runtime,'pending_choice',None),
+              states=(getattr(runtime,'report',None) or {}).get('states'))
     runtime.store.save_outcome(data)
     return data

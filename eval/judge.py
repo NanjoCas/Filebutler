@@ -16,7 +16,14 @@ Each turn is judged on five dimensions:
 - efficiency   requests, tokens, cost, seconds, answer length: observation only,
                optional threshold warnings; never part of acceptance.
 
-``accepted`` is true only when every required dimension passes. Inputs are the
+``accepted`` is true only when every required dimension passes.
+
+Judgement v4 (routing redesign S6a, 7) is reported beside it, never instead:
+``status_v4`` reads flow/result/verification/next_action (``report.states``, or
+the same reducer, agent/states.py, applied to a saved turn) against expectations
+derived from the frozen v3 status list by ``V4_FROM_V3``, frozen 2026-10-25
+before any result was re-judged. ``accepted_v4`` = files, answer and constraints
+as in v3, plus ``status_v4``. Exit codes still follow v3. Inputs are the
 dicts the runner saves (``report.json`` turns, ``turn_N.trace.jsonl``), so the same
 code judges a fresh run and re-judges frozen historical results.
 """
@@ -38,6 +45,26 @@ CONTROL_WRITE = {'execute_file_plan', 'apply_task_edit'}
 CONTROL_SCAN = {'prepare_file_plan', 'inspect_file_plan'}
 POSITIVE_RELATIONS = ('method', 'survey', '方法相关', '综述入口')
 DEFAULT_WARN = dict(requests=15, cost=0.08, active_seconds=40, answer_chars=800)
+JUDGE_VERSION = 'v3+v4.1'
+# Frozen 2026-10-25 (docs/s6-state-dimensions-2026-10-25.md 3). A v3 status accepts a
+# run in any of these states; "done" no longer requires a read-only answer's
+# semantics to be reviewed (7: it is answered, its answer is checked separately),
+# and a write waiting for the user's confirmation is still not "done".
+V4_FROM_V3 = {
+    # v3 "done" is a finished task (or an explanation of an earlier run); a reply without a
+    # task is "answered", so here a bare answer needs a registered part, as before.
+    'done': [dict(flow={'ended'}, result={'fulfilled'}, mechanical={'passed', 'not_applicable'}, next_action={'none'}),
+             dict(flow={'ended'}, result={'answered'}, registered={True}, mechanical={'passed', 'not_applicable'},
+                  next_action={'none'}),
+             dict(flow={'ended'}, old_state={'explained'})],
+    'answered': [dict(flow={'ended'}, result={'answered'}, mechanical={'not_applicable', 'passed'}, next_action={'none'}),
+                 dict(flow={'ended'}, result={'fulfilled'}, business={'by_choice'}, next_action={'none'})],
+    'needs_review': [dict(flow={'ended'}, result={'fulfilled', 'answered'}, mechanical={'passed', 'not_applicable'},
+                          semantic={'unreviewed'})],
+    'waiting_input': [dict(flow={'waiting_input'}, next_action={'answer_question'})],
+    'partial': [dict(flow={'ended', 'interrupted'}, result={'partial'})],
+    'cancelled': [dict(flow={'cancelled'})],
+}
 
 
 def _registry():
@@ -101,6 +128,35 @@ def normalize_status(turn):
     business = (turn.get('report') or {}).get('result') or {'done': 'fulfilled'}.get(status, status)
     return dict(status=status, klass=STATUS_CLASS[status], stop_reason=stop, task_status=task_status,
                 unmet_goals=unmet, review_goals=review, business=business)
+
+
+def turn_states(turn):
+    """The run's dimensions: saved with it, or projected now by the same reducer."""
+    states = (turn.get('report') or {}).get('states')
+    if states: return states, 'saved'
+    from agent.states import project
+    plans = [p for p in turn.get('plans') or [] if isinstance(p, dict)]
+    return project(turn.get('stop_reason'), turn.get('report') or {}, turn.get('task') or None,
+                   plans=plans, error_type=turn.get('error_type')), 'projected'
+
+
+def _matches(states, rule):
+    values = dict(flow=states['flow_state'], result=states['result_state'],
+                  mechanical=states['verification']['mechanical'], semantic=states['verification']['semantic'],
+                  next_action=states['next_action'], business=states.get('business'),
+                  registered=states.get('registered'), old_state=states.get('old_state'))
+    return all(values[k] in allowed for k, allowed in rule.items())
+
+
+def judge_status_v4(turn, expect):
+    states, source = turn_states(turn)
+    rules = [r for status in (expect.get('status') or ['done']) for r in V4_FROM_V3.get(status, [])]
+    checks = dict(states_in_expected=any(_matches(states, r) for r in rules))
+    if 'business' in expect:
+        business = states.get('business') or {'fulfilled': 'fulfilled', 'answered': 'answered'}.get(states['result_state'])
+        if states['flow_state'] == 'cancelled': business = states.get('business') or 'cancelled'
+        checks['business_in_expected'] = business in expect['business']
+    return checks, dict(states={k: v for k, v in states.items() if k != 'parts'}, source=source)
 
 
 def turn_operations(turn, run_id):
@@ -307,6 +363,10 @@ def judge_turn(turn, expect, *, calls, history_calls, run_id, changes=None, requ
                 constraints=_dim(constraint_checks, 'constraints' in req, **constraint_info),
                 efficiency=judge_efficiency(turn, expect.get('efficiency_warn')))
     accepted = all(d['passed'] for d in dims.values() if d['required'])
+    v4_checks, v4_info = judge_status_v4(turn, expect)
+    dims['status_v4'] = _dim(v4_checks, False, **v4_info)  # reported beside v3, not part of `accepted`
+    accepted_v4 = all(d['passed'] for k, d in dims.items() if d['required'] and k != 'status') \
+        and (dims['status_v4']['passed'] or 'status' not in req)
     files_ok, cons_ok = dims['files']['passed'], dims['constraints']['passed']
     diagnostics = dict(
         # correct files but reported unfinished: the "false partial" class
@@ -314,7 +374,7 @@ def judge_turn(turn, expect, *, calls, history_calls, run_id, changes=None, requ
         review_pending=norm['klass'] == 'review',
         recovered_blockers_shown=len(answer_info['recovered_blockers_shown']),
         open_blockers=len([b for b in blockers if b['status'] == 'open']))
-    return dict(accepted=accepted, status=norm['status'], dimensions=dims, diagnostics=diagnostics)
+    return dict(accepted=accepted, accepted_v4=accepted_v4, status=norm['status'], dimensions=dims, diagnostics=diagnostics)
 
 
 def judge_case(spec, row, traces):
@@ -345,9 +405,14 @@ def judge_case(spec, row, traces):
     if row.get('error_type'): case_checks['no_exception'] = False
     case_files = _dim(case_checks)
     accepted = bool(turns) and all(t['accepted'] for t in turns) and case_files['passed']
+    accepted_v4 = bool(turns) and all(t['accepted_v4'] for t in turns) and case_files['passed']
     failed_dims = sorted({f"turn_{t['turn']}:{name}" for t in turns for name, d in t['dimensions'].items()
                           if d['required'] and not d['passed']} | ({'case:files'} if not case_files['passed'] else set()))
+    failed_v4 = sorted({f"turn_{t['turn']}:{name}" for t in turns for name, d in t['dimensions'].items()
+                        if (d['required'] or name == 'status_v4') and name != 'status' and not d['passed']}
+                       | ({'case:files'} if not case_files['passed'] else set()))
     return dict(id=row['id'], tags=spec.get('tags', []), overall_accepted=accepted, failed_dimensions=failed_dims,
+                accepted_v4=accepted_v4, failed_dimensions_v4=failed_v4,
                 case_files=case_files, turns=turns, passed_local=row.get('passed_local'),
                 false_incomplete_turns=[t['turn'] for t in turns if t['diagnostics']['false_incomplete']],
                 recovered_blocker_turns=[t['turn'] for t in turns if t['diagnostics']['recovered_blockers_shown']])
@@ -373,8 +438,9 @@ def judge_suite(specs, report, traces_for):
                       warnings=[f"{c['id']}#{t['turn']}: {w}" for c in cases for t in c['turns']
                                 for w in t['dimensions']['efficiency']['warnings']])
     dim_pass = {name: sum(t['dimensions'][name]['passed'] for t in turns) for name in REQUIRED}
-    return dict(overall_accepted=accepted, integrity=integrity,
+    return dict(judge_version=JUDGE_VERSION, overall_accepted=accepted, integrity=integrity,
                 cases_accepted=sum(c['overall_accepted'] for c in cases), cases_total=len(cases),
+                cases_accepted_v4=sum(c['accepted_v4'] for c in cases),
                 turns_total=len(turns), turn_dimension_passes=dim_pass,
                 legacy_passed_local=sum(bool(c['passed_local']) for c in cases),
                 false_incomplete=[f"{c['id']}#{n}" for c in cases for n in c['false_incomplete_turns']],

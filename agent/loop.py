@@ -20,6 +20,7 @@ from agent.llm import LLM
 from agent.prompts import SYSTEM_PROMPT
 from agent.finishing import TERMINAL_REQUIRED
 from agent.outcomes import stop_report, close_messages, save_outcome
+from agent.states import project_run
 from agent.repetition import RepeatDetector, NoProgressGuard
 from safety import names
 from safety.confirm import Confirmer
@@ -275,6 +276,9 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
             terminal_report=report
             final=report['summary']
             runtime.report=report
+        if runtime.report or terminal_report:
+            # S6a: flow/result/verification beside the old state; display is unchanged.
+            (runtime.report or terminal_report)['states']=project_run(runtime,stop_reason,runtime.report or terminal_report)
         close_messages(messages,final)
         save_outcome(runtime,stop_reason,final,cfg,llm)
         elapsed = time.perf_counter() - t_start
@@ -306,6 +310,8 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                        llm_seconds=llm_seconds, tool_seconds=tool_seconds)
         reason='cancelled' if isinstance(exc,KeyboardInterrupt) else 'exception'
         report=stop_report(reason,cfg,llm,runtime,oplog,error=exc,stage=failure_stage)
+        try:report['states']=project_run(runtime,reason,report,error_type=type(exc).__name__)
+        except Exception:pass
         final=report['summary']
         close_messages(messages,final)
         try:save_outcome(runtime,reason,final,cfg,llm,error=exc)
