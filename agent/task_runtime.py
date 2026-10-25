@@ -152,7 +152,10 @@ class TaskRuntime(Asking, Finishing):
         documented = [dict(s, function=dict(s['function'], parameters=_with_docs(
                           s['function']['parameters'], FIELD_DOCS[s['function']['name']])))
                       if s['function']['name'] in FIELD_DOCS else s for s in visible]
-        shown = [dict(s, function=dict(s['function'], parameters=untitled(s['function']['parameters']))) for s in documented]
+        # schema_titles: experiment only (2026-10-25 A/B of the dropped titles); never the default.
+        keep_titles = self is not None and self.cfg.get('schema_titles', False)
+        shown = documented if keep_titles else [
+            dict(s, function=dict(s['function'], parameters=untitled(s['function']['parameters']))) for s in documented]
         return shown if strict else json.loads(legacy_terminal(json.dumps(shown, ensure_ascii=False)))
 
     def _within(self, path, roots):

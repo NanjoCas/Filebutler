@@ -456,9 +456,16 @@ def main(argv=None):
     ap.add_argument('--out', type=Path, required=True)
     ap.add_argument('--cases', nargs='+', help='run only these case IDs of the suite')
     ap.add_argument('--total-cap', type=float, default=1.2)
+    ap.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
+                    help='override a config value for this run (YAML value), e.g. schema_titles=true; recorded in the manifest')
     args = ap.parse_args(argv)
     cfg = load_config(ROOT/'config.yaml')
     cfg.update(llm_retries=0, task_session='live-policy-acceptance')
+    import yaml
+    for item in args.set:
+        key, sep, value = item.partition('=')
+        if not sep: ap.error('--set 需要 KEY=VALUE')
+        cfg[key] = yaml.safe_load(value)
     cases = SUITES[args.suite]
     if args.cases:
         unknown = set(args.cases) - {c['id'] for c in cases}
