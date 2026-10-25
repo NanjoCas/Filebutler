@@ -249,6 +249,8 @@ def _settle(task, goal, rows, scope, skipped):
             if touched:
                 failed = True
                 notes.append(dict(by='local', text='模型声明无需操作，但本部分已有计划或操作，需按其结果核验：' + u['reason']))
+            elif gid in skipped:  # the choice already settles it; the note only explains
+                notes.append(dict(by='choice', text=f'模型说明（已按你选择的选项 {scope} 处理）：' + u['reason']))
             else:
                 rows, outcome = [], 'not_needed'
                 notes.append(dict(by='model', text='模型说明无需操作（本地未能证明）：' + u['reason']))

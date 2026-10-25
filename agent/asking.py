@@ -37,7 +37,7 @@ class Choice(StrictModel):
     actions: list[ChoiceAction] | None = Field(None, max_length=20,
         description='此选项会执行的操作，本地在显示前检查；不做操作写空列表')
     disposition: Literal['skip', 'continue', 'cancel_request'] | None = Field(None,
-        description='skip 跳过 scope 的部分；continue 按 actions 继续；cancel_request 取消请求（scope=request）')
+        description='通常不填：按 actions 执行，只是先不动就写空 actions；skip 仅跳过 scope.level=parts 的部分；cancel_request 仅当取消整个请求（scope.level=request）')
 
 
 class AskUser(StrictModel):
@@ -172,9 +172,9 @@ class Asking:
             raise ValueError('drafts 的 ID 重复')
         for o in args.options:
             if o.disposition == 'cancel_request' and (not scope or scope.level != 'request'):
-                raise ValueError(f'选项“{o.label[:20]}”取消整个请求，scope.level 须为 request')
+                raise ValueError(f'选项“{o.label[:20]}”标了 cancel_request：只有取消整个请求才用它，scope.level 须为 request；只是先不动就去掉 disposition、actions 写空列表')
             if o.disposition == 'skip' and (not scope or scope.level != 'parts'):
-                raise ValueError(f'选项“{o.label[:20]}”跳过部分，须用 scope.level=parts 写明是哪些部分')
+                raise ValueError(f'选项“{o.label[:20]}”标了 skip：须用 scope.level=parts 写明跳过哪些部分；只是先不动就去掉 disposition、actions 写空列表')
         if not scope:
             return None
         if scope.level == 'request':

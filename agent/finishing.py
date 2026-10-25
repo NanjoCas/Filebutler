@@ -95,6 +95,16 @@ class Finishing:
         scoped = self.scope_goals()
         if scoped is not None:
             return self._record_scoped_choice(chosen, scoped)
+        excluded = self._excluded_by_choice(chosen, [g['id'] for g in self.current['goals']])
+        if excluded is not None:
+            choices.record_choice(self.current, chosen['key'], chosen['label'], excluded)
+
+    def _touched(self):
+        return {g for b in self.current.get('file_plan_bindings', {}).values() for g in b['goal_ids']} | \
+               {g for o in self.current.get('operation_history', []) + self.operations for g in (o.get('goal_ids') or [])}
+
+    def _excluded_by_choice(self, chosen, candidates):
+        """Parts among ``candidates`` the choice leaves out, or None when a declared action is missing."""
         ops = [o for o in self.current.get('operation_history', []) + self.operations if o.get('run_id') == self.run_id]
         def executed(a):
             path = self._resolve(a['path'])
@@ -103,30 +113,27 @@ class Finishing:
             return any(o['op'] in kinds and o['src'] == path and
                        (a['effect'] == 'trash' or not dst or o['dst'] == dst or Path(o['dst']).parent == Path(dst)) for o in ops)
         if not all(executed(a) for a in chosen['actions'] if a['effect'] != 'read'):
-            return
-        touched = {g for b in self.current.get('file_plan_bindings', {}).values() for g in b['goal_ids']} | \
-                  {g for o in self.current.get('operation_history', []) + self.operations for g in (o.get('goal_ids') or [])}
+            return None
+        touched = self._touched()
         # "Do nothing" was the choice (no actions): a part that only records it (an answer
         # part, reviewed by hand) is settled by the choice too, not left for review.
         nothing = not [a for a in chosen['actions'] if a['effect'] != 'read']
         # Empty actions cannot tell "do nothing at all" from "leave b alone", so a write
         # part is left out by such a choice only when the model names it as not done.
         named = {u['part_id'] for key in ('items', 'not_needed') for u in self.current['declared_unfinished'][key]}
-        excluded = [g['id'] for g in self.current['goals'] if g['id'] not in touched
-                    and (any(c['kind'] in self.WRITE_CONDITIONS for c in g['conditions']) and (not nothing or g['id'] in named)
-                         or nothing and all(c['kind'] == 'manual_review' for c in g['conditions']))]
-        choices.record_choice(self.current, chosen['key'], chosen['label'], excluded)
+        return [g['id'] for g in self.current['goals'] if g['id'] in candidates and g['id'] not in touched
+                and (any(c['kind'] in self.WRITE_CONDITIONS for c in g['conditions']) and (not nothing or g['id'] in named)
+                     or nothing and all(c['kind'] == 'manual_review' for c in g['conditions']))]
 
     def _record_scoped_choice(self, chosen, scoped):
         """A choice about some parts settles only those (routing redesign S3, 5.1): skip
-        leaves them out when nothing was done for them; any other part is judged by its
-        own work, so skipping b never settles an untouched a."""
-        touched = {g for b in self.current.get('file_plan_bindings', {}).values() for g in b['goal_ids']} | \
-                  {g for o in self.current.get('operation_history', []) + self.operations for g in (o.get('goal_ids') or [])}
+        leaves them out when nothing was done for them; any other option settles them by
+        the unscoped rule above, limited to the scope, so skipping b never settles an
+        untouched a. Round 42: models mostly mark "move only a" or "leave it" as continue."""
         if chosen.get('disposition') == 'skip':
-            excluded = [g for g in scoped if g not in touched]
+            excluded = [g for g in scoped if g not in self._touched()]
         else:
-            excluded = []
+            excluded = self._excluded_by_choice(chosen, scoped) or []
         choices.record_choice(self.current, chosen['key'], chosen['label'], excluded,
                               question_id=(self.answered_choice or {}).get('question_id'), scope=scoped)
 

@@ -294,3 +294,37 @@ def test_with_strict_terminal_off_plain_text_still_ends_as_an_answer(tmp_path):
     session = Session(tmp_path, cfg=dict(H.CFG, strict_terminal=False))
     result, _ = session.run('删掉所有测试文件', [step(call('list_dir', dict(path='.')))], final=TEXT_OPTIONS)
     assert result.stop_reason == 'answered' and result.final.startswith('根目录有 2 个测试文件夹')
+
+
+ASK_BOTH_SCOPED = dict(ASK_SCOPE, reason='conflict', drafts=[dict(id='d_a', description='移动 a'), dict(id='d_b', description='移动 b')],
+                       scope=dict(level='parts', part_ids=['d_a', 'd_b']),
+                       options=[dict(ASK_SCOPE['options'][0], disposition='continue'), dict(
+                           label='两份都保留', disposition='continue', actions=[dict(effect='move', path='Inbox/a.txt', destination='Archive'),
+                                                         dict(effect='move', path='Inbox/b.txt', destination='Archive/b (1).txt')])])
+
+
+def test_a_continue_choice_about_parts_settles_the_untouched_ones_in_scope(tmp_path):
+    # Round 42 r2 (s5_skip_b): "只移 a" marked continue; b untouched but left for review.
+    clash_b(tmp_path)
+    session = Session(tmp_path)
+    session.run('把 a.txt 和 b.txt 移到 Archive', [step(call('ask_user', ASK_BOTH_SCOPED))])
+    mapped = [dict(TWO_PARTS[0], draft_id='d_a'), dict(TWO_PARTS[1], draft_id='d_b')]
+    result, client = session.run('A', [step(start(mapped), call('prepare_file_plan', MOVE_A, alias=PLAN)), execute(),
+                                       step(call('finish_turn', dict(mode='task', not_needed=[dict(part_id='b', reason='按选择 b 不动')])))])
+    assert errors(client) == []
+    part = checks(session)
+    assert part['a']['outcome'] == 'done' and part['b']['outcome'] == 'by_choice'
+    assert result.runtime['task_status'] == 'completed'
+
+
+def test_an_empty_continue_choice_about_its_part_is_by_choice(tmp_path):
+    # Round 42 r2 (s5_nothing_by_choice): "先不移动" marked continue, then unfinished; was partial.
+    clash_b(tmp_path)
+    session = Session(tmp_path)
+    one = [TWO_PARTS[1]]
+    session.run('把 b.txt 移到 Archive', [step(start(one), call('ask_user', dict(
+        ASK_B, scope=dict(level='parts', part_ids=['b']), options=[dict(o, disposition='continue') for o in ASK_B['options']])))])
+    result, client = session.run('A', [finish_with([dict(part_id='b', reason='用户选择先不移动')])])
+    assert errors(client) == []
+    assert checks(session)['b']['outcome'] == 'by_choice' and result.report.get('result') == 'by_choice'
+    assert (tmp_path / 'Inbox/b.txt').is_file()

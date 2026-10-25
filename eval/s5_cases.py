@@ -29,6 +29,9 @@ def s5_fixture(root, kind):
     root = Path(root)
     if kind == 's5_plain':
         _write(root, {'Inbox/a.txt': 'a', 'Inbox/b.txt': 'b', 'Inbox/c.md': 'c'})
+    elif kind == 's5_plain_archive':
+        _write(root, {'Inbox/a.txt': 'a', 'Inbox/b.txt': 'b', 'Inbox/c.md': 'c'})
+        (root / 'Archive').mkdir()
     elif kind == 's5_one_clash':
         _write(root, {'Inbox/a.txt': 'new a', 'Archive/a.txt': 'archived a'})
     elif kind == 's5_two_one_clash':
@@ -59,6 +62,15 @@ S5_CASES = [
          expect=dict(turns=[dict(status=['done'], business=['fulfilled'],
                                  answer=dict(include_any=[['2 个', '2个', '两个']]),
                                  constraints=dict(effects=['create', 'move'], write_scope=['Inbox', 'Archive']),
+                                 efficiency_warn=dict(requests=5))])),
+    # Round 42: the case above has no Archive, and by the user's rule of 2026-10-22 a
+    # missing destination is asked about first, so 0/3 was the case's error, not the
+    # model's. Kept frozen; this corrected case has Archive (added 2026-10-25, before its first run).
+    dict(id='s5_explain_after_write_v2', fixture='s5_plain_archive', tags=TAGS,
+         turns=['把 Inbox/a.txt 移到 Archive，然后告诉我 Inbox 里还剩几个文件。'],
+         expect=dict(turns=[dict(status=['done'], business=['fulfilled'],
+                                 answer=dict(include_any=[['2 个', '2个', '两个']]),
+                                 constraints=dict(effects=['move'], write_scope=['Inbox', 'Archive']),
                                  efficiency_warn=dict(requests=5))])),
     dict(id='s5_skip_b', fixture='s5_two_one_clash', tags=TAGS,
          turns=['把 Inbox/a.txt 和 Inbox/b.txt 按原名移到 Archive。',
@@ -92,7 +104,7 @@ def s5_checks(case_id, turn, root, before, runtime, first_task):
     if case_id in ('s5_plain_answer', 's5_nothing_by_choice', 's5_needs_a_question'):
         # s5_needs_a_question: waiting_input only comes from a question with buttons (finish_turn mode=ask).
         result['nothing_changed'] = visible == before
-    elif case_id == 's5_explain_after_write':
+    elif case_id in ('s5_explain_after_write', 's5_explain_after_write_v2'):
         result['a_archived'] = after.get('Archive/a.txt') == before['Inbox/a.txt'] and 'Inbox/a.txt' not in after
         result['others_unchanged'] = all(after.get(k) == before[k] for k in before if k != 'Inbox/a.txt')
     elif case_id in ('s5_skip_b', 's5_cancel_rest'):
