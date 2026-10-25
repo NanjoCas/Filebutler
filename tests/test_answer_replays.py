@@ -328,3 +328,35 @@ def test_an_empty_continue_choice_about_its_part_is_by_choice(tmp_path):
     assert errors(client) == []
     assert checks(session)['b']['outcome'] == 'by_choice' and result.report.get('result') == 'by_choice'
     assert (tmp_path / 'Inbox/b.txt').is_file()
+
+
+def ask_b_with_question_noted(session):
+    one = [TWO_PARTS[1]]
+    session.run('把 b.txt 移到 Archive', [step(start(one, questions=['Archive 里已有 b.txt，要怎么处理？']), call('ask_user', dict(
+        ASK_B, scope=dict(level='parts', part_ids=['b']))))])
+    assert session.sb.runtime.current['unresolved_questions']
+
+
+def test_an_exact_answer_resolves_the_question_the_task_noted(tmp_path):
+    # Round 45 r1/r2 (s5_nothing_by_choice): the task noted the question as text when it
+    # was registered; the button answer left it, so the task waited and asked it again.
+    clash_b(tmp_path)
+    session = Session(tmp_path)
+    ask_b_with_question_noted(session)
+    result, client = session.run('A', [finish_with([dict(part_id='b', reason='用户选择先不移动')])])
+    assert errors(client) == []
+    assert result.runtime['task_status'] == 'completed' and '待确认' not in result.final
+    task = session.sb.runtime.current
+    assert task['unresolved_questions'] == [] and task['answered_questions'][0]['questions'] == ['Archive 里已有 b.txt，要怎么处理？']
+
+
+def test_an_exact_answer_opens_the_writes_its_noted_question_held(tmp_path):
+    # Round 43/45 (s5_skip_b, ans_skip_b): the leftover question refused the chosen overwrite once.
+    clash_b(tmp_path)
+    session = Session(tmp_path)
+    ask_b_with_question_noted(session)
+    overwrite = dict(description='覆盖 b', goal_ids=['b'], actions=[
+        dict(effect='trash', source='Archive/b.txt'), dict(effect='move', source='Inbox/b.txt', destination='Archive')])
+    result, client = session.run('B', [step(call('prepare_file_plan', overwrite, alias=PLAN)), execute(), finish()])
+    assert errors(client) == []
+    assert (tmp_path / 'Archive/b.txt').read_text() != 'older archived b' and result.runtime['task_status'] == 'completed'

@@ -73,7 +73,7 @@ class ToolResult(BaseModel):
 
     def for_model(self):
         return json.dumps(dict(status=self.status, text=self.text, error_code=self.error_code, retryable=self.retryable),
-                          ensure_ascii=False)
+                          ensure_ascii=False, separators=(',', ':'))  # byte for byte the pre-S6b model_dump_json
 
 
 # The minimal error classes (8.2). The specific code (AMBIGUOUS_GOAL, TURN_CLOSED, ...)

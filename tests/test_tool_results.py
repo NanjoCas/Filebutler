@@ -102,3 +102,17 @@ def test_a_plan_stopped_in_flight_is_unknown_and_asks_for_reconciling(tmp_path, 
     row = next(r for r in session.sb.runtime.results.values() if r['tool'] == 'execute_file_plan')
     assert row['error_class'] == 'OUTCOME_UNKNOWN' and row['recovery'] == 'reconcile'
     assert row['progress']['unknown'] and not row['progress']['completed']
+
+
+def test_the_model_text_is_byte_for_byte_the_old_serialisation():
+    # Round 45: json.dumps' default ', ' / ': ' had changed every tool message the model saw.
+    from pydantic import BaseModel
+
+    class Old(BaseModel):  # registry.ToolResult as of e3c7d7f
+        status: str
+        text: str
+        error_code: str | None = None
+        retryable: bool = False
+    for r in (registry.ToolResult(status='ok', text='已读取 文献/a.pdf："引号"\n第二行'),
+              registry.ToolResult(status='error', text='ERROR: 任务仍有待确认问题', error_code='AMBIGUOUS_GOAL', retryable=True)):
+        assert r.for_model() == Old(status=r.status, text=r.text, error_code=r.error_code, retryable=r.retryable).model_dump_json()
