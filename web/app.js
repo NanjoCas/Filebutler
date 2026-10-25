@@ -343,7 +343,7 @@ const TOOL_LABELS = {
   begin_step: "准备当前任务步骤", make_dir: "创建文件夹", move: "移动文件", rename: "重命名文件", trash: "移入回收区",
 };
 // Labels say what the user does next (agent/reporting.display_state); task states are unchanged.
-const DISPLAY_LABELS = {done: "已完成", answered: "已回答", confirm: "请确认结果", waiting: "等你回答", unfinished: "没有完成", cancelled: "已取消"};
+const DISPLAY_LABELS = {done: "已完成", answered: "已回答", chosen: "已按你的选择处理", confirm: "请确认结果", waiting: "等你回答", unfinished: "没有完成", cancelled: "已取消"};
 function outcomeLabel(result) {
   const shown = DISPLAY_LABELS[result?.report?.display];
   if (shown) return shown;

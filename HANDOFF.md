@@ -1,6 +1,6 @@
 # FileButler 项目交接（HANDOFF）
 
-更新时间：2026-10-24 晚（Asia/Shanghai）。供新对话或下一位维护者直接接续。第 1 节是现状，第 7、8 节是逐条累积的事实和待办。
+更新时间：2026-10-25（Asia/Shanghai）。供新对话或下一位维护者直接接续。第 1 节是现状，第 7、8 节是逐条累积的事实和待办；第 1 节以外的旧数字是当时的记录。
 
 ## 1. 接手先看这几句话
 
@@ -8,16 +8,34 @@
 
 - **2026-10-23 起只有协议 v3。** v2 协议、旧控制器（LocalRuntime）、自检、上下文压缩、单步写工具（move/rename/make_dir/trash）、apply_classification 和旧评测 runner 已退役，代码保留在本地标签 `archive-v2-legacy-20261023`（未推送）。删掉的测试和覆盖缺口见 `docs/v2-retirement-coverage-2026-10-23.md`。
 - 模型可见的提示 + 工具定义有绝对上限 31,311 字符，只减不增（`tests/test_protocol_v3.py` 的 `PROMPT_CAP`）。现为 30,956；打开敏感检测时 31,047。
-- 离线测试 478 passed，没有 xfail（2026-10-25 路由改造 S0–S5 及提问字段平铺后）。
+- 离线测试 486 passed，没有 xfail（2026-10-25 S5 审计修复后）。模型可见提示 31,012 字（敏感检测开 31,116），上限 31,311，余量 299 / 195。
 - **2026-10-24 路由改造 S0–S2 已实施**（方案 `docs/agent-routing-redesign-2026-10-24.md`，用户要求"按文档完成路由修改"；方案建议首批只做 S0–S2）：
   - S0–S1（`1a20c5f`）：一个业务动作只证明一个部分。多个候选部分而动作没写 `part` 时返回 `AMBIGUOUS_GOAL`，写了 `goal_ids` 也不行（P0：只归档 a 却让"改名 b"也通过）。`Selection.part` 从 S4 提前，否则"平铺 + 回收"两个部分放不进一个计划。共享的新建父目录不单独证明任何部分；旧计划里一个动作属于多个部分的，不再证明任何部分。确认结果分为批准、拒绝、超时、中断，并记录来源（web/cli/policy）：网页 15 分钟超时、CLI 的 EOF 和 Ctrl-C 不再报成"用户拒绝"。本轮被拒绝、超时或中断的同一清单，换计划 ID 也不再弹卡，"本轮都允许"也不能覆盖。网页重复提交同一个确认 ID 时返回第一次的决定。提示 30,956→31,000（敏感检测开 31,091）。
   - S2（`cb070d1`）：`agent/interactions.py` 在 TaskStore 库里新增接收回执、请求、问题、回答、运行请求和协议元数据 6 张表，`user_version` 为 2。每条消息按 (root, session, client_message_id) 只接收一次：同 ID 同内容重试返回原回执（即使问题已答、出了新问题或服务重启过），同 ID 不同内容返回 409。按钮提交精确的 question_id、version、option_id；裸字母只算普通文字，不产生选项授权。网页消息必须带 ID，否则返回 426 提示刷新。服务重启后，正在运行的请求记为中断、不重放；已接收但还没建 turn 的请求补建并运行一次。CLI 新增 `run --message-id`、`answer --question --option`。迁移前先备份；备份必须放在写事务外面，放在里面会卡死。在真实任务库的副本上演练：73 条运行结果，耗时 19ms，完整性检查正常。
   - **2026-10-25 S3–S5 已实施**（用户要求"做 s3-s5"）：
     - 容量闸门：pydantic 自动生成的 schema title 只是字段名，没有规则，共占 3,661 字，已全部去掉，并有测试证明除此之外 schema 不变。系统提示里与任务指引重复的 3 句、几处重复的字段说明也删了。新模型类的说明改写成代码注释，不再进入 schema。提示依次为 S5 后 27,633、S4 后 28,240、S3 后 **31,038**（敏感检测开 31,142；上限 31,311）。
-    - S5（`aa27657`）：`finish_turn(mode=reply|ask|task)` 取代模型看到的 `ask_user` 和 `finish_task`，两套不同时出现。已登记任务时无论哪种 mode 都走本地核验；同一响应里它之后的调用返回 TURN_CLOSED。`strict_terminal`（默认 true）：只输出文字就结束时纠正一次，再犯就保留草稿、记为 `unstructured_terminal`（不算已回答）。不扫描文字里的问句。设为 false 时回到 v3 的说法和工具。10-24 用户日志里"选项写在正文里"的案例已转为通过的测试。
+    - S5（`aa27657`）：`finish_turn(mode=reply|ask|task)` 取代模型看到的 `ask_user` 和 `finish_task`，两套不同时出现。reply 和 task 收尾会对已登记任务做本地核验，ask 只检查选项、保存问题并等待；同一响应里它之后的调用返回 TURN_CLOSED。`strict_terminal`（默认 true）：只输出文字就结束时纠正一次，再犯就保留草稿、记为 `unstructured_terminal`（不算已回答）。不扫描文字里的问句。设为 false 时回到 v3 的说法和工具。10-24 用户日志里"选项写在正文里"的案例已转为通过的测试。
     - S4（`9e5571e`）：`deduplicate` 和 `apply_dedup` 加了 `part`，两个去重部分时缺 part 返回 AMBIGUOUS_GOAL、不写入。`finish_turn.evidence_bindings` 让多个查找部分各自声明证据，本地核对证据确实存在、版本有效。
     - S3（`c2ec16f`）：问题可以带 `scope`（整个请求，或若干部分；登记前用草案 drafts），选项带 `disposition`（skip、continue、cancel_request）；`start_task` 的部分用 `draft_id` 映射草案，映射不全时返回 UNRESOLVED_QUESTION_SCOPE。"b 不动"只结算 b。`input_resolution`（answer、revise、new_request、independent_query、pause、cancel_request、resume）可以写在 start_task、prepare_file_plan、finish_turn 上；用户用文字回应上一问时，没声明关系就不能写入（INPUT_RELATION_REQUIRED）；声明为新请求时，上一问的选项和文字同意都不继承。取消有三个入口：选项（由按钮决定，不调用模型）、文字（模型声明，本地执行）、网页"停止"按钮（`POST /cancel`，按消息 ID 防重复）。执行器在确认前、确认后、每一步之前检查取消标记，已开始的一步做完并写日志；正在等待的确认卡片记为 interrupted(user_cancelled)；报告写明已执行的部分（可撤销）和未处理的部分，不说完成。暂停后只能显式恢复。任务库升到版本 3，在真实库副本上演练 0→3 用时 23ms。两个从 10-23 起的 strict xfail 改用新接口后通过。
-    - **第 40 轮 schema title A/B**（`policy_live_20261025_40_r{1,2,3}_{A,B}_{regression,answer,parts,ocr}`，¥1.98；A 为默认去掉 title，B 为 `--set schema_titles=true`）：通过 A 46/51 = 90.2%、B 48/50 = 96.0%（r1 B answer 网络中断少 1 组）；配对 50 对中只有 3 对不一致，都是 B 过 A 不过，差异不显著。工具报错 A 31、B 14，其中 finish_turn 嵌套提问写错 A 8、B 3；点了精确选项后声明 answer 被拒，两组各 4 次。TERMINAL_REQUIRED 0 次、unstructured_terminal 0 次。A 组多失败的 3 次都是 `ans_do_nothing`：模型选"不移动"后没登记任务、直接 mode=reply，结果是 answered，冻结预期要求 done。之后修正：提问字段平铺到 finish_turn 顶层（旧嵌套写法本地展开兼容），精确选项后声明 answer 也接受；提示 30,830 / 30,934。title 保持去掉。
+    - **第 40 轮 schema title A/B**（`policy_live_20261025_40_r{1,2,3}_{A,B}_{regression,answer,parts,ocr}`，¥1.98；A 为默认去掉 title，B 为 `--set schema_titles=true`；两组是平铺之前的同一版代码，比较的是 title 开关，不是 S5 改造前后）：
+      - **通过率**：原始报表 A 46/51 = 90.2%、B 48/50 = 96.0%。r1 B answer 网络中断，只计双方都完整执行的 49 对：A 45/49、B 48/49；其中 45 对都通过，1 对都失败，3 对只有 B 通过（精确双侧 p=0.25），不能说两者等价。
+      - **失败原因**：A 的 5 次失败是 `ans_do_nothing` 3 次、`dedup_cleanup`（模型多写 notes 触发复核）2 次；B 的 2 次是网络中断 1 次、`dedup_cleanup` 1 次。
+      - **费用**：49 对的费用基本持平（相差 0.07%）。
+      - **工具报错**：失败的工具调用 A 31、B 14（全部原始 trace），按工具分是 finish_turn 12/5、prepare_file_plan 11/4、read_file 4/2、start_task 4/2、submit_classification 0/1；一次响应可以含多个调用，不等于多了这么多次往返。finish_turn 失败里包含嵌套写错、非法 JSON、编出来的字段、scope/disposition 检查，以及精确选项后声明 answer 被拒（两组各 4 次，跨工具统计）。
+      - **严格结束**：TERMINAL_REQUIRED 0 次、unstructured_terminal 0 次。详见 `docs/s5-routing-audit-2026-10-25.md` 第 3 节，复算脚本 `docs/repro/s5-ab-audit-2026-10-25.py`。
+    - **第 41 轮：提问字段平铺后的复验**（`035567c`，`policy_live_20261025_41_r{1,2}_A_{regression,answer,parts,ocr}`，¥0.67）：
+      - **通过率**：31/34 = 91.2%。
+      - **工具报错**：失败的工具调用 5 次，其中参数校验错误 0 次；同口径下第 40 轮 A 组为 31 和 7。
+      - **严格结束**：TERMINAL_REQUIRED 1 次，纠正后正常结束。
+      - **失败**：`ans_do_nothing` 2 次，模型没登记任务、直接 reply，结果是 answered；`no_answer` 1 次，模型把"查过、没找到"写进了 unfinished，状态成了 partial。
+    - **S5 审计修复**（`docs/s5-routing-audit-2026-10-25.md`，未真实复验）：
+      - **P1-A**：已登记任务时 reply 仍显示在主回复，排在本地事实之后，只出现一次；超过 2000 字明确拒绝。
+      - **P1-B**：不合法的 finish_turn/ask_user/finish_task 计入无进展保护（task_repair_limit），TURN_CLOSED 不计。
+      - **P2-A**：mode=ask 带 summary、unfinished、not_needed、evidence_bindings 时拒绝；ask 的 reply 显示在问题前面。
+      - **P2-C**：报错文字开头的代码（TURN_CLOSED、AMBIGUOUS_GOAL 等）和结构化的 error_code 一致。
+      - **P2-B**（选项写进 reply）：仍是已知限制，只在 finish_turn 说明里加了正确提问的示例。
+      - **"不做"的业务契约**：用户选了不做任何操作的选项、本轮也没有操作时，不论有没有登记任务，报告都写"已按你的选择保持原样（A（不移动）），没有改动"，`report.result=by_choice`、`display=chosen`（网页显示"已按你的选择处理"），并在请求上记录决定（`requests.decision_json`，库版本 4，真实库副本演练 0→4 用时 22ms）。旧判定和冻结预期不变，`ans_do_nothing` 没登记任务时仍按旧判定失败。
+      - **新评测**：判定器增加只在新场景生效的 `business` 检查；新冻结场景 `--suite s5`（6 组：纯回答、选择不做、写入后附带说明、局部跳过、部分执行后取消、需要选择时是否出卡片），还没有真实运行。
 '
   '    - 仍未做：S6（流程/结果/核验状态拆分、结构化工具结果与恢复）、S7（检索覆盖账本）、S8（浏览器验收与联调）。**没有真实模型复验，也没有浏览器验收**：严格结束、新字段和停止按钮对真实模型的效果（纠错率、多花的请求、费用）都还没测；提示余量只剩 169–273 字。
 - 阶段 3 和第 39 轮的提交（`6c29b17`、`3862f4f`、`c977f7c` 及之后的文档更新）未推送；推送前用 `git status -sb` 确认。
@@ -32,13 +50,13 @@
 - **2026-10-23 链路方案二（回答接回提问的任务）完成**（`2636a19`、`5adc89c`）：回放测试 `tests/test_answer_replays.py`，8 个通过，2 个以 xfail 记录已知缺口：① 只针对 b 的选项会约束整份下一计划；④ 重发字母会回答当前待答的新问题，网页已防住。修复两处：点选项回答时接回提问时的任务（`asking._resume_asked_task`），上一轮的操作并入 `operation_history`；选了"什么都不做"时，只结掉模型在 `finish_task.unfinished`/`not_needed` 里点名的写入部分（`finishing._record_chosen_scope`），answer 部分仍自动结掉。历史证据（第 30 轮及以前）：24 次跨轮提问中 23 次发生在登记任务之前，所有选项都描述整件事。第 36 轮真实复验 6/6，约 ¥0.13，见第 7 节。
 - **第 20 轮：两套盲测各 3 次 + v2 对照**：v3 47/48 = 97.9%（95% 区间 89.1%–99.6%），v2 35/48 = 72.9%（59.0%–83.4%）；费用 ¥0.575 对 ¥0.978。其余功能验收每组多数只跑过 1 次，逐轮见第 7 节。
 - 用户 2026-10-22 决定：**单个计划超过 500 项不做自动分批**。
-- 下一步候选（详见第 8 节"2026-10-24 日志排查"）：
-  - 路由改造 S0–S2 的浏览器验收和真实模型回归（regression、answer、parts 等，费用另行授权）；
-  - 统一提问路由：模型把选项写在正文里、没调 `ask_user`，网页没有选择卡片（用户日志 2 次；方案定为 S5 的 finish_turn 解决）；
-  - 只问不改的任务登记了 answer 部分就成 needs_review，冻结场景因此失败（第 38、39 轮各 1 次）；
-  - 回收非空文件夹要拆成多个计划（用户日志：4 个计划、4 张确认卡、¥0.10）；
-  - 阶段 4 向量检索（跨语言检索 12 题只命中 1 题）；
-  - 浏览器里还没看过：状态显示重排、OCR 结果、全文检索结果。
+- 下一步候选（2026-10-25）：
+  - 冻结修复版后的针对性真实复验：先跑 `--suite s5`（6 组），再跑 regression、answer、parts、ocr 回归；费用另行授权。要统计"需要选择却没有问题卡"的比例（P2-B）。
+  - 浏览器验收：选择按钮、停止按钮、断网重试、刷新，以及"已按你的选择处理"的显示。
+  - S6：流程、结果、核验三种状态拆分，判定器版本化（新旧两套口径同时报告）；`no_answer` 这类"查过、没找到"怎样表达也放进这一步。
+  - `unfinished` 字段说明被压缩后，可能是 `no_answer` 失败的原因之一，可以恢复原来的完整说明（约 40 字）。
+  - 回收非空文件夹要拆成多个计划（用户日志：4 个计划、4 张确认卡、¥0.10）。
+  - 阶段 4 向量检索（跨语言检索 12 题只命中 1 题）。
 - 不要把本交接当作授权：改代码、推送、合并或调用付费模型前，先确认用户在新对话中的具体要求。付费复验前先报估算。
 
 ## 2. 项目位置与 Git 状态
@@ -483,4 +501,4 @@ zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --cases p1_swap 
 
 ## 11. 新对话可直接使用的接手提示
 
-> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `optimize/completion-binding`，只有协议 v3，435 项离线测试通过；功能方案阶段 0–3（Office、OCR、全文 BM25）已实施，第 39 轮回归 7/8。下一步候选见第 1 节：统一提问路由（ask_user）、只问不改任务的状态、回收非空文件夹、阶段 4 向量检索。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
+> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `optimize/completion-binding`，只有协议 v3，486 项离线测试通过；功能方案阶段 0–3 和路由改造 S0–S5 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 41 轮（31/34）。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。

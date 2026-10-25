@@ -24,10 +24,11 @@ import uuid
 from datetime import datetime
 
 API_VERSION = 1
-SCHEMA_VERSION = 3  # PRAGMA user_version of tasks.sqlite3 once these tables are authoritative
+SCHEMA_VERSION = 4  # PRAGMA user_version of tasks.sqlite3 once these tables are authoritative
+# 4 (S5 audit, 2026-10-25): a request the user settled by a choice keeps that decision.
 # 3 (S3): a request can be paused or cancelled by the user; cancel_epoch fences running work.
 REQUEST_COLUMNS = (('cancel_epoch', 'INTEGER NOT NULL DEFAULT 0'), ('status_actor', 'TEXT'),
-                   ('status_receipt', 'TEXT'), ('status_at', 'TEXT'))
+                   ('status_receipt', 'TEXT'), ('status_at', 'TEXT'), ('decision_json', 'TEXT'))
 LEASE_SECONDS = 1800
 
 DDL = '''
@@ -315,6 +316,14 @@ class Interactions:
                            "AND status='queued' AND receipt_id IN (SELECT receipt_id FROM message_receipts WHERE request_id=?)",
                            (_now(), self.root, self.session, request_id))
             return dict(db.execute('SELECT * FROM requests WHERE request_id=?', (request_id,)).fetchone())
+
+    def settle(self, request_id, decision):
+        """The user settled the request by a choice that changes nothing ("不移动"): the
+        decision is kept with the request, whether or not a task was registered."""
+        with self.store.connect() as db:
+            db.execute("UPDATE requests SET status='settled', decision_json=?, status_actor='user_option', status_at=? "
+                       "WHERE request_id=? AND root=? AND session=? AND status IN ('active', 'settled')",
+                       (json.dumps(decision, ensure_ascii=False), _now(), request_id, self.root, self.session))
 
     def suspend_question(self, question_id):
         with self.store.connect() as db:

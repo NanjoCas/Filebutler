@@ -28,6 +28,13 @@ class TrashBatch:
     scan: dict = field(default_factory=dict)
 
 
+def error_code(text, default='CONTROL_REJECTED'):
+    """The machine code a rejected call states first ("ERROR: TURN_CLOSED：…"), so the
+    structured result and its text agree (S5 audit 2026-10-25, P2-C)."""
+    head = (text or '').removeprefix('ERROR: ').split('：', 1)[0]
+    return head if head and head.replace('_', '').isalpha() and head.isupper() else default
+
+
 @dataclass
 class Tool:
     name: str

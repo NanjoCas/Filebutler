@@ -311,7 +311,8 @@ class Asking:
     def _ask_user(self, raw, sb):
         return self._ask(AskUser.model_validate_json(raw), sb)
 
-    def _ask(self, args, sb):
+    def _ask(self, args, sb, preface=''):
+        """preface: what the model said before the question (finish_turn.reply in mode=ask)."""
         scope = self._question_scope(args)
         choices = [dict(key=CHOICE_KEYS[i], label=o.label, detail=o.detail, consent=o.consent,
                         actions=None if o.actions is None else [a.model_dump() for a in o.actions],
@@ -325,6 +326,8 @@ class Asking:
                 + ([f"授权读取敏感文件 {'、'.join(c['read_grant'])} 的内容（仅本任务）"] if c.get('read_grant') else [])
         checked = [line for line in self._sensitive_lines(args.subject, sb) if line]
         prefix = [f'本轮已执行 {len(self.operations)} 项文件操作，可撤销。', ''] if self.operations else []
+        if preface.strip():
+            prefix += [preface.strip(), '']
         # The page shows the question and buttons; the terminal (and evaluation) read
         # the full text with lettered options.
         question = '\n'.join(prefix + [args.question] + ([''] + checked if checked else []))

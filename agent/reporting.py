@@ -19,7 +19,7 @@ def display_state(state, task=None):
     if state == 'needs_review':
         changed = task and (task.get('operation_history') or task.get('operations'))
         return 'confirm' if changed else 'answered'
-    return {'completed': 'done', 'answered': 'done', 'explained': 'done', 'waiting_input': 'waiting',
+    return {'completed': 'done', 'answered': 'done', 'explained': 'done', 'waiting_input': 'waiting', 'by_choice': 'chosen',
             'cancelled': 'cancelled', 'paused': 'cancelled'}.get(state, 'unfinished')
 
 
@@ -109,6 +109,25 @@ def action_phrases(operations):
     return actions
 
 
+def chosen_nothing(task):
+    """The note of the option the user chose in this task revision when it left every part out
+    (nothing done by choice), else ''."""
+    from agent.choices import chosen_scope
+    note, skipped = chosen_scope(task or {})
+    goals = {g['id'] for g in (task or {}).get('goals', [])}
+    return note if note and goals and goals <= skipped else ''
+
+
+def by_choice_report(chosen, reply=''):
+    """No task, and the user picked an option that does nothing: the same words as a task
+    settled that way (S5 audit 4.3), so the result does not depend on the model's path."""
+    summary = f"已按你的选择保持原样（{chosen['key']}（{chosen['label']}）），没有改动。"
+    reply = (reply or '').strip()
+    if reply and reply not in summary:
+        summary += '\n\n' + (reply if len(reply) <= 1500 else reply[:1500] + '…')
+    return dict(version=1, state='answered', result='by_choice', display='chosen', summary=summary, sections=[])
+
+
 def stopped_report(task, operations, state):
     """The user cancelled or paused the request (routing redesign S3, 5.3). What ran stays
     done and undoable; what did not is named, and nothing is called complete."""
@@ -170,6 +189,9 @@ def build_report(task, model_summary, records, reply=''):
         if records:
             summary = '\n\n'.join(r['text'] for r in records)
             if state=='partial': summary = incomplete_reason(task, bool(reply.strip()))
+        elif state=='completed' and chosen_nothing(task):
+            # The user chose to change nothing: say that, not that the request was met (S5 audit 4.3).
+            summary = f"已按你的选择保持原样（{chosen_nothing(task)}），没有改动。"
         elif state=='completed':
             # Nothing to change: say so; the checks behind it are in the developer details.
             summary = '已完成：文件已经符合要求，没有改动。' if task.get('allowed_effects') else '已完成。'
@@ -208,6 +230,8 @@ def build_report(task, model_summary, records, reply=''):
     if task['unresolved_questions']:
         summary += '\n\n待确认：'+'；'.join(task['unresolved_questions'])
     report = dict(version=1, state=state, display=display_state(state, task), summary=summary, sections=sections)
+    if state == 'completed' and not operations and chosen_nothing(task):
+        report.update(result='by_choice', display='chosen')
     policy = task.get('policy', {}).get('output', {})
     if policy.get('format') == 'json':
         report['summary'] = json.dumps(dict(state=state, summary=summary, checks=task['checks'],

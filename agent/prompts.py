@@ -144,7 +144,9 @@ TOOL_DESCRIPTIONS = {
     'inspect_file_plan': '只读查看计划清单、进度和失败原因。',
     'revise_task': '按用户更正修改已有任务的部分或限制；本地展示差异并请用户确认后生效。',
     'ask_user': '请求不清楚时向用户提问：给出 2–4 个选项并允许补充；本轮随即结束，不写入。',
-    'finish_turn': '结束本轮（每轮必须以它结束）：mode=reply 回复；mode=ask 提问并给选项，等待用户；mode=task 收尾并本地核验全部部分。',
+    'finish_turn': '结束本轮（每轮必须以它结束）：mode=reply 回复；mode=ask 提问并给选项，等待用户；mode=task 收尾并本地核验全部部分。'
+                   '要用户选择时不要把选项写进 reply。例：{"mode":"ask","question":"放哪里？","reason":"missing_criterion",'
+                   '"options":[{"label":"Archive","actions":[]},{"label":"不动","actions":[]}]}',
     'inspect_run': '只读解释当前会话运行结果；finish=true 直接结束，复合请求可 false。',
     'finish_task': '收尾并本地核验全部部分；未满足条件不能标记完成。',
 }

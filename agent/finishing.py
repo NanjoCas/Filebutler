@@ -152,21 +152,21 @@ class Finishing:
         if args.mode == 'ask':
             if not args.question or not args.reason or not args.options:
                 raise ValueError('mode=ask 需要 question、reason 和 2–4 个 options')
-            return self._ask(AskUser(**{k: getattr(args, k) for k in self.ASK_FIELDS}), sb)
+            # Asking pauses the turn; it settles nothing, so fields that settle are refused, not dropped
+            # (S5 audit 2026-10-25, P2-A). reply is shown before the question.
+            settling = [k for k in ('summary', 'unfinished', 'not_needed', 'evidence_bindings') if getattr(args, k)]
+            if settling:
+                raise ValueError('mode=ask 只提问并等待用户，不能带 ' + '、'.join(settling) + '；收尾时再用 mode=task 写')
+            return self._ask(AskUser(**{k: getattr(args, k) for k in self.ASK_FIELDS}), sb, preface=args.reply)
         if given - {'allow_other', 'subject'} and any(getattr(args, k) for k in given):
             raise ValueError('只有 mode=ask 才填 question / options 等提问字段；要用户选择请用 mode=ask')
         if args.evidence_bindings:
             self._bind_evidence(args.evidence_bindings)
         if self.current:
-            # A registered task is always verified, whichever mode ends it.
-            if args.mode == 'reply':
-                detail = self.current.get('policy', {}).get('output', {}).get('detail')
-                limit = 12000 if detail == 'full' else 1200
-                return self._finish(FinishTask(summary=(args.summary or args.reply)[:limit],
-                                               reply=args.reply[:2000] if args.summary else '',
-                                               unfinished=args.unfinished, not_needed=args.not_needed), sb)
+            # A registered task is verified whichever of reply / task ends it, and reply stays the
+            # user's main reply in both (S5 audit 2026-10-25, P1-A: it was moved into the details).
             if len(args.reply) > 2000:
-                raise ValueError('mode=task 的 reply 最多 2000 字；其余放 summary')
+                raise ValueError('已登记任务时 reply 最多 2000 字（显示在主回复）；更长的补充放 summary')
             return self._finish(FinishTask(summary=args.summary, reply=args.reply,
                                            unfinished=args.unfinished, not_needed=args.not_needed), sb)
         if args.mode == 'task':
@@ -176,6 +176,11 @@ class Finishing:
         if not args.reply.strip():
             raise ValueError('mode=reply 需要 reply')
         self._reply(args.reply)
+        if self.stop_reason == 'answered' and self._nothing_chosen():
+            from agent.reporting import by_choice_report
+            self.report = by_choice_report(self.answered_choice['chosen'], args.reply)
+            self.final_answer = self.report['summary']
+            self._settle_request()
         return registry.ToolResult(status='ok', text='OK: 已回复用户，本轮结束')
 
     def _bind_evidence(self, bindings):
@@ -204,6 +209,19 @@ class Finishing:
         known = {(r['collection'], r['id'], tuple(r.get('goal_ids', []))) for r in self.current.get('references', [])}
         self.current.setdefault('references', []).extend(
             c for c in claims if (c['collection'], c['id'], tuple(c['goal_ids'])) not in known)
+
+    def _nothing_chosen(self):
+        """The user pressed an option that does nothing, and this run changed nothing."""
+        chosen = (self.answered_choice or {}).get('chosen') or {}
+        return bool(chosen) and chosen.get('actions') == [] and chosen.get('disposition') != 'cancel_request' \
+            and not self.operations
+
+    def _settle_request(self):
+        rid = (self.current or {}).get('request_id') or self.cfg.get('request_id')
+        a = self.answered_choice or {}
+        if rid and a.get('chosen'):
+            self._interactions().settle(rid, dict(question_id=a.get('question_id'), option_id=a['chosen'].get('option_id'),
+                                                  key=a['chosen']['key'], label=a['chosen']['label'], result='by_choice'))
 
     def unstructured(self, content):
         """Strict terminal: the model ended with bare text twice. The draft is kept, the
@@ -282,6 +300,8 @@ class Finishing:
         self.report = build_report(dict(self.current, operations=run_ops), args.summary, self.output_records,
                                    reply=args.reply)
         self.current['report'] = self.report
+        if self.report.get('result') == 'by_choice':
+            self._settle_request()
         self.store.checkpoint(self.current)
         self.stop_reason = 'done' if state == 'completed' else state
         self.final_answer = self.report['summary']

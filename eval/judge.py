@@ -96,8 +96,11 @@ def normalize_status(turn):
     review = [g['goal_id'] for g in goals if g.get('passed') and g.get('needs_review')]
     if status == 'needs_review' and unmet:
         status = 'partial'  # never let "review" hide an unmet machine goal
+    # The business result (S5 audit 2026-10-25): informational only; the status judgement
+    # above is unchanged, and a versioned judgement may read this later.
+    business = (turn.get('report') or {}).get('result') or {'done': 'fulfilled'}.get(status, status)
     return dict(status=status, klass=STATUS_CLASS[status], stop_reason=stop, task_status=task_status,
-                unmet_goals=unmet, review_goals=review)
+                unmet_goals=unmet, review_goals=review, business=business)
 
 
 def turn_operations(turn, run_id):
@@ -172,7 +175,12 @@ def judge_files(turn):
 
 def judge_status(norm, expect):
     accepted = expect.get('status') or ['done']
-    return dict(status_in_expected=norm['status'] in accepted), dict(accepted=accepted, **norm)
+    checks = dict(status_in_expected=norm['status'] in accepted)
+    # Cases written after the S5 audit (eval/s5_cases.py) also state the business result;
+    # cases that do not declare it are judged exactly as before.
+    if 'business' in expect:
+        checks['business_in_expected'] = norm['business'] in expect['business']
+    return checks, dict(accepted=accepted, **norm)
 
 
 def _findings(calls):

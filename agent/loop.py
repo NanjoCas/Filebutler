@@ -225,7 +225,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 n_calls += 1
                 result = names.shield(result, sandbox)  # file names reach the model as data only
                 outcome = runtime._outcome or registry.ToolResult(status='error', text=result,
-                                                                   error_code='CONTROL_REJECTED')
+                                                                   error_code=registry.error_code(result))
                 outcome.text = result  # Keep repeat warnings added after dispatch.
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": outcome.model_dump_json()})
                 ok = outcome.status == 'ok'
@@ -237,8 +237,10 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                     progress = (len(task.get('operation_history', []))+len(runtime.operations), len(proof))
                     tool = registry.TOOLS.get(name)
                     repairable_call = (bool(tool and tool.writes) or name in
-                        {'start_task', 'revise_task', 'prepare_file_plan', 'execute_file_plan'})
-                    failure = (outcome.error_code or 'TOOL_ERROR') if not ok and repairable_call else None
+                        {'start_task', 'revise_task', 'prepare_file_plan', 'execute_file_plan',
+                         'finish_turn', 'ask_user', 'finish_task'})
+                    closed = outcome.error_code == 'TURN_CLOSED'
+                    failure = (outcome.error_code or 'TOOL_ERROR') if not ok and repairable_call and not closed else None
                     if failure: runtime.last_failure = result[:1200]
                     if repair_guard.observe(failure, progress): stop_reason = 'repair_limit'
 

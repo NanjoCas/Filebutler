@@ -605,7 +605,7 @@ class TaskRuntime(Asking, Finishing):
                 try: self.store.checkpoint(self.current)
                 except ValueError: pass  # A stale task cannot overwrite the newer version.
             outcome = registry.ToolResult(status='error', text='ERROR: ' + str(exc),
-                                           error_code='CONTROL_REJECTED')
+                                           error_code=registry.error_code(str(exc)))
         if outcome.status == 'ok' and name in self.control_names and self.current:
             self._resolve_blockers(name, raw)
             try: self.store.checkpoint(self.current)
@@ -646,13 +646,13 @@ class TaskRuntime(Asking, Finishing):
             refs.extend(dict(collection=collection, id=value,
                              goal_ids=self._consumers(collection) if self.current else []) for value in sorted(ids))
         if not self.current:
-            outcome = self._outcome or registry.ToolResult(status='error', text=result, error_code='CONTROL_REJECTED')
+            outcome = self._outcome or registry.ToolResult(status='error', text=result, error_code=registry.error_code(result))
             if outcome.status == 'ok' and name in registry.TOOLS and not registry.TOOLS[name].writes:
                 self._pretask.append(dict(tool=name, arguments=self._args, status='ok', error_code=None,
                                           summary=result.splitlines()[0][:300] if result else '',
                                           references=refs, goal_ids=[], run_id=self.run_id))
             return
-        outcome = self._outcome or registry.ToolResult(status='error', text=result, error_code='CONTROL_REJECTED')
+        outcome = self._outcome or registry.ToolResult(status='error', text=result, error_code=registry.error_code(result))
         tool = registry.TOOLS.get(name)
         if tool and tool.display_result and outcome.status == 'ok':
             self.capture_output(name, result.removeprefix('OK: '))
