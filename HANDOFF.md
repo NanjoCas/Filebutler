@@ -8,7 +8,7 @@
 
 - **2026-10-23 起只有协议 v3。** v2 协议、旧控制器（LocalRuntime）、自检、上下文压缩、单步写工具（move/rename/make_dir/trash）、apply_classification 和旧评测 runner 已退役，代码保留在本地标签 `archive-v2-legacy-20261023`（未推送）。删掉的测试和覆盖缺口见 `docs/v2-retirement-coverage-2026-10-23.md`。
 - 模型可见的提示 + 工具定义有绝对上限 31,311 字符，只减不增（`tests/test_protocol_v3.py` 的 `PROMPT_CAP`）。现为 30,956；打开敏感检测时 31,047。
-- 离线测试 486 passed，没有 xfail（2026-10-25 S5 审计修复后）。模型可见提示 31,012 字（敏感检测开 31,116），上限 31,311，余量 299 / 195。
+- 离线测试 488 passed，没有 xfail（2026-10-25 第 43 轮修复后）。模型可见提示 31,048 字（敏感检测开 31,152），上限 31,311，余量 263 / 159。
 - **2026-10-24 路由改造 S0–S2 已实施**（方案 `docs/agent-routing-redesign-2026-10-24.md`，用户要求"按文档完成路由修改"；方案建议首批只做 S0–S2）：
   - S0–S1（`1a20c5f`）：一个业务动作只证明一个部分。多个候选部分而动作没写 `part` 时返回 `AMBIGUOUS_GOAL`，写了 `goal_ids` 也不行（P0：只归档 a 却让"改名 b"也通过）。`Selection.part` 从 S4 提前，否则"平铺 + 回收"两个部分放不进一个计划。共享的新建父目录不单独证明任何部分；旧计划里一个动作属于多个部分的，不再证明任何部分。确认结果分为批准、拒绝、超时、中断，并记录来源（web/cli/policy）：网页 15 分钟超时、CLI 的 EOF 和 Ctrl-C 不再报成"用户拒绝"。本轮被拒绝、超时或中断的同一清单，换计划 ID 也不再弹卡，"本轮都允许"也不能覆盖。网页重复提交同一个确认 ID 时返回第一次的决定。提示 30,956→31,000（敏感检测开 31,091）。
   - S2（`cb070d1`）：`agent/interactions.py` 在 TaskStore 库里新增接收回执、请求、问题、回答、运行请求和协议元数据 6 张表，`user_version` 为 2。每条消息按 (root, session, client_message_id) 只接收一次：同 ID 同内容重试返回原回执（即使问题已答、出了新问题或服务重启过），同 ID 不同内容返回 409。按钮提交精确的 question_id、version、option_id；裸字母只算普通文字，不产生选项授权。网页消息必须带 ID，否则返回 426 提示刷新。服务重启后，正在运行的请求记为中断、不重放；已接收但还没建 turn 的请求补建并运行一次。CLI 新增 `run --message-id`、`answer --question --option`。迁移前先备份；备份必须放在写事务外面，放在里面会卡死。在真实任务库的副本上演练：73 条运行结果，耗时 19ms，完整性检查正常。
@@ -28,17 +28,35 @@
       - **工具报错**：失败的工具调用 5 次，其中参数校验错误 0 次；同口径下第 40 轮 A 组为 31 和 7。
       - **严格结束**：TERMINAL_REQUIRED 1 次，纠正后正常结束。
       - **失败**：`ans_do_nothing` 2 次，模型没登记任务、直接 reply，结果是 answered；`no_answer` 1 次，模型把"查过、没找到"写进了 unfinished，状态成了 partial。
-    - **S5 审计修复**（`docs/s5-routing-audit-2026-10-25.md`，未真实复验）：
+    - **S5 审计修复**（`ba900f1`，`docs/s5-routing-audit-2026-10-25.md`，第 42、43 轮真实复验）：
       - **P1-A**：已登记任务时 reply 仍显示在主回复，排在本地事实之后，只出现一次；超过 2000 字明确拒绝。
       - **P1-B**：不合法的 finish_turn/ask_user/finish_task 计入无进展保护（task_repair_limit），TURN_CLOSED 不计。
       - **P2-A**：mode=ask 带 summary、unfinished、not_needed、evidence_bindings 时拒绝；ask 的 reply 显示在问题前面。
       - **P2-C**：报错文字开头的代码（TURN_CLOSED、AMBIGUOUS_GOAL 等）和结构化的 error_code 一致。
       - **P2-B**（选项写进 reply）：仍是已知限制，只在 finish_turn 说明里加了正确提问的示例。
       - **"不做"的业务契约**：用户选了不做任何操作的选项、本轮也没有操作时，不论有没有登记任务，报告都写"已按你的选择保持原样（A（不移动）），没有改动"，`report.result=by_choice`、`display=chosen`（网页显示"已按你的选择处理"），并在请求上记录决定（`requests.decision_json`，库版本 4，真实库副本演练 0→4 用时 22ms）。旧判定和冻结预期不变，`ans_do_nothing` 没登记任务时仍按旧判定失败。
-      - **新评测**：判定器增加只在新场景生效的 `business` 检查；新冻结场景 `--suite s5`（6 组：纯回答、选择不做、写入后附带说明、局部跳过、部分执行后取消、需要选择时是否出卡片），还没有真实运行。
-'
-  '    - 仍未做：S6（流程/结果/核验状态拆分、结构化工具结果与恢复）、S7（检索覆盖账本）、S8（浏览器验收与联调）。**没有真实模型复验，也没有浏览器验收**：严格结束、新字段和停止按钮对真实模型的效果（纠错率、多花的请求、费用）都还没测；提示余量只剩 169–273 字。
-- 阶段 3 和第 39 轮的提交（`6c29b17`、`3862f4f`、`c977f7c` 及之后的文档更新）未推送；推送前用 `git status -sb` 确认。
+      - **新评测**：判定器增加只在新场景生效的 `business` 检查；新冻结场景 `--suite s5`（6 组：纯回答、选择不做、写入后附带说明、局部跳过、部分执行后取消、需要选择时是否出卡片）。
+    - **第 42 轮**（`ba900f1`，`policy_live_20261025_42_{r1,r2,r3}_s5`、`r1_regression`、`r1_answer`，¥0.65）：
+      - **结果**：s5 13/18（r1 5/6、r2 3/6、r3 5/6），regression 8/8，answer 1/2。`ans_do_nothing` 通过（第 41 轮 0/2），结果为 by_choice；`ans_skip_b` 失败，原因是模型在 start_task 里多写了 notes，触发人工复核。
+      - **按设计工作的部分**：`s5_needs_a_question` 3/3 用了问题卡，没有把选项写进 reply；`s5_cancel_rest` 3/3 通过，b 都没动。
+      - **场景写错**：`s5_explain_after_write` 0/3。fixture 里没有 Archive，按用户 10-22 的规则"目标文件夹不存在要先问"，模型提问是对的，是场景的错。冻结预期不改，另写 v2。
+      - **机制回退（S3 引入）**：r2 的 `s5_nothing_by_choice`（partial）、`s5_skip_b`（needs_review）都是同一原因：带作用域的问题只有 `disposition=skip` 能结算，模型却把"先不移动"和"只移 a"标成 continue。另外 not_needed 会盖掉按选择的结算，结果变成"需要人工判断"。
+      - **disposition 误用**：s5 的 12 次工具报错中有 6 次是把"先不动"标成 cancel_request，或者写了 skip 却没写 scope；本地都拦下了，只是每次多一轮重试。
+    - **第 43 轮修复**（`53137ce`）：
+      - 带作用域的选择沿用 S3 之前的规则（所选选项声明的操作都执行后，作用域内没碰过的部分按选择结算），skip 不变。
+      - 被选择排除的部分，模型写的 not_needed 只当作说明，不再判需复核；没有作用域时也一样，属于 10-22"按选择范围判定"的延伸。
+      - `disposition` 的说明改为"通常不填；只是先不动就写空 actions"，相关报错也给出同样的提示。
+      - 新增场景 `s5_explain_after_write_v2`（事先建好 Archive），跑之前提交。
+      - 新增回放 2 个，按 r2 的两次失败写成；改代码之前两个都失败。
+    - **第 43 轮**（`policy_live_20261025_43_{r1,r2}_s5`，¥0.285）：
+      - **结果**：每遍 5/7。`s5_nothing_by_choice` 2/2 为 by_choice，`s5_skip_b` 2/2 为 done，cancel_rest、needs_a_question、plain_answer 全过。
+      - **工具报错**：s5 两遍共 5 次，disposition 类 0 次，UNRESOLVED_QUESTION_SCOPE 0 次；第 42 轮三遍共 12 次。
+      - **没过的 2 个都是预期错**：
+        - 旧版 `s5_explain_after_write` 仍然先提问，原因同上。
+        - `s5_explain_after_write_v2` 两次都是 needs_review。模型移动 a 之后重新看了 Inbox，回答"还剩 2 个"，文件和回答检查都通过。按设计，任务里的 answer 部分一律需要人工判断（`agent/intent.py:25`），预期写成 done 是写错了。冻结预期不改。
+      - **用户决定**（10-25）：先保持现状，回答类部分本地无法核验，仍然标出来让用户看；是否允许用 evidence_bindings 绑定本轮工具结果判 done，放到 S6 再议。
+    - 仍未做：S6（流程/结果/核验状态拆分、结构化工具结果与恢复）、S7（检索覆盖账本）、S8（浏览器验收与联调）。**还没有浏览器验收**：真实模型复验见第 40–43 轮；停止按钮和网页显示还没在浏览器里测；提示余量只剩 159–263 字。
+- 2026-10-25 已推送到 `optimize/completion-binding`（含 S5 审计修复和第 42、43 轮）；远端 master 仍停在 `a489b21`，是否合并待用户决定。推送前用 `git status -sb` 确认。
 - **2026-10-24 功能方案阶段 0、1 完成**：新增统一抽取层 `agent/extract.py`，read_file、search_content、paper_profiles、敏感规则都从这里取文字；`agent/document_cache.cached` 按内容缓存所有格式，PDF 键不变，旧缓存仍然有效。read_file 新增支持 docx/doc/rtf/odt（macOS textutil）、pptx（python-pptx，每张幻灯片一个单元，含备注、表格、分组）、xlsx（openpyxl，取值而不是公式，每表最多 5000 行）、html（去掉标签）、rst。锁文件、损坏或加密文件、解压后超过 300MB 的文件给出明确错误。本机 160 个文件中 158 个读取成功，失败的 2 个是测试假文件。第 37 轮 office 13/15（答案 15/15 正确）。
 - **2026-10-24 功能方案阶段 2（OCR）完成**（`2ee7b3f`）：没有新增 Python 依赖。`agent/ocr_vision.swift` 调用 macOS Vision 在本机识别，第一次使用时由 swiftc 编译到 `.cache/`；没有 macOS 或编译器时提示"无法识别"。read_file 可以读图片（会按 EXIF 方向转正）和文字少于 20 字的 PDF 页，结果里注明"本地 OCR 识别，可能有错字"，识别结果按页缓存。search_content 每次调用最多花 20 秒识别扫描页，剩下的下次检索继续。本机 70 张图片 0 失败，平均 0.33 秒；19 份 PDF 中有 26 个扫描页，25 页识别出文字，每页约 1 秒；真实论文首页渲染后识别，与文字层的相似度为 0.94。测试图片如果用 Hiragino 字体，英文里的 d 会被认成 a，所以评测改用 Arial Unicode。离线测试 434 passed；第 38 轮 ocr 15/15。
 - **2026-10-24 功能方案阶段 3（全文 BM25）完成**：先冻结检索评测集（`6c29b17`，`eval/retrieval_set_20261024.yaml`，61 题：E12 原题 12、新增主题 18、只在第 3 页以后才有的细节 19、混合格式 12；混合格式资料库由 `eval/retrieval_mixed.py` 生成；真实论文复制到临时目录再测，不往 `data/real` 写缓存），再改 `tools/retrieval.py`：检索所有能读的格式的全文（PDF、文本、Office、网页，图片和扫描页本地 OCR），按 500 字分段计 BM25，文件取最好的一段；非 PDF 的命中只给 offset（对应 read_file 的 offset）。去掉了 `pdf_pages` 参数，提示总字数 31,209→30,956。`python -m eval.retrieval_set --out <新目录>`：Recall@5 全部 52.9%→78.4%（细节 63.2%→89.5%，混合格式 9.1%→90.9%，E12 仍为 81.8%，跨语言 4.2%→8.3%）；整篇打分 76.0%、MRR 0.772，分段 500 字 78.4%、MRR 0.738，两者融合只差 1–2 题，选分段是因为召回最高、查询快约 8 倍（19ms 对 145ms）。代价：第一次建索引变慢，51 篇论文 + 12 个混合文件冷启动 6.3 秒（原来 1.5 秒），换会话读 sqlite 缓存 0.5 秒；资料库很大时第一次检索会很慢，没有设时间上限。题目和标注由同一人写成，不是盲测。
@@ -51,9 +69,9 @@
 - **第 20 轮：两套盲测各 3 次 + v2 对照**：v3 47/48 = 97.9%（95% 区间 89.1%–99.6%），v2 35/48 = 72.9%（59.0%–83.4%）；费用 ¥0.575 对 ¥0.978。其余功能验收每组多数只跑过 1 次，逐轮见第 7 节。
 - 用户 2026-10-22 决定：**单个计划超过 500 项不做自动分批**。
 - 下一步候选（2026-10-25）：
-  - 冻结修复版后的针对性真实复验：先跑 `--suite s5`（6 组），再跑 regression、answer、parts、ocr 回归；费用另行授权。要统计"需要选择却没有问题卡"的比例（P2-B）。
+  - 第 43 轮修复后还没跑 regression、answer、parts、ocr 回归；费用另行授权。
   - 浏览器验收：选择按钮、停止按钮、断网重试、刷新，以及"已按你的选择处理"的显示。
-  - S6：流程、结果、核验三种状态拆分，判定器版本化（新旧两套口径同时报告）；`no_answer` 这类"查过、没找到"怎样表达也放进这一步。
+  - S6：流程、结果、核验三种状态拆分，判定器版本化（新旧两套口径同时报告）；`no_answer` 这类"查过、没找到"怎样表达，以及任务里的 answer 部分能否凭本轮工具结果判 done（第 43 轮 v2），都放进这一步。
   - `unfinished` 字段说明被压缩后，可能是 `no_answer` 失败的原因之一，可以恢复原来的完整说明（约 40 字）。
   - 回收非空文件夹要拆成多个计划（用户日志：4 个计划、4 张确认卡、¥0.10）。
   - 阶段 4 向量检索（跨语言检索 12 题只命中 1 题）。
@@ -501,4 +519,4 @@ zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --cases p1_swap 
 
 ## 11. 新对话可直接使用的接手提示
 
-> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `optimize/completion-binding`，只有协议 v3，486 项离线测试通过；功能方案阶段 0–3 和路由改造 S0–S5 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 41 轮（31/34）。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
+> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `optimize/completion-binding`，只有协议 v3，488 项离线测试通过；功能方案阶段 0–3 和路由改造 S0–S5 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
