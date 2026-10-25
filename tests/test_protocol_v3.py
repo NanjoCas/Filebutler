@@ -158,12 +158,38 @@ def test_finish_turn_modes_are_checked_locally(tmp_path):
     _, client = session.run('你好', [step(call('finish_turn', dict(mode='task', summary='x')))], final='你好。')
     assert '尚未登记任务' in client.calls('finish_turn')[0]['text']  # no task: mode=task is refused, then reply
     _, client = session.run('问一下', [step(call('finish_turn', dict(mode='ask')))], final='好的。')
-    assert 'mode=ask 需要 question' in client.calls('finish_turn')[0]['text']
+    assert 'mode=ask 需要 question、reason' in client.calls('finish_turn')[0]['text']
     result, client = session.run('归档 a', [step(start([dict(kind='organize', description='归档 a')]),
                                                  call('prepare_file_plan', dict(description='归档', actions=ARCHIVE_A), alias=PLAN)),
                                             execute(), step(call('finish_turn', dict(mode='reply', reply='已归档。')))])
     # A registered task is verified whichever mode ends it.
     assert result.stop_reason == 'done' and result.runtime['task_status'] == 'completed'
+
+
+ASK_FLAT = dict(question='放哪里？', reason='missing_criterion', options=[dict(label='Archive', actions=[]), dict(label='不动', actions=[])])
+
+
+def test_a_question_is_asked_with_its_fields_on_finish_turn_itself(tmp_path):
+    # Round 40 (2026-10-25): the nested question object was written wrong 11 times.
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, _ = session.run('整理', [step(call('finish_turn', dict(mode='ask', **ASK_FLAT)))])
+    assert result.stop_reason == 'waiting_input' and [c['label'] for c in result.report['choices']] == ['Archive', '不动']
+    # The nested form from older histories is unfolded locally.
+    result, _ = session.run('整理', [step(call('finish_turn', dict(mode='ask', question=ASK_FLAT)))])
+    assert result.stop_reason == 'waiting_input'
+    _, client = session.run('你好', [step(call('finish_turn', dict(mode='reply', reply='好', options=ASK_FLAT['options'])))],
+                            final='你好。')
+    assert '只有 mode=ask 才填' in client.calls('finish_turn')[0]['text']
+
+
+def test_declaring_answer_after_pressing_an_option_is_accepted(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    session.run('整理', [step(call('finish_turn', dict(mode='ask', **ASK_FLAT)))])
+    result, client = session.run('B', [step(call('finish_turn', dict(mode='reply', reply='好的，不动。',
+                                                                     input_resolution=dict(kind='answer'))))])
+    assert errors(client) == [] and result.stop_reason == 'answered'
 
 
 def test_calls_after_the_terminal_call_in_one_response_do_not_run(tmp_path):

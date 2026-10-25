@@ -271,7 +271,7 @@ def test_a_model_corrected_once_asks_with_buttons(tmp_path):
     class Corrected(H.Replay):
         def create(self, **kw):
             if any(m['role'] == 'system' and 'TERMINAL_REQUIRED' in (m.get('content') or '') for m in kw['messages']):
-                self.steps = [step(call('finish_turn', dict(mode='ask', question=ask)))]
+                self.steps = [step(call('finish_turn', dict(mode='ask', **ask)))]
                 self.bare = False
             return super().create(**kw)
 

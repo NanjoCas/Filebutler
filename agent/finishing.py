@@ -16,7 +16,7 @@ from typing import Literal
 from pydantic import Field
 
 from agent import choices
-from agent.asking import AskUser
+from agent.asking import AskUser, Choice, Draft, Scope
 from agent.intent import InputResolution, parts_text
 from agent.reporting import build_report
 from agent.task import StrictModel, task_state
@@ -49,7 +49,16 @@ class FinishTurn(StrictModel):
     mode: Literal['reply', 'ask', 'task'] = Field(
         description='reply 回答或说明；ask 提问并等待用户选择；task 已登记任务时收尾，本地逐部分核验')
     reply: str = Field('', max_length=12000, description='给用户的主回复；mode=task 时只写用户要你告诉他的内容')
-    question: AskUser | None = Field(None, description='mode=ask 必填：问题和 2–4 个选项')
+    # mode=ask: the question's fields sit here, not in a nested object (round 40, 2026-10-25:
+    # 11 calls put them at the top level or invented question_reason against the nested form).
+    question: str = Field('', max_length=300, description='mode=ask 必填：问用户的一句话')
+    reason: AskUser.model_fields['reason'].annotation | None = Field(
+        None, description=AskUser.model_fields['reason'].description)
+    options: list[Choice] = Field(default_factory=list, max_length=4, description='mode=ask 必填：' + AskUser.model_fields['options'].description)
+    allow_other: bool = AskUser.model_fields['allow_other']
+    subject: list[str] = AskUser.model_fields['subject']
+    scope: Scope | None = AskUser.model_fields['scope']
+    drafts: list[Draft] = AskUser.model_fields['drafts']
     summary: str = FinishTask.model_fields['summary']
     unfinished: list[Unfinished] = Field(default_factory=list, max_length=10, description='没有做到的部分，会标为未完成')
     not_needed: list[Unfinished] = Field(default_factory=list, max_length=10, description='没有对象而无需操作的部分，结果待核实')
@@ -127,18 +136,25 @@ class Finishing:
             self.current['interruption_reason'] = reason
             self.store.checkpoint(self.current)
 
+    ASK_FIELDS = ('question', 'reason', 'options', 'allow_other', 'subject', 'scope', 'drafts')
+
     def _finish_turn(self, raw, sb):
-        args = FinishTurn.model_validate_json(raw)
+        data = json.loads(raw)
+        if isinstance(data, dict) and isinstance(data.get('question'), dict):
+            # The nested form of 2026-10-25 S5, still in some histories: unfold it (not in the schema).
+            data = {**{k: v for k, v in data.items() if k != 'question'}, **data['question']}
+        args = FinishTurn.model_validate(data)
         if args.input_resolution and self.input_relation is None:
             self.declare_relation(args.input_resolution, terminal=True)
             if self.finished:  # paused or cancelled: the local report is the turn's answer
                 return registry.ToolResult(status='ok', text=f'OK: 已{"暂停" if self.stop_reason == "paused" else "取消"}这个请求，本轮结束')
+        given = args.model_fields_set & set(self.ASK_FIELDS)
         if args.mode == 'ask':
-            if not args.question:
-                raise ValueError('mode=ask 需要 question：问题和 2–4 个选项')
-            return self._ask(args.question, sb)
-        if args.question:
-            raise ValueError('只有 mode=ask 才填 question；要用户选择请用 mode=ask')
+            if not args.question or not args.reason or not args.options:
+                raise ValueError('mode=ask 需要 question、reason 和 2–4 个 options')
+            return self._ask(AskUser(**{k: getattr(args, k) for k in self.ASK_FIELDS}), sb)
+        if given - {'allow_other', 'subject'} and any(getattr(args, k) for k in given):
+            raise ValueError('只有 mode=ask 才填 question / options 等提问字段；要用户选择请用 mode=ask')
         if args.evidence_bindings:
             self._bind_evidence(args.evidence_bindings)
         if self.current:

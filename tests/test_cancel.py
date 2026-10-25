@@ -23,7 +23,7 @@ def repo(session):
 def test_the_cancel_button_ends_the_request_without_a_model_call(tmp_path):
     files_fixture(tmp_path)
     session = Session(tmp_path)
-    session.run('移动 Inbox', [step(call('finish_turn', dict(mode='ask', question=ASK_GO_ON)))])
+    session.run('移动 Inbox', [step(call('finish_turn', dict(mode='ask', **ASK_GO_ON)))])
     result, client = session.run('B', [step(call('list_dir', dict(path='.')))])  # B: the cancel button
     assert client.requests == 0 and result.stop_reason == 'cancelled'
     assert result.final == '已取消，没有执行任何文件操作。'
@@ -39,7 +39,7 @@ def test_cancelling_after_part_of_the_work_keeps_it_and_says_what_is_left(tmp_pa
              dict(id='b', kind='organize', description='把 b.txt 移到 Archive')]
     session.run('移动 a 和 b', [step(start(parts), call('prepare_file_plan', dict(description='移动 a', actions=[
         dict(ARCHIVE_A[0], part='a')]), alias=PLAN)), execute(),
-        step(call('finish_turn', dict(mode='ask', question=ASK_GO_ON)))])
+        step(call('finish_turn', dict(mode='ask', **ASK_GO_ON)))])
     result, client = session.run('B', [])
     assert client.requests == 0 and result.stop_reason == 'cancelled'
     assert result.final.startswith('已取消；此前已移动 1 个文件，可撤销') and '把 b.txt 移到 Archive' in result.final
@@ -51,7 +51,7 @@ def test_cancelling_after_part_of_the_work_keeps_it_and_says_what_is_left(tmp_pa
 def test_typed_cancel_is_declared_by_the_model_and_applied_locally(tmp_path):
     files_fixture(tmp_path)
     session = Session(tmp_path)
-    session.run('移动 Inbox', [step(call('finish_turn', dict(mode='ask', question=ASK_GO_ON)))])
+    session.run('移动 Inbox', [step(call('finish_turn', dict(mode='ask', **ASK_GO_ON)))])
     result, _ = session.run('算了，都别做了', [step(call('finish_turn', dict(
         mode='reply', reply='好的。', input_resolution=dict(kind='cancel_request'))))])
     assert result.stop_reason == 'cancelled' and result.final.startswith('已取消')
@@ -61,7 +61,7 @@ def test_typed_cancel_is_declared_by_the_model_and_applied_locally(tmp_path):
 def test_after_a_cancel_old_buttons_and_retries_start_nothing(tmp_path):
     files_fixture(tmp_path)
     session = Session(tmp_path)
-    session.run('移动 Inbox', [step(call('finish_turn', dict(mode='ask', question=ASK_GO_ON)))])
+    session.run('移动 Inbox', [step(call('finish_turn', dict(mode='ask', **ASK_GO_ON)))])
     question = repo(session).open_question()
     session.run('B', [])
     keep = next(c for c in question['data']['choices'] if c['key'] == 'A')

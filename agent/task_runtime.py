@@ -270,6 +270,9 @@ class TaskRuntime(Asking, Finishing):
         if kind in ('pause', 'cancel_request') and not terminal:
             raise ValueError(f'{kind} 用 finish_turn 的 input_resolution 声明，并结束本轮')
         if kind == 'answer' and not self.relation_needed():
+            if (self.answered_choice or {}).get('chosen'):
+                self.input_relation = kind  # an exact answer is an answer already: nothing to apply
+                return
             raise ValueError('本轮消息没有回应待答问题，不能声明 answer')
         if kind in ('new_request', 'independent_query'):
             # Not an answer: the question waits, and none of its options or consents carry over.

@@ -4,7 +4,7 @@
 作者角色：资深工程师 Agent  
 状态：方案设计已通过独立产品复审；未实施生产代码。
 
-实施状态（2026-10-25）：S0–S1（`1a20c5f`）、S2（`cb070d1`）、S5（`aa27657`）、S4（`9e5571e`）、S3（`c2ec16f`）已实施，离线 476 passed、无 xfail。`Selection.part` 从 S4 提前到 S1。容量：去掉 pydantic 自动生成的 schema title（3,661 字，无规则内容，不在第 10 节所列删减项内，单独说明），并删去第 10 节所列的重复说明；最终提示 31,038 / 31,142（上限 31,311）。S6–S8 未实施；未做真实模型和浏览器验收。见 HANDOFF 第 1 节。
+实施状态（2026-10-25）：S0–S1（`1a20c5f`）、S2（`cb070d1`）、S5（`aa27657`）、S4（`9e5571e`）、S3（`c2ec16f`）已实施，离线 476 passed、无 xfail。`Selection.part` 从 S4 提前到 S1。容量：去掉 pydantic 自动生成的 schema title（3,661 字，无规则内容，不在第 10 节所列删减项内，单独说明），并删去第 10 节所列的重复说明；最终提示 31,038 / 31,142（上限 31,311）。第 40 轮 schema title A/B（各 3 遍）：去掉 title 90.2%、保留 96.0%，差异不显著，但嵌套提问写错是报错主因；按上文修正平铺后提示 30,830 / 30,934。S6–S8 未实施；未做浏览器验收。见 HANDOFF 第 1 节。
 
 审核记录：[独立产品审核报告](agent-routing-redesign-2026-10-24.product-review.md)。初稿与修订稿保留供审计。
 
@@ -123,7 +123,7 @@ PYCODE
 FinishTurn = {
   "mode": "reply | ask | task",
   "reply": "用户主回复，可空",
-  "question": AskPayload | None,      # 仅 ask；复用现有选项动作检查
+  "question": "问题文字", "reason": ..., "options": [...],   # 仅 ask；AskPayload 的字段平铺在这一层（2026-10-25 修正，见下）
   "summary": "模型补充，可空",         # task；沿用输出长度与detail语义
   "unfinished": [{"part_id": "g2", "reason": "..."}],
   "not_needed": [{"part_id": "g3", "reason": "..."}],
@@ -131,7 +131,9 @@ FinishTurn = {
 }
 ```
 
-用枚举与本地 validator 保证字段组合互斥；如果模型供应商对 JSON Schema union 支持不稳，不必依赖复杂 discriminated union。`reply` 不创建 Task；已有未结任务时不能用 reply 绕过本地核验。`task` 必须有当前 Task；`ask` 必须先持久化问题再结束本轮。
+用枚举与本地 validator 保证字段组合互斥；如果模型供应商对 JSON Schema union 支持不稳，不必依赖复杂 discriminated union。
+
+2026-10-25 实施修正：最初按 `question: AskPayload` 嵌套实现，第 40 轮真实运行中模型 11 次把 reason/subject/scope 写到外层或编出 question_reason（`question` 既是对象名又是 AskPayload 里的问题文字）。现改为 AskPayload 的字段直接平铺在 finish_turn 上（question 为问题文字），mode=ask 必填 question/reason/options，其他 mode 不得带提问字段；旧嵌套写法由本地展开兼容，不出现在 schema 中。提示字数因此 −208。`reply` 不创建 Task；已有未结任务时不能用 reply 绕过本地核验。`task` 必须有当前 Task；`ask` 必须先持久化问题再结束本轮。
 
 旧 `ask_user`/`finish_task` 保留内部兼容 adapter 和 trace 解析，不同时长期暴露新旧三份大 schema。切换以会话协议版本/服务配置确定，单个会话在一轮内 schema 稳定。S2 继续使用现有 ask_user/finish_task 与普通正文路径；只统一内部终止事件和问题引用，不增加模型参数。S5 才引入内部 `TurnEnd` 联合类型并原子切换模型 schema。S5 未通过时，正文提问的历史缺口必须公开保留，不能声称已解决。
 
