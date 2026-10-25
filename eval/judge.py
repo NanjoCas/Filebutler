@@ -136,7 +136,12 @@ def turn_states(turn):
     if states: return states, 'saved'
     from agent.states import project
     plans = [p for p in turn.get('plans') or [] if isinstance(p, dict)]
-    return project(turn.get('stop_reason'), turn.get('report') or {}, turn.get('task') or None,
+    task = dict(turn['task']) if turn.get('task') else None
+    checks = (turn.get('runtime') or {}).get('checks') or []
+    if task is not None and 'checks' not in task and checks:
+        # A minimal saved task: the parts as the runtime summary recorded them.
+        task.update(checks=checks, goals=[dict(id=c['goal_id']) for c in checks])
+    return project(turn.get('stop_reason'), turn.get('report') or {}, task,
                    plans=plans, error_type=turn.get('error_type')), 'projected'
 
 
