@@ -85,3 +85,8 @@ def test_an_excluded_file_says_why_and_is_not_counted_as_unreviewed():
     assert ledger['files']['b.pdf'] == dict(version=[1, 2], state='failed', status='excluded', reason='读取失败')
     s = coverage.summary(ledger)
     assert (s['total'], s['excluded'], s['unreviewed']) == (2, 1, 1)  # the zip is not readable at all
+
+
+def test_the_seven_frozen_coverage_samples_hold(tmp_path):
+    from eval.coverage_samples import main
+    assert main(['--out', str(tmp_path / 'out')]) == 0
