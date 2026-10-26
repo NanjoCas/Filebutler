@@ -1,6 +1,6 @@
 # FileButler 项目交接（HANDOFF）
 
-更新时间：2026-10-25（Asia/Shanghai）。供新对话或下一位维护者直接接续。第 1 节是现状，第 7、8 节是逐条累积的事实和待办；第 1 节以外的旧数字是当时的记录。
+更新时间：2026-10-27（Asia/Shanghai）。供新对话或下一位维护者直接接续。第 1 节是现状，第 7、8 节是逐条累积的事实和待办；第 1 节以外的旧数字是当时的记录。
 
 ## 1. 接手先看这几句话
 
@@ -80,6 +80,14 @@
       - 工具报错非 s5 每轮 0.35（第 44 轮 0.24），主要是 real_classification 模型选了 `view=evidence`，把"名称=doc_02"当路径读了 8 次。不是这次改动引入的。
       - 修复后离线 529 项通过。
     - **第 46 轮修复复验**（`41e28a8`，`policy_live_20261025_46_r{1,2}_{s5,answer}`，¥0.34）：问题写进任务后按按钮回答的情况出现 2 次，都正常完成；"任务仍有待确认问题"拦截 0 次、重复提问 0 次。v3 12/18、v4 13/18；没过的是 explain_after_write 两个（场景预期错）、`ans_do_nothing`（旧判定）和 r2 `s5_skip_b`（模型没给"只移动 a"选项，评测退到"都不动"，评测场景问题）。
+- **2026-10-26–27 运行日志页**（`322fb2b`、`4839f7a`；用户要求"前端链路可视化，帮助我自己学习整体链路，不要太黑箱"）：
+  - 入口：聊天页顶栏「运行日志」（`/static/logs.html#c=<对话 id>`），「返回对话」回到同一对话。只读接口 `/api/logs`、`/api/logs/conversations/{id}`、`.../turns/{n}`、`/api/logs/runs/{run_id}`（评测和命令行运行），点到哪轮才加载哪轮。
+  - `web_logs.py`：以 trace 为骨架画出每次模型请求和工具调用；`history_json` 与 trace 逐个调用对上时，补全模型输出文字、`reasoning_content`（产品原本就存在 history 里，DeepSeek 要求带回）和工具结果全文（trace 只存 300 字）；网页端 `events_json` 把确认、文件改动、任务状态挂到对应调用下。对不上的一律在页面上标出，不丢弃；还标出句柄（F/E/C/P/X/T）的出处，以及没登记任务时为什么没有核验。核验状态用产品自己的 `agent/states.py`（经 `eval.judge.turn_states`）。
+  - 起因：网页端 `events_json` 较早的运行只存了 started/completed，原型时间线按它画，9 次调用一项都不显示。
+  - `web/labels.js`：工具名、结局、任务状态、完成条件、操作类型原来在 `app.js`、`tasks.js` 里各有一份，现在只此一份，聊天页、任务窗口、日志页共用；服务端只返回代码。顺带补了 `finish_turn` 的标签（聊天页原来把它显示成"执行文件工具"）。`agent/reporting.TOOL_NAMES`（报告正文用词）仍是另一份，是否合并未定。
+  - 验证：`tests/test_logs_viewer.py` 21 项（含无头 Chrome，没装 Chrome 时跳过），故意破坏 4 种都能抓到；用本机真实数据在浏览器里逐轮打开 108 轮，调用数全对，没有脚本异常。
+- **2026-10-27 模型请求直连**（用户 01:20–01:21 三次运行在"模型请求"阶段报 ImportError，0 token）：本机代理设了 `all_proxy=socks5h://127.0.0.1:7890`，httpx 创建客户端时会为每个代理变量建连接，SOCKS 需要 `socksio`，`.venv` 没装；`no_proxy` 挡不住，因为在建客户端时就报错，不是发请求时。用户选择直连：新配置 `llm_use_env_proxy: false`（`agent/llm.py` 用 `DefaultHttpxClient(trust_env=False)`），默认 true 保持旧行为。已确认本机直连 api.deepseek.com 可达。**改动后需重启网页服务才生效。** 回归测试在 `tests/test_latency.py`。
+- 离线测试 551 passed（2026-10-27）。
 - 2026-10-25 用户要求合并：`master` 从 `a489b21` 快进到 `6f103e8`（与 `optimize/completion-binding` 相同，无合并提交）；之后用户要求直接在 `master` 上工作。推送前用 `git status -sb` 确认。
 - **2026-10-24 功能方案阶段 0、1 完成**：新增统一抽取层 `agent/extract.py`，read_file、search_content、paper_profiles、敏感规则都从这里取文字；`agent/document_cache.cached` 按内容缓存所有格式，PDF 键不变，旧缓存仍然有效。read_file 新增支持 docx/doc/rtf/odt（macOS textutil）、pptx（python-pptx，每张幻灯片一个单元，含备注、表格、分组）、xlsx（openpyxl，取值而不是公式，每表最多 5000 行）、html（去掉标签）、rst。锁文件、损坏或加密文件、解压后超过 300MB 的文件给出明确错误。本机 160 个文件中 158 个读取成功，失败的 2 个是测试假文件。第 37 轮 office 13/15（答案 15/15 正确）。
 - **2026-10-24 功能方案阶段 2（OCR）完成**（`2ee7b3f`）：没有新增 Python 依赖。`agent/ocr_vision.swift` 调用 macOS Vision 在本机识别，第一次使用时由 swiftc 编译到 `.cache/`；没有 macOS 或编译器时提示"无法识别"。read_file 可以读图片（会按 EXIF 方向转正）和文字少于 20 字的 PDF 页，结果里注明"本地 OCR 识别，可能有错字"，识别结果按页缓存。search_content 每次调用最多花 20 秒识别扫描页，剩下的下次检索继续。本机 70 张图片 0 失败，平均 0.33 秒；19 份 PDF 中有 26 个扫描页，25 页识别出文字，每页约 1 秒；真实论文首页渲染后识别，与文字层的相似度为 0.94。测试图片如果用 Hiragino 字体，英文里的 d 会被认成 a，所以评测改用 Arial Unicode。离线测试 434 passed；第 38 轮 ocr 15/15。
@@ -174,6 +182,7 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | task_repair_limit | 6；0 关闭无进展修复保护 |
 | repeat_detection / retrieval | `true` / `true` |
 | llm_timeout / llm_retries | 60 秒 / 1；真实验收覆盖为 0 次重试 |
+| llm_use_env_proxy | `false`（2026-10-27 起）：模型请求直连，不读系统代理变量；需要走代理时改 `true`（SOCKS 代理还需 `pip install socksio`） |
 | cost_budget | 每轮 ¥0.30 软预算，非硬账单上限 |
 | confirm | `risky`；文件计划强制展示确认卡片，调用方显式 `never` 除外 |
 | sensitive_files | `false`（2026-10-24 起）；`true` 时启用敏感文件名单、内容规则和点选授权 |
@@ -222,7 +231,8 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | `safety/atomic.py` | 新执行器的原子禁止覆盖移动：macOS renamex_np、Linux renameat2；缺接口拒绝，不退回覆盖型 rename。 |
 | `safety/names.py` | 文件名隔离：工具结果中含换行、控制符、双向控制符、尖括号的名字统一转义并附 F 标识；确认卡片上的可见标记。 |
 | `safety/oplog.py`、`safety/confirm.py` | 写入日志/undo、确认策略；日志逐项 flush/fsync，新计划带 action_id。 |
-| `webapp.py`、`web_confirm.py`、`web/` | FastAPI、结构化确认预览、多会话与删除对话、文件预览、Markdown、事件动画、任务复核、可拖动分栏；会话渲染有缓存，静态文件 no-cache。 |
+| `webapp.py`、`web_confirm.py`、`web/` | FastAPI、结构化确认预览、多会话与删除对话、文件预览、Markdown、事件动画、任务复核、可拖动分栏；会话渲染有缓存，静态文件 no-cache。页面用的中文标签只在 `web/labels.js`。 |
+| `web_logs.py`、`web/logs.html`、`web/logs.js`、`web/logs.css` | 运行日志页：按对话、按轮次显示每次模型请求、工具调用、确认、文件改动、任务状态、报告、核验状态和句柄出处；只读，按对话缓存，trace 或对话变化时重算。 |
 | `eval/live_policy.py`、`eval/judge.py`、`eval/rejudge.py`、`eval/*_cases.py`、`eval/dryrun.py` | 生产 Agent 验收入口、多维判定、离线重判、各套场景和脚本模型干跑。`eval/retrieval_set.py` 是检索评测（不调用 API）。 |
 
 ### 新计划链路
@@ -278,6 +288,14 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 费用按项目配置费率估算，不是账单；`policy_live_*` 合计 10-21 ¥2.77、10-22 ¥3.87、10-23 ¥2.23、10-24 ¥0.91。自动确认只验证临时数据执行，不代表真人确认或浏览器验收。除注明 3 次的轮次外，每个场景每轮只采样一次。
 
 ## 8. 未解决问题与建议接手顺序
+
+### 2026-10-27 运行日志页之后的待办（待用户决定）
+
+- [ ] **第二阶段：补日志**（改 `agent/loop.py`，不增加 token，会多占硬盘）：每轮的任务快照（`runtime.guidance`，不存进历史，日志页看不到原文）；重复调用提醒、闸门拦截的具体原因、`names.shield` 改写前后；评测和命令行运行的结果全文（现在只有 300 字，句柄追不到出处）；**失败时只记了错误类型**（10-27 的三次失败只看到 `ImportError`，聊天页只说"程序内部出错"），应记下错误信息。另外落盘 `reasoning_content` 会碰到第 10 节"不记录模型隐藏推理"，要用户定。
+- [ ] **第三阶段：链路图**：固定流程图，节点标代码位置，选中一轮时高亮实际路径。
+- [ ] **询问类回答绕过本地核验**【已见】：`finish_turn(mode=reply)` 不登记任务，也就不核验；"我目前有哪些学校的 offer"读到了 10 个证据片段，却没用 `report_findings` 绑定，回复里的结论本地没核对过。是否要求查找类询问也引用证据，属于产品决定，2.0 方案里没有。日志页已在这种轮次上写明原因。
+- [ ] 日志页小项：`context_prepared` 只显示字数，看不出归档了哪些消息；2 轮评测运行（328 项文件改动）没有时间记录，定不到具体调用；不能按失败、工具、错误码筛选；手机宽度没验过；首次打开约 1.5 秒（之后走缓存）。
+- `docs/filebutler-2.0-upgrade.md`（另一会话 10-26 写的 2.0 方案，未提交）第 4 节 Q1–Q10 待用户决定；其中 P1-D（状态显示单点推导）做了以后，`web/labels.js` 的 `outcomeLabel` 要改用它。
 
 ### 2026-10-24 用户日志排查（待用户决定，未改代码）
 
@@ -509,6 +527,7 @@ cd /Users/nanjo/Desktop/projects/DocAgent/filebutler
 .venv/bin/python -m pytest -q
 /opt/homebrew/bin/node --check web/app.js
 /opt/homebrew/bin/node --check web/tasks.js
+/opt/homebrew/bin/node --check web/labels.js web/logs.js
 git diff --check
 ```
 
@@ -520,6 +539,7 @@ git diff --check
 - `tests/test_file_plans.py`、`tests/test_plan_ordering.py`、`tests/test_document_cache.py`、`tests/test_result_reporting.py`：计划执行、依赖排序、缓存、报告。
 - `tests/test_extract.py`、`tests/test_ocr.py`、`tests/test_retrieval.py`：Office/网页抽取、OCR（3 个测试真实调用 Vision）、全文检索。
 - `tests/test_web_ui.py`：HTTP、预览、确认与删除对话；不等于真实浏览器验收。
+- `tests/test_logs_viewer.py`：运行日志页的生成逻辑、接口和整页渲染（无头 Chrome 起的是不带启动钩子的服务，不碰真实状态库和沙盒）。
 
 修复流程：先把真实失败做成离线回放，在修复前的代码上确认测试失败，再改实现，并补反向测试。
 
@@ -542,8 +562,8 @@ zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --cases p1_swap 
 - 语义分类正确性不能由文件哈希或工具成功证明；语义复核仍需保留。
 - 不重放不明写入，不以同名/同内容目标存在推断曾成功执行；文件系统和 SQLite 并非统一原子事务。
 - 文字缓存只共享抽取结果，不共享会话授权/证据身份。read_file 默认读 PDF 前两页，不能说成整篇；全文检索也不能说成全库穷尽。
-- 不打印凭据，不记录模型隐藏推理，不把付费估算当账单事实。
+- 不打印凭据，不记录模型隐藏推理，不把付费估算当账单事实。运行日志页显示的 `reasoning_content` 来自产品本来就保存的 `history_json`（DeepSeek 思考模式要求带回），没有另外记录。
 
 ## 11. 新对话可直接使用的接手提示
 
-> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `master`，只有协议 v3，529 项离线测试通过；功能方案阶段 0–3 和路由改造 S0–S8 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）和第 44 轮回归（32/34）；S6–S8 已实施，浏览器验收 6/6；第 45 轮真实验收 v3 61/72、v4 63/72，发现并修复了已答问题残留和工具结果序列化两处问题，第 46 轮复验修复生效。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
+> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `master`，只有协议 v3，551 项离线测试通过；聊天页顶栏「运行日志」可逐轮查看链路（`web_logs.py`）；模型请求默认直连不走系统代理（`llm_use_env_proxy`）；功能方案阶段 0–3 和路由改造 S0–S8 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）和第 44 轮回归（32/34）；S6–S8 已实施，浏览器验收 6/6；第 45 轮真实验收 v3 61/72、v4 63/72，发现并修复了已答问题残留和工具结果序列化两处问题，第 46 轮复验修复生效。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
