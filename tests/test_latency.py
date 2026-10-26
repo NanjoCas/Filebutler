@@ -1,4 +1,5 @@
 """Latency accounting, safe cache reuse, bounded retries and archival; no API spend."""
+import importlib.util
 import uuid
 import json
 import threading
@@ -33,6 +34,22 @@ def test_sdk_retries_disabled_and_configurable(monkeypatch):
     llm = LLM({'model': 'fake', 'api_key_env': 'TEST_FAKE_KEY', 'base_url': 'https://example.invalid', 'llm_timeout': 12})
     llm._ensure_client()  # created on first request
     assert kwargs['max_retries'] == 0 and kwargs['timeout'] == 12 and llm.retries == 1
+
+
+def test_model_requests_can_ignore_the_system_proxy(monkeypatch):
+    # 2026-10-27: a local proxy set all_proxy=socks5h://…; httpx builds a transport for every
+    # proxy variable when the client is created, so without socksio each run failed with
+    # ImportError before any request, even with the API host in no_proxy.
+    monkeypatch.setenv('TEST_FAKE_KEY', 'fake-key')
+    monkeypatch.setenv('ALL_PROXY', 'socks5h://127.0.0.1:9')
+    monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:9')
+    cfg = {'model': 'fake', 'api_key_env': 'TEST_FAKE_KEY', 'base_url': 'https://example.invalid'}
+    direct = LLM({**cfg, 'llm_use_env_proxy': False})
+    direct._ensure_client()
+    assert direct.client._client._trust_env is False and direct.client.timeout == 60
+    if importlib.util.find_spec('socksio') is None:  # the default still follows the environment
+        with pytest.raises(ImportError):
+            LLM(cfg)._ensure_client()
 
 
 def test_single_retry_diagnostics_and_usage(monkeypatch):

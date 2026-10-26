@@ -38,7 +38,11 @@ class LLM:
         key = os.environ.get(cfg['api_key_env'])
         if not key:
             raise ModelConfigurationError(cfg['api_key_env'])
-        self.client = OpenAI(api_key=key, base_url=cfg['base_url'], timeout=self.timeout, max_retries=0)
+        # llm_use_env_proxy: false connects to the API directly. httpx otherwise sets up every
+        # proxy in the environment when the client is built (a SOCKS all_proxy needs socksio),
+        # and no_proxy does not prevent that.
+        direct = {} if cfg.get('llm_use_env_proxy', True) else {'http_client': openai.DefaultHttpxClient(trust_env=False)}
+        self.client = OpenAI(api_key=key, base_url=cfg['base_url'], timeout=self.timeout, max_retries=0, **direct)
 
     @property
     def total_tokens(self) -> int:

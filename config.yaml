@@ -6,6 +6,7 @@ task_query_limit: 12           # 整项任务检索上限；不按中文关键�
 task_read_limit: 40            # 整项任务补读上限；达到上限报告未完成/待核实
 llm_timeout: 60                # 单次请求超时；SDK 隐式重试已关闭
 llm_retries: 1                 # 项目层最多重试一次（总计最多两次请求）
+llm_use_env_proxy: false       # 模型请求直连，不走系统代理（2026-10-27：本机代理设了 SOCKS all_proxy，缺 socksio 时每轮都失败）；需要代理时改 true
 conversation_history_max_chars: 40000  # Web 长对话才归档旧工具明细；完整 UI 历史仍保留
 sandbox: ./sandbox
 max_steps: 25                  # 真实数据（51 篇论文）光读就要 9 轮左右，15 太紧
