@@ -85,9 +85,11 @@
   - `web_logs.py`：以 trace 为骨架画出每次模型请求和工具调用；`history_json` 与 trace 逐个调用对上时，补全模型输出文字、`reasoning_content`（产品原本就存在 history 里，DeepSeek 要求带回）和工具结果全文（trace 只存 300 字）；网页端 `events_json` 把确认、文件改动、任务状态挂到对应调用下。对不上的一律在页面上标出，不丢弃；还标出句柄（F/E/C/P/X/T）的出处，以及没登记任务时为什么没有核验。核验状态用产品自己的 `agent/states.py`（经 `eval.judge.turn_states`）。
   - 起因：网页端 `events_json` 较早的运行只存了 started/completed，原型时间线按它画，9 次调用一项都不显示。
   - `web/labels.js`：工具名、结局、任务状态、完成条件、操作类型原来在 `app.js`、`tasks.js` 里各有一份，现在只此一份，聊天页、任务窗口、日志页共用；服务端只返回代码。顺带补了 `finish_turn` 的标签（聊天页原来把它显示成"执行文件工具"）。`agent/reporting.TOOL_NAMES`（报告正文用词）仍是另一份，是否合并未定。
-  - 验证：`tests/test_logs_viewer.py` 21 项（含无头 Chrome，没装 Chrome 时跳过），故意破坏 4 种都能抓到；用本机真实数据在浏览器里逐轮打开 108 轮，调用数全对，没有脚本异常。
+  - 同一次回复里的多个调用框在一起，注明"一起发出、运行时按顺序依次执行"（`agent/loop.py` 是顺序循环，不是并发）；思考内容默认展开，下面列出实际调用的关键参数，便于对照计划和实际（10-27 用户问"第二步决定在个人相关里查找，下一步却在全部文件中查找"：其实是同一次回复里的 `list_dir 个人相关` 和 `search_files path="."`，模型自己这样填；另外它搜的是简体"保险"，日文文件名是"保険"）。
+  - 失败的运行只写 `failed`、不写 `end`：按结束处理，显示"运行在「阶段」出错停止：错误类型"；请求发出后没回来的那一步单独显示"请求没有完成"。
+  - 验证：`tests/test_logs_viewer.py` 22 项（含无头 Chrome，没装 Chrome 时跳过），新断言在修复前的代码上都失败；用本机真实数据在浏览器里逐轮打开 113 轮，调用数全对，没有脚本异常。
 - **2026-10-27 模型请求直连**（用户 01:20–01:21 三次运行在"模型请求"阶段报 ImportError，0 token）：本机代理设了 `all_proxy=socks5h://127.0.0.1:7890`，httpx 创建客户端时会为每个代理变量建连接，SOCKS 需要 `socksio`，`.venv` 没装；`no_proxy` 挡不住，因为在建客户端时就报错，不是发请求时。用户选择直连：新配置 `llm_use_env_proxy: false`（`agent/llm.py` 用 `DefaultHttpxClient(trust_env=False)`），默认 true 保持旧行为。已确认本机直连 api.deepseek.com 可达。**改动后需重启网页服务才生效。** 回归测试在 `tests/test_latency.py`。
-- 离线测试 551 passed（2026-10-27）。
+- 离线测试 552 passed（2026-10-27）。
 - 2026-10-25 用户要求合并：`master` 从 `a489b21` 快进到 `6f103e8`（与 `optimize/completion-binding` 相同，无合并提交）；之后用户要求直接在 `master` 上工作。推送前用 `git status -sb` 确认。
 - **2026-10-24 功能方案阶段 0、1 完成**：新增统一抽取层 `agent/extract.py`，read_file、search_content、paper_profiles、敏感规则都从这里取文字；`agent/document_cache.cached` 按内容缓存所有格式，PDF 键不变，旧缓存仍然有效。read_file 新增支持 docx/doc/rtf/odt（macOS textutil）、pptx（python-pptx，每张幻灯片一个单元，含备注、表格、分组）、xlsx（openpyxl，取值而不是公式，每表最多 5000 行）、html（去掉标签）、rst。锁文件、损坏或加密文件、解压后超过 300MB 的文件给出明确错误。本机 160 个文件中 158 个读取成功，失败的 2 个是测试假文件。第 37 轮 office 13/15（答案 15/15 正确）。
 - **2026-10-24 功能方案阶段 2（OCR）完成**（`2ee7b3f`）：没有新增 Python 依赖。`agent/ocr_vision.swift` 调用 macOS Vision 在本机识别，第一次使用时由 swiftc 编译到 `.cache/`；没有 macOS 或编译器时提示"无法识别"。read_file 可以读图片（会按 EXIF 方向转正）和文字少于 20 字的 PDF 页，结果里注明"本地 OCR 识别，可能有错字"，识别结果按页缓存。search_content 每次调用最多花 20 秒识别扫描页，剩下的下次检索继续。本机 70 张图片 0 失败，平均 0.33 秒；19 份 PDF 中有 26 个扫描页，25 页识别出文字，每页约 1 秒；真实论文首页渲染后识别，与文字层的相似度为 0.94。测试图片如果用 Hiragino 字体，英文里的 d 会被认成 a，所以评测改用 Arial Unicode。离线测试 434 passed；第 38 轮 ocr 15/15。
@@ -566,4 +568,4 @@ zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --cases p1_swap 
 
 ## 11. 新对话可直接使用的接手提示
 
-> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `master`，只有协议 v3，551 项离线测试通过；聊天页顶栏「运行日志」可逐轮查看链路（`web_logs.py`）；模型请求默认直连不走系统代理（`llm_use_env_proxy`）；功能方案阶段 0–3 和路由改造 S0–S8 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）和第 44 轮回归（32/34）；S6–S8 已实施，浏览器验收 6/6；第 45 轮真实验收 v3 61/72、v4 63/72，发现并修复了已答问题残留和工具结果序列化两处问题，第 46 轮复验修复生效。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
+> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `master`，只有协议 v3，552 项离线测试通过；聊天页顶栏「运行日志」可逐轮查看链路（`web_logs.py`）；模型请求默认直连不走系统代理（`llm_use_env_proxy`）；功能方案阶段 0–3 和路由改造 S0–S8 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）和第 44 轮回归（32/34）；S6–S8 已实施，浏览器验收 6/6；第 45 轮真实验收 v3 61/72、v4 63/72，发现并修复了已答问题残留和工具结果序列化两处问题，第 46 轮复验修复生效。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。

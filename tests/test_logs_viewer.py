@@ -143,6 +143,26 @@ def test_a_run_without_an_end_line_is_flagged(src, tasks_db):
     assert any(level == "bad" and "没有结束行" in text for level, text in levels(turn))
 
 
+def test_a_run_that_failed_ends_with_its_stage_and_error(src, tasks_db):
+    # 2026-10-27: three runs stopped in the model request (ImportError); the trace has a
+    # "failed" line and no "end", and the page called them crashed.
+    failed = {"event": "failed", "final": "任务失败。原因：模型请求失败：程序内部出错，后续步骤已停止。", "stop_reason": "exception",
+              "error_type": "ImportError", "error_stage": "模型请求", "tool_calls": 0, "steps": 1, "seconds": 0.06,
+              "runtime": {"task_id": None, "task_revision": None, "checks": []}}
+    write_trace(src, R1, [TRACE[0], failed])
+    events = [ev("started", 0), ev("llm_start", 0, step=1), ev("run_failed", 1, **{k: v for k, v in failed.items() if k != "event"}),
+              ev("failed", 1, message=failed["final"])]  # the web UI's own end marker, like "completed"
+    turn = build(src, tasks_db, R1, events=events, seg=[{"role": "user", "content": "我的房子是什么保险公司"}])
+    [step] = turn["steps"]  # the request that started and never came back, with the failure under it
+    assert (step["step"], step["unfinished"], [x["kind"] for x in step["after"]]) == (1, True, ["failed"])
+    assert turn["prep"]["items"] == []
+    assert turn["ended"] is True and turn["stop_reason"] == "exception"
+    assert turn["failure"] == {"stage": "模型请求", "error_type": "ImportError"}
+    assert {"level": "bad", "code": "run_failed", "stage": "模型请求", "error": "ImportError"} in turn["anomalies"]
+    assert not any("没有结束行" in text for _, text in levels(turn))
+    assert turn["final"].startswith("任务失败") and turn["stats"]["seconds"] == 0.1
+
+
 def test_history_fills_in_the_model_output_and_full_results(src, tasks_db):
     write_trace(src, R1, TRACE)
     turn = build(src, tasks_db, R1, seg=HISTORY)
@@ -292,14 +312,17 @@ def test_a_handle_mentioned_again_is_not_produced_twice(src, tasks_db):
 
 # --- the store behind /api/logs: a conversation, a standalone run, caching, refusals ---
 
-def add_conversation(src, cid="conv1", history=HISTORY, turns=((R1, "t1"),), events=()):
+ANSWERED = {"state": "answered", "display": "done", "summary": "找到 1 个", "sections": []}
+
+
+def add_conversation(src, cid="conv1", history=HISTORY, turns=((R1, "t1"),), events=(), report=ANSWERED):
     with sqlite3.connect(src.state_db) as db:
         db.execute("INSERT OR REPLACE INTO conversations VALUES (?,?,?,?,?)",
                    (cid, "测试对话", "2026-10-26T10:00:00", "2026-10-26T10:05:00", json.dumps(history, ensure_ascii=False)))
         for run_id, tid in turns:
             db.execute("INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?)",
                        (tid, cid, run_id, "completed", "2026-10-26T10:00:00", "2026-10-26T10:01:00", json.dumps(list(events)), "", "",
-                        json.dumps({"report": {"state": "answered", "display": "done", "summary": "找到 1 个", "sections": []}})))
+                        json.dumps({"report": report})))
 
 
 def chat_messages(cid):
@@ -363,6 +386,13 @@ def browser_client(src, monkeypatch):
     write_trace(src, R2, TRACE)  # outside the web UI
     add_conversation(src)
     add_conversation(src, "conv2", history=[{"role": "user", "content": "整理"}], turns=((W1, "t2"),), events=WRITE_EVENTS)
+    failed = {"event": "failed", "final": "任务失败。", "stop_reason": "exception", "error_type": "ImportError",
+              "error_stage": "模型请求", "tool_calls": 0, "steps": 1, "seconds": 0.06, "runtime": {}}
+    F1 = "20261026-100300-000004"
+    write_trace(src, F1, [TRACE[0], failed])
+    add_conversation(src, "conv3", history=[{"role": "user", "content": "我有哪些 offer"}], turns=((F1, "t3"),),
+                     events=[ev("started", 0), ev("llm_start", 0, step=1), ev("run_failed", 1, error_type="ImportError"), ev("failed", 1)],
+                     report={"state": "failed", "reason": "exception", "summary": "任务失败。", "sections": []})  # no display, as saved
     monkeypatch.setattr(webapp, "_LOGS", V.Logs(src, chat_messages))
     return TestClient(webapp.app)
 
@@ -425,8 +455,15 @@ def test_the_page_draws_every_call_and_says_why_nothing_was_verified(browser_cli
         page.call("Page.navigate", url=f"{app}/static/logs.html")
         page.wait("!!document.querySelector('#log .card')", 30, "first turn")
         answer = page.js("""(async () => { await selectGroup("conv1", 1); const log = document.getElementById("log");
-          return {calls: log.querySelectorAll(".item.call").length, linked: log.querySelectorAll(".handle.linked").length, text: log.innerText}; })()""")
+          return {calls: log.querySelectorAll(".item.call").length, linked: log.querySelectorAll(".handle.linked").length, text: log.innerText,
+                  batches: [...log.querySelectorAll(".batch")].map(b => b.querySelectorAll(".item.call").length),
+                  decided: [...log.querySelectorAll(".decided-list")].map(l => l.innerText),
+                  reasoning_open: [...log.querySelectorAll(".model-out details.fold")].filter(d => d.open).map(d => d.innerText.split("\\n")[0])}; })()""")
         assert answer["calls"] == 3
+        # step 2 sent read_file and finish_turn in one reply: boxed together, each with its key arguments
+        assert answer["batches"] == [2] and "一起发出的 2 个调用" in answer["text"]
+        assert answer["decided"][1].splitlines() == ['read_file path="a.pdf"', 'finish_turn mode="reply"']
+        assert answer["reasoning_open"] == ["模型的思考内容 · 6 字", "模型的思考内容 · 4 字"]
         assert "没有登记任务" in answer["text"] and "没有调用 report_findings" in answer["text"]
         assert "已完成" in answer["text"]  # display=done, worded by labels.js outcomeLabel
         assert "结束本轮" in answer["text"] or "直接回答你" in answer["text"]
@@ -438,6 +475,8 @@ def test_the_page_draws_every_call_and_says_why_nothing_was_verified(browser_cli
         outside = page.js("""(async () => { await selectGroup("runs", 1); const log = document.getElementById("log");
           return {calls: log.querySelectorAll(".item.call").length, text: log.innerText}; })()""")
         assert outside["calls"] == 3 and "不在网页对话里" in outside["text"]
+        stopped = page.js("""(async () => { await selectGroup("conv3", 1); return document.getElementById("log").innerText; })()""")
+        assert "运行失败" in stopped and "请求没有完成，运行在这里停止" in stopped and "ImportError" in stopped
         assert not [e for e in page.events if e.get("method") == "Runtime.exceptionThrown"]
     finally:
         browser.terminate()

@@ -36,6 +36,7 @@ function anomalyText(x) {
     case "request_failed": return `第 ${x.step} 步模型请求失败（${x.error}），${x.retry ? "已自动重试" : "未重试"}`;
     case "call_failed": return `第 ${x.step} 步 ${x.tool}（${toolLabel(x.tool)}）失败：${x.text}`;
     case "repeat": return `第 ${x.step} 步 ${x.tool} 与之前的调用重复（第 ${x.count} 次）`;
+    case "run_failed": return `运行在「${x.stage || "未知阶段"}」出错停止：${x.error || "未知错误"}（运行记录只保存了错误类型，没有错误信息）`;
     case "violations": return `触发了 ${x.count} 次安全规则`;
     case "rejections": return `有 ${x.count} 个操作被拒绝`;
   }
@@ -227,39 +228,70 @@ function requestsNode(s) {
   return tb;
 }
 
+// The arguments that say where and what: enough to set a call beside the reasoning that planned it.
+const BRIEF_KEYS = ["path", "name_pattern", "ext", "query", "top_k", "view", "mode", "page", "plan_id", "part", "task_id"];
+function argBrief(c) {
+  const a = c.args;
+  if (!a || typeof a !== "object") return String(a ?? "").slice(0, 120);
+  const keys = BRIEF_KEYS.filter(k => a[k] != null);
+  const text = (keys.length ? keys : Object.keys(a).slice(0, 3)).map(k => `${k}=${JSON.stringify(a[k])}`).join("，");
+  return text.length > 160 ? text.slice(0, 160) + "…" : text || "（没有参数）";
+}
+function decidedNode(s) {
+  const box = el("div", "decided");
+  if (!s.items.length) { box.append(document.createTextNode(s.has_history ? "→ 模型没有调用工具，这一步直接给出文字" : "→ 这一步没有工具调用记录")); return box; }
+  box.append(document.createTextNode(s.has_history
+    ? `→ 实际发出的调用（${s.items.length} 个，同一次回复）：` : `→ 运行记录里的调用（${s.items.length} 个）：`));
+  const ol = el("ol", "decided-list");
+  for (const c of s.items) { const li = el("li"); li.append(el("code", "tool", c.tool), el("span", null, " " + argBrief(c))); ol.append(li); }
+  box.append(ol); return box;
+}
+
 function stepNode(s, maxMs, t) {
   const step = el("div", "step"); step.append(el("span", "step-num", s.step));
   const sh = el("div", "step-head"); const th = el("div", "think");
   th.append(el("span", null, `🧠 第 ${s.step} 步 · 请求模型`));
   const mb = el("div", "msbar"); const f = el("i"); f.style.width = Math.max(2, 100 * (s.ms || 0) / maxMs) + "%"; mb.append(f); th.append(mb);
   sh.append(th); if (s.slow) sh.append(el("span", "pill slow", "较慢"));
+  if (s.unfinished) sh.append(el("span", "pill bad", "请求没有完成"));
   if (s.requests.length > 1) sh.append(el("span", "pill warn", `请求了 ${s.requests.length} 次`));
   sh.append(el("span", "num", fmtMs(s.ms) + (s.tokens ? ` · ${fmtK(s.tokens)} tok` : ""))); step.append(sh);
 
   const out = el("div", "model-out");
   out.append(fold("发给模型的请求：消息条数、字数和 token", requestsNode(s)));
   if (s.has_history) {
-    if (s.reasoning) out.append(fold(`模型的思考内容 · ${s.reasoning.length} 字`, s.reasoning));
+    // open by default: the plan in the reasoning reads next to the calls actually sent
+    if (s.reasoning) out.append(fold(`模型的思考内容 · ${s.reasoning.length} 字`, s.reasoning, true));
     else out.append(el("div", "hint", "这一步没有思考内容（模型没返回 reasoning_content）。"));
     if (s.text) { out.append(el("h5", null, "模型输出的文字")); out.append(el("div", "said", s.text)); }
-    out.append(el("div", "decided", s.decided.length
-      ? `→ 模型在这一次回复里决定调用 ${s.decided.length} 个工具：${s.decided.join("、")}`
-      : "→ 模型没有调用工具，这一步直接给出文字"));
+  } else if (s.unfinished) {
+    out.append(el("div", "hint", "网页端记录到这一步开始请求模型，但运行记录里没有它的结果：请求没有完成就停止了，原因见下面。"));
   } else {
-    out.append(el("div", "hint", `没有对话历史，看不到模型这一步的思考和输出${s.items.length ? `；只知道它调用了 ${s.items.length} 个工具` : ""}。`));
+    out.append(el("div", "hint", "没有对话历史，看不到模型这一步的思考和输出。"));
   }
+  out.append(decidedNode(s));
   step.append(out);
 
   const items = el("div", "items");
+  // calls from one reply: sent together, run one after another (agent/loop.py), results back in the next request
+  let calls = items;
+  if (s.items.length > 1) {
+    const group = el("div", "batch");
+    group.append(el("div", "batch-head", `同一次回复里一起发出的 ${s.items.length} 个调用：运行时按下面的顺序依次执行，全部完成后，结果在下一次请求里一起交给模型`));
+    items.append(group); calls = group;
+  }
   for (const c of s.items) {
-    items.append(callNode(c, maxMs, t));
+    calls.append(callNode(c, maxMs, t));
     const inner = el("div", "inner");
     if (c.form) inner.append(formBox(c.form));
     if (c.finish) { const w = el("div", "inline-form"); w.append(finishNode(c.finish)); inner.append(w); }
     for (const x of c.inner) inner.append(eventNode(x));
-    if (inner.childNodes.length) items.append(inner);
+    if (inner.childNodes.length) calls.append(inner);
   }
-  if (s.after.length) { items.append(el("div", "hint", "工具结果回到模型之后、下一次请求之前：")); for (const x of s.after) items.append(eventNode(x)); }
+  if (s.after.length) {
+    items.append(el("div", "hint", s.unfinished ? "请求没有完成，运行在这里停止：" : "工具结果回到模型之后、下一次请求之前："));
+    for (const x of s.after) items.append(eventNode(x));
+  }
   if (items.childNodes.length) step.append(items);
   return step;
 }

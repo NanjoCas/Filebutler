@@ -37,7 +37,7 @@ RETIRED_WRITES = {"make_dir", "move", "rename", "trash", "trash_many", "apply_cl
 # local handles the tools hand out and later calls cite: file:F… evidence:E… catalog C… plan P…/X… task T…
 HANDLE = re.compile(r"\b(?:[FECP][0-9a-f]{10}|[XT][0-9a-f]{12})\b")
 # events that only mark where things happen; the trace already holds their content
-STRUCTURAL = {"started", "completed", "llm_start", "llm_end", "tool_start", "tool_end", "llm_retry", "llm_request"}
+STRUCTURAL = {"started", "completed", "failed", "llm_start", "llm_end", "tool_start", "tool_end", "llm_retry", "llm_request"}
 BAD_STOPS = {"cost_budget", "token_budget", "max_steps", "repeated_call", "repair_limit", "exception",
              "unverified_answer", "unstructured_terminal"}
 
@@ -341,8 +341,9 @@ def build_turn(src, tasks_db, run_id, index, limits, events=None, seg=None, crea
     trace = load_trace(src, run_id)
     events = events or []
     start = next((e for e in trace if e.get("event") == "start"), {})
-    end = next((e for e in trace if e.get("event") == "end"), {})
     failed = next((e for e in trace if e.get("event") == "failed"), None)
+    # a run that stopped on an error writes "failed" instead of "end", with the same totals
+    end = next((e for e in trace if e.get("event") == "end"), None) or failed or {}
     completeness = []
     if not trace:
         completeness.append({"level": "bad", "text": f"找不到运行记录 logs/{run_id}.trace.jsonl"})
@@ -355,7 +356,7 @@ def build_turn(src, tasks_db, run_id, index, limits, events=None, seg=None, crea
     steps = {s: {"step": s, "ms": (llm.get(s) or {}).get("ms"), "tokens": (llm.get(s) or {}).get("tokens"),
                  "slow": bool(limits["llm_ms"]) and ((llm.get(s) or {}).get("ms") or 0) > limits["llm_ms"],
                  "requests": reqs.get(s, []), "has_history": False, "reasoning": "", "text": "", "decided": [],
-                 "items": [], "after": []} for s in step_ids}
+                 "items": [], "after": [], "unfinished": False} for s in step_ids}
     for c in calls:
         steps[c["step"]]["items"].append(c)
     prep = {"items": [], "system": [], "request": (reqs.get(step_ids[0]) or [{}])[0] if step_ids else {}}
@@ -421,6 +422,10 @@ def build_turn(src, tasks_db, run_id, index, limits, events=None, seg=None, crea
             continue
         if t in ("llm_start", "llm_end"):
             last_step = ev.get("step")
+            if last_step is not None and last_step not in steps:  # a request that started and never came back
+                steps[last_step] = {"step": last_step, "ms": None, "tokens": None, "slow": False, "requests": [],
+                                    "has_history": False, "reasoning": "", "text": "", "decided": [],
+                                    "items": [], "after": [], "unfinished": True}
             continue
         item = placer.item(ev)
         if item is None:
@@ -497,12 +502,14 @@ def build_turn(src, tasks_db, run_id, index, limits, events=None, seg=None, crea
             anomalies.append({"level": "bad", "code": "call_failed", "step": c["step"], "tool": c["tool"], "i": c["i"], "text": c["outcome"][:80]})
         if c["repeat"] >= 2:
             anomalies.append({"level": "warn", "code": "repeat", "step": c["step"], "tool": c["tool"], "i": c["i"], "count": c["repeat"]})
+    if failed:
+        anomalies.append({"level": "bad", "code": "run_failed", "stage": failed.get("error_stage"), "error": failed.get("error_type")})
     if end.get("violations"):
         anomalies.append({"level": "bad", "code": "violations", "count": end["violations"]})
     if end.get("rejections"):
         anomalies.append({"level": "warn", "code": "rejections", "count": end["rejections"]})
     if trace and not end:
-        completeness.append({"level": "bad", "text": "运行记录没有结束行，后面的步骤可能没写进来" + ("（有失败记录）" if failed else "")})
+        completeness.append({"level": "bad", "text": "运行记录没有结束行，后面的步骤可能没写进来"})
     if end and end.get("tool_calls") is not None and end["tool_calls"] != len(calls):
         completeness.append({"level": "bad", "text": f"运行结束时统计了 {end['tool_calls']} 次工具调用，记录里只有 {len(calls)} 次"})
     cut = sum(c["truncated"] for c in calls)
@@ -530,12 +537,13 @@ def build_turn(src, tasks_db, run_id, index, limits, events=None, seg=None, crea
         "turn_id": turn_id, "run_id": run_id, "index": index, "instruction": start.get("instruction", ""),
         "model": start.get("model"), "created_at": created_at, "ended": bool(end),
         "stop_reason": stop, "display": (report or {}).get("display"), "final": end.get("final", ""),
+        "failure": failed and {"stage": failed.get("error_stage"), "error_type": failed.get("error_type")},
         "stats": {"seconds": round(seconds, 1), "llm": round(llm_s, 1), "tool": round(tool_s, 1), "wait": round(wait_s, 1),
                   "steps": end.get("steps", len(llm) or None), "tool_calls": end.get("tool_calls", len(calls)),
                   "tokens": end.get("tokens"), "cost": end.get("cost"), "files_changed": len(ops)},
         "shown_calls": sum(1 for s in steps.values() for i in s["items"] if i["kind"] == "call"),
         "anomalies": anomalies, "completeness": completeness,
-        "prep": prep, "steps": [steps[s] for s in step_ids], "runtime_final": runtime_final, "after_turn": after_turn,
+        "prep": prep, "steps": [steps[s] for s in sorted(steps)], "runtime_final": runtime_final, "after_turn": after_turn,
         "file_ops": ops, "loose_forms": loose_forms, "status_form": sf, "raw": trace,
         "report": report, "states": states, "states_source": states_source, "ending": ending,
         "evidence_calls": sum(1 for c in calls if "evidence:" in str(c["result"])),
