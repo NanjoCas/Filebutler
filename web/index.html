@@ -11,7 +11,7 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark">F</span><div><strong>FileButler</strong><small id="health">正在连接本地服务…</small></div></div>
-    <div class="topbar-actions"><button id="toggle-sidebar" class="icon-button sidebar-toggle" type="button" aria-controls="sidebar">对话</button><button id="open-tasks" class="icon-button" type="button">任务与复核</button><button id="toggle-files" class="icon-button" type="button" title="收起或展开文件区">文件区</button><button id="toggle-dev" class="icon-button dev-toggle" type="button" aria-pressed="false" title="显示费用、耗时、原始执行记录和内部核验细节">开发者模式</button></div>
+    <div class="topbar-actions"><button id="toggle-sidebar" class="icon-button sidebar-toggle" type="button" aria-controls="sidebar">对话</button><button id="open-tasks" class="icon-button" type="button">任务与复核</button><button id="open-logs" class="icon-button" type="button" title="按轮次查看 Agent 每一步的请求、思考、工具调用和核验">运行日志</button><button id="toggle-files" class="icon-button" type="button" title="收起或展开文件区">文件区</button><button id="toggle-dev" class="icon-button dev-toggle" type="button" aria-pressed="false" title="显示费用、耗时、原始执行记录和内部核验细节">开发者模式</button></div>
   </header>
   <main class="layout">
     <aside id="sidebar" class="sidebar">
@@ -55,6 +55,7 @@
     <div class="delete-actions"><button id="delete-cancel" class="secondary-button" type="button">取消</button><button id="delete-confirm" class="danger-button" type="button">删除对话</button></div>
   </dialog>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"><span class="toast-text"></span><button id="toast-close" type="button" aria-label="关闭提示">✕</button></div>
+  <script src="/static/labels.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/tasks.js" defer></script>
 </body>

@@ -37,6 +37,7 @@ from safety.sandbox import Sandbox, SandboxError, is_hidden  # noqa: E402
 from tools.fs_read import IMAGE_EXTS, TEXT_EXTS, _fmt_size  # noqa: E402
 from web_render import FileCatalog, WEB_PRESENTATION_GUIDANCE, render_markdown  # noqa: E402
 from web_confirm import build_confirmation  # noqa: E402
+import web_logs  # noqa: E402
 
 WEB_DIR = ROOT / "web"
 # FILEBUTLER_HOME: another folder for config.yaml, UI state, logs and a relative sandbox,
@@ -871,6 +872,51 @@ def turn_trace(turn_id: str):
                           "repeat_count": event.get("repeat_count", 0),
                           "executed": event.get("executed", True), "result": event.get("result", "")})
     return {"items": items, "requests": requests}
+
+
+# The log page (web/logs.html): every turn step by step, read-only (web_logs.py).
+_LOGS = None
+
+
+def _logs():
+    global _LOGS
+    if _LOGS is None:
+        cfg = _config()
+        root = Path(cfg["sandbox"])
+        src = web_logs.Sources(log_dir=LOG_DIR, state_db=DB_PATH, oplog_dir=root / ".oplog",
+                               task_db=Path(cfg.get("task_db") or root / ".oplog" / "tasks.sqlite3"))
+        _LOGS = web_logs.Logs(src, lambda cid: get_conversation(cid)["messages"])
+    return _LOGS
+
+
+@app.get("/api/logs")
+def logs_index():
+    return _logs().index()
+
+
+@app.get("/api/logs/conversations/{conversation_id}")
+def logs_conversation(conversation_id: str):
+    conv = _logs().conversation(conversation_id)
+    if conv is None:
+        raise HTTPException(404, "对话不存在")
+    return {**{k: conv[k] for k in ("id", "title", "updated_at", "system_prompt", "messages", "limits")},
+            "turns": [web_logs.summary(t) for t in conv["turns"]]}
+
+
+@app.get("/api/logs/conversations/{conversation_id}/turns/{index}")
+def logs_turn(conversation_id: str, index: int):
+    conv = _logs().conversation(conversation_id)
+    if conv is None or not 1 <= index <= len(conv["turns"]):
+        raise HTTPException(404, "运行记录不存在")
+    return conv["turns"][index - 1]
+
+
+@app.get("/api/logs/runs/{run_id}")
+def logs_run(run_id: str):
+    run = _logs().run(run_id)
+    if run is None:
+        raise HTTPException(404, "运行记录不存在")
+    return run
 
 
 def _visible_path(raw: str) -> Path:

@@ -1,265 +1,100 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FileButler 日志</title>
-<style>
-/*APP_CSS*/
-</style>
-<style>
-:root { --ok:#176b52; --ok-soft:#e8f2ec; --warn:#a36b14; --warn-soft:#fff6e3; --bad:#b33a3a; --bad-soft:#fdeeee;
-  --wait:#2167c8; --wait-soft:#edf4ff; --c-llm:#5b8def; --c-tool:#2f9e74; --c-wait:#e0a43a; --c-other:#cfd6d1; }
-.mock-flag { font-size:10px; color:#a36b14; background:#fff6e3; border:1px solid #f0dfb5; border-radius:20px; padding:3px 9px; margin-left:10px; }
-.lv { height:calc(100dvh - 64px); display:grid; grid-template-columns:230px minmax(340px,1fr) minmax(440px,1.15fr); min-height:0; }
-.lv > * { min-height:0; overflow:auto; scrollbar-gutter:stable; }
-/* conversation list */
-.lv-convs { background:#fafbf9; border-right:1px solid var(--line); padding:18px 12px; }
-.lv-conv { display:block; width:100%; text-align:left; border:0; background:transparent; border-radius:9px; padding:10px; margin-bottom:4px; color:#4d5651; }
-.lv-conv:hover { background:#f0f2ef; }
-.lv-conv.active { background:#e9eeea; }
-.lv-conv strong { display:block; font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#2b3530; }
-.lv-conv .meta { display:flex; gap:6px; align-items:center; margin-top:5px; font-size:11px; color:var(--muted); flex-wrap:wrap; }
-.dots { display:flex; gap:3px; margin-top:7px; flex-wrap:wrap; }
-.dot { width:8px; height:8px; border-radius:50%; background:var(--ok); flex:none; }
-.dot.warn { background:var(--warn); } .dot.bad { background:var(--bad); } .dot.wait { background:var(--wait); }
-.pill { font-size:10.5px; border-radius:20px; padding:2px 8px; font-weight:600; white-space:nowrap; }
-.pill.ok { background:var(--ok-soft); color:var(--ok); } .pill.warn { background:var(--warn-soft); color:var(--warn); }
-.pill.bad { background:var(--bad-soft); color:var(--bad); } .pill.wait { background:var(--wait-soft); color:var(--wait); }
-.pill.slow { background:#f2f2ee; color:#7a7360; } .pill.gray { background:#f0f2ef; color:#6b746f; font-weight:500; }
-/* chat replay */
-.lv-chat { background:#fff; border-right:1px solid var(--line); display:flex; flex-direction:column; overflow:hidden; }
-.lv-chat .chat-heading { flex:none; }
-.lv-chat .messages { padding:22px 26px; gap:14px; }
-.turn-block { border-radius:14px; padding:10px 12px; margin:0 -12px; cursor:pointer; border:1.5px solid transparent; transition:background .15s, border-color .15s; display:flex; flex-direction:column; gap:12px; }
-.turn-block:hover { background:#fafbf9; }
-.turn-block.active { background:#f6faf7; border-color:#bcd8c8; }
-.turn-tag { display:flex; align-items:center; gap:7px; font-size:11px; color:var(--muted); }
-.turn-tag .dot { width:7px; height:7px; }
-.turn-block .message.assistant .markdown-body { max-height:260px; overflow:hidden; -webkit-mask-image:linear-gradient(#000 70%, transparent); mask-image:linear-gradient(#000 70%, transparent); }
-.turn-block.active .message.assistant .markdown-body { max-height:none; -webkit-mask-image:none; mask-image:none; }
-.event-note { align-self:center; font-size:11px; color:#7c8580; background:#f4f6f3; border-radius:8px; padding:6px 12px; max-width:90%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-/* log panel */
-.lv-log { background:#f7f8f5; padding:0 0 40px; }
-.log-head { position:sticky; top:0; z-index:2; background:#f7f8f5ee; backdrop-filter:blur(6px); padding:16px 24px 12px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
-.log-head h2 { margin:0; font-size:15px; font-weight:650; color:#202c25; }
-.log-head p { margin:4px 0 0; font-size:11px; color:var(--muted); }
-.log-head .nav { display:flex; gap:6px; flex:none; }
-.log-body { padding:16px 24px; display:flex; flex-direction:column; gap:14px; }
-.card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
-.card h3 { margin:0 0 10px; font-size:12px; font-weight:650; color:#55605a; letter-spacing:.02em; }
-.verdict { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
-.verdict .big { font-size:17px; font-weight:700; }
-.verdict .big.ok { color:var(--ok); } .verdict .big.warn { color:var(--warn); } .verdict .big.bad { color:var(--bad); } .verdict .big.wait { color:var(--wait); }
-.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(86px,1fr)); gap:8px; }
-.stat { background:var(--soft); border-radius:9px; padding:9px 10px; }
-.stat b { display:block; font-size:16px; font-weight:650; color:#24302a; font-variant-numeric:tabular-nums; }
-.stat span { font-size:10.5px; color:var(--muted); }
-.timebar { display:flex; height:12px; border-radius:6px; overflow:hidden; margin:16px 0 8px; background:var(--c-other); gap:2px; }
-.timebar i { display:block; height:100%; min-width:2px; }
-.legend { display:flex; flex-wrap:wrap; gap:6px 14px; font-size:11px; color:#5d6862; }
-.legend span::before { content:""; display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:5px; background:var(--c); vertical-align:0; }
-.alerts { display:flex; flex-direction:column; gap:6px; }
-.alert { font-size:12.5px; line-height:1.5; padding:7px 10px; border-radius:8px; display:flex; gap:8px; }
-.alert.bad { background:var(--bad-soft); color:#8a2b2b; } .alert.warn { background:var(--warn-soft); color:#7d5410; } .alert.slow { background:#f3f3ef; color:#6b6553; }
-.alert.none { background:var(--ok-soft); color:var(--ok); }
-.checks { display:flex; flex-direction:column; gap:8px; }
-.check { display:grid; grid-template-columns:20px 1fr; gap:6px; font-size:12.5px; line-height:1.55; color:#36413b; }
-.check small { display:block; color:var(--muted); font-size:11px; }
-/* timeline */
-.step { position:relative; padding-left:26px; }
-.step + .step { margin-top:4px; }
-.step::before { content:""; position:absolute; left:8px; top:22px; bottom:-6px; width:2px; background:#e3e8e3; }
-.step:last-child::before { display:none; }
-.step-head { display:flex; align-items:center; gap:8px; font-size:12px; color:#56615b; min-height:22px; }
-.step-num { position:absolute; left:0; top:2px; width:18px; height:18px; border-radius:50%; background:#fff; border:2px solid #c5d3ca; font-size:9.5px; display:grid; place-items:center; color:#56615b; font-weight:700; }
-.step-head .think { flex:1; display:flex; align-items:center; gap:8px; }
-.msbar { flex:1; max-width:160px; height:5px; border-radius:3px; background:#eef1ee; overflow:hidden; }
-.msbar i { display:block; height:100%; background:var(--c-llm); border-radius:3px; }
-.msbar.tool i { background:var(--c-tool); }
-.num { font-variant-numeric:tabular-nums; color:#7c8580; font-size:11px; white-space:nowrap; }
-.items { display:flex; flex-direction:column; gap:6px; margin:6px 0 12px; }
-.inline-form { margin:0 0 4px 22px; }
-.inline-form > .hint { margin:0 0 6px; }
-.inline-ops { margin:0 0 4px 22px; padding:6px 12px; border:1px solid var(--line); border-radius:10px; background:#fff; }
-.inline-ops > .hint { margin:0 0 2px; }
-.item.state { border-left-color:#8fb39b; background:#f7fbf8; }
-.item.injected, .item.protocol { border-left-color:#9b8fd0; background:#faf9fe; }
-.item.failed, .item.unknown { border-left-color:var(--bad); background:#fffafa; }
-.inner { margin:-2px 0 2px 22px; display:flex; flex-direction:column; gap:6px; padding-left:10px; border-left:2px dashed #e0e6e1; }
-.inner .inline-form, .inner .inline-ops { margin-left:0; }
-.model-out { margin:6px 0 4px; padding:8px 12px; border:1px solid #dfe6f5; background:#f8faff; border-radius:10px; font-size:12.5px; line-height:1.6; color:#2b3530; display:flex; flex-direction:column; gap:6px; }
-.model-out h5, .call-body h5 { margin:6px 0 2px; font-size:11px; font-weight:650; color:#7c8580; }
-.model-out .said { white-space:pre-wrap; overflow-wrap:anywhere; }
-.model-out .decided { font-weight:600; color:#2d4f8f; }
-.fold > summary { cursor:pointer; font-size:11.5px; color:#4b6a9b; }
-.fold pre, .model-out pre { margin:6px 0 0; background:#fff; border:1px solid #e5ebe6; border-radius:8px; padding:9px 11px; font-size:11px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; max-height:360px; overflow:auto; color:#3c4c42; }
-.call-body { margin-left:30px; }
-.call-body .kv, .call-body .mini-table, .call-body pre { margin-left:0; width:100%; }
-.call-body pre { max-height:420px; }
-.mini-table.args tr.diff td { background:#fff6e3; }
-code.tool { font-size:11px; background:#eef2ef; color:#35614d; border-radius:4px; padding:1px 5px; }
-.alert.info { background:#f0f4fb; color:#3d5478; }
-.handles { display:flex; flex-direction:column; gap:4px; margin-bottom:6px; }
-.handle-row { display:grid; grid-template-columns:48px 1fr; gap:6px; font-size:11px; color:var(--muted); align-items:start; margin-top:4px; }
-.handle-row > div { display:flex; flex-wrap:wrap; gap:4px; }
-.handle { display:inline-flex; gap:4px; align-items:center; border:1px solid #e3e8e3; background:#f7f9f7; border-radius:6px; padding:1px 6px; font-size:10.5px; color:#56615b; }
-.handle code { font-size:10.5px; color:#2b3530; }
-.handle.linked { cursor:pointer; border-color:#c7d6f2; background:#f2f6ff; color:#2d4f8f; }
-.handle.linked:hover { background:#e4edff; }
-.handle.new { border-color:#cfe3d6; background:#eef6f1; }
-.item.flash { animation:flash 1.6s ease-out; }
-@keyframes flash { 0%, 30% { box-shadow:0 0 0 3px #f2c14e; } 100% { box-shadow:0 0 0 0 transparent; } }
-.states { display:flex; flex-direction:column; gap:8px; }
-.states .ending { font-size:12.5px; line-height:1.6; color:#2b3530; background:#f6f8f6; border-radius:8px; padding:8px 10px; }
-.states-table td:last-child { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; color:var(--muted); }
-.item.report { border-left-color:#5b8def; background:#fff; }
-.report-body { margin-left:30px; display:flex; flex-direction:column; gap:10px; font-size:12.5px; }
-.report-sec h5 { margin:0 0 4px; font-size:11.5px; color:#55605a; display:flex; gap:6px; align-items:center; }
-.report-body .markdown-body { font-size:12.5px; overflow-x:auto; }
-.turn-end { margin-top:10px; padding-top:10px; border-top:1px solid #edf0ec; }
-.item { background:#fff; border:1px solid var(--line); border-radius:10px; padding:9px 12px; border-left:3px solid var(--c-tool); }
-.item.fail { border-left-color:var(--bad); background:#fffafa; }
-.item.confirm { border-left-color:var(--c-wait); background:#fffcf4; }
-.item.context, .item.local { border-left-color:#b6c2ba; background:#fbfcfa; }
-.item summary { list-style:none; cursor:pointer; display:grid; grid-template-columns:22px 1fr auto; gap:8px; align-items:start; }
-.item summary::-webkit-details-marker { display:none; }
-.item .ico { font-size:14px; line-height:20px; text-align:center; }
-.item .what { font-size:13px; line-height:1.5; color:#24302a; overflow-wrap:anywhere; }
-.item .what small { display:block; color:#6f7973; font-size:11.5px; margin-top:2px; }
-.item.fail .what small { color:#a23a3a; }
-.item .right { display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
-.item .tags { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
-.item[open] summary { margin-bottom:8px; }
-.kv { display:grid; grid-template-columns:max-content 1fr; gap:3px 12px; font-size:11.5px; margin:0 0 8px 30px; }
-.kv dt { color:var(--muted); } .kv dd { margin:0; color:#36413b; overflow-wrap:anywhere; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }
-.item pre, .raw pre { margin:0 0 0 30px; background:#f5f7f5; border:1px solid #e5ebe6; border-radius:8px; padding:9px 11px; font-size:11px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; color:#3c4c42; }
-.ops { display:flex; flex-direction:column; gap:6px; font-size:12px; }
-.op { display:grid; grid-template-columns:76px 1fr auto; gap:8px; align-items:start; padding:6px 0; border-bottom:1px dashed #edf0ec; }
-.op:last-child { border-bottom:0; }
-.op .path { overflow-wrap:anywhere; color:#36413b; line-height:1.5; }
-.op .path em { font-style:normal; color:var(--muted); }
-.form { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-.form + .form { margin-top:12px; }
-.form-head { display:flex; justify-content:space-between; gap:8px; align-items:center; padding:9px 12px; background:var(--soft); font-size:12px; color:#3d4842; }
-.form-head b { font-weight:650; }
-.form-sec { padding:10px 12px 12px; }
-.form-sec + .form-sec { border-top:1px solid #edf0ec; }
-.form-sec h4 { margin:0 0 8px; font-size:11px; font-weight:650; color:#7c8580; letter-spacing:.04em; display:flex; align-items:center; gap:6px; }
-.form-sec h4 i { font-style:normal; font-size:10px; font-weight:500; color:#a0a7a2; }
-.form-sec.sys { background:#fbfdfb; }
-.frow { display:grid; grid-template-columns:72px 1fr; gap:8px; font-size:12.5px; line-height:1.55; padding:3px 0; color:#2b3530; }
-.frow > span:first-child { color:var(--muted); font-size:11.5px; padding-top:1px; }
-.part { border:1px solid #e7ece8; background:#fff; border-radius:8px; padding:8px 10px; margin:6px 0; font-size:12.5px; line-height:1.55; }
-.part-top { display:flex; gap:6px; align-items:center; margin-bottom:3px; flex-wrap:wrap; }
-.part code { font-size:10.5px; color:#7c8580; background:#f3f5f3; border-radius:4px; padding:1px 5px; }
-.part small { display:block; color:var(--muted); font-size:11px; margin-top:3px; }
-.chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
-.chip { font-size:10.5px; background:#eef4f0; color:#35614d; border-radius:5px; padding:2px 7px; }
-.chip.review { background:#fff3dc; color:#8a5a0c; }
-.rules { margin:4px 0 0; padding-left:18px; font-size:12px; line-height:1.6; color:#3f4a44; }
-.arrow-row { text-align:center; font-size:11px; color:#8a948e; padding:4px 0; background:linear-gradient(#fff,#fbfdfb); border-top:1px dashed #e3e8e3; }
-.receipt { font-size:11px; color:#6b746f; padding:7px 12px; border-top:1px solid #edf0ec; background:var(--soft); overflow-wrap:anywhere; }
-.mini-table { width:calc(100% - 30px); margin:0 0 8px 30px; border-collapse:collapse; font-size:11.5px; }
-.mini-table th, .mini-table td { text-align:left; padding:4px 6px; border-bottom:1px solid #eef1ee; vertical-align:top; overflow-wrap:anywhere; }
-.mini-table th { color:var(--muted); font-weight:600; font-size:10.5px; }
-.pill.link { cursor:pointer; background:#edf4ff; color:#2167c8; }
-.chain { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:12px; font-size:11px; color:var(--muted); }
-.chain .node { display:flex; flex-direction:column; gap:2px; align-items:flex-start; }
-.chain .node small { font-size:10px; color:#a0a7a2; padding-left:2px; }
-.chain .sep { color:#b6c2ba; }
-.goal-row { border:1px solid #e7ece8; border-radius:9px; margin:8px 0; overflow:hidden; background:#fff; }
-.goal-row.mismatch { border-color:#efcf8f; }
-.goal-title { padding:8px 11px; font-size:12.5px; line-height:1.55; color:#24302a; display:flex; justify-content:space-between; gap:8px; }
-.goal-cols { display:grid; grid-template-columns:1fr 1fr; border-top:1px solid #eef1ee; }
-.goal-cols > div { padding:8px 11px; font-size:12px; line-height:1.55; }
-.goal-cols > div + div { border-left:1px solid #eef1ee; background:#fbfdfb; }
-.goal-cols h5 { margin:0 0 4px; font-size:10.5px; color:var(--muted); font-weight:600; }
-.goal-cols p { margin:3px 0 0; color:#5d6862; font-size:11.5px; }
-.verdict-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:4px 0 10px; font-size:12px; color:#56615b; }
-@media (max-width:900px) { .goal-cols { grid-template-columns:1fr; } .goal-cols > div + div { border-left:0; border-top:1px solid #eef1ee; } }
-.dev-only { display:none; }
-body[data-dev="1"] .dev-only { display:revert; }
-.raw pre { margin:0; max-height:420px; }
-.empty-log { color:var(--muted); font-size:13px; text-align:center; padding:80px 20px; }
-.hint { font-size:11px; color:#9aa19d; line-height:1.6; }
-@media (max-width:1180px) { .lv { grid-template-columns:200px minmax(300px,1fr) minmax(380px,1fr); } }
-@media (max-width:900px) {
-  body { overflow:auto; height:auto; }
-  .lv { display:block; height:auto; }
-  .lv > * { overflow:visible; }
-  .lv-convs { display:flex; gap:6px; overflow-x:auto; padding:10px 16px; border-right:0; border-bottom:1px solid var(--line); }
-  .lv-conv { min-width:180px; margin:0; }
-  .lv-chat { border-right:0; height:60vh; display:flex; border-bottom:1px solid var(--line); }
-  .lv-chat .messages { padding:16px; }
-  .log-head, .log-body { padding-left:16px; padding-right:16px; }
-  html, body { overflow-x:hidden; }
-  .lv-convs .section-label, .brand small, .mock-flag { display:none; }
-  .topbar { padding:0 16px; }
-  .log-head { flex-wrap:wrap; position:static; }
-  .stats { grid-template-columns:repeat(2,1fr); }
-  .lv-log, .lv-chat, .card, .item { min-width:0; max-width:100%; }
-  .item summary { grid-template-columns:20px minmax(0,1fr); }
-  .item .right { grid-column:2; flex-direction:row; align-items:center; justify-content:flex-start; flex-wrap:wrap; }
-  .op { grid-template-columns:70px minmax(0,1fr); } .op .num { display:none; }
-  .kv, .item pre, .call-body, .report-body { margin-left:0; } .inner { margin-left:8px; }
-}
-</style>
-</head>
-<body>
-<header class="topbar">
-  <div class="brand"><div class="brand-mark">F</div><div><strong>FileButler · 日志</strong><small>按对话、按轮次回看 Agent 做了什么</small></div><span class="mock-flag">离线预览 · 真实日志摘录</span></div>
-  <div class="topbar-actions"><button class="icon-button" type="button" onclick="alert('正式版里返回聊天页')">← 返回对话</button> <button id="toggle-dev" class="icon-button" type="button" aria-pressed="false">开发者模式</button></div>
-</header>
-<main class="lv">
-  <nav class="lv-convs" id="convs" aria-label="对话列表"></nav>
-  <section class="lv-chat"><div class="chat-heading"><div><h1 id="chat-title"></h1><p id="chat-sub"></p></div></div><div class="messages" id="chat"></div></section>
-  <section class="lv-log" id="log" aria-label="日志"></section>
-</main>
-<script>
-const DATA = /*DATA*/null;
+// The log page: every turn, step by step (data from /api/logs, web_logs.py).
+// The server sends facts and codes; words come from labels.js, shared with the chat page.
 const $ = id => document.getElementById(id);
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 const fmtS = s => s == null ? "—" : s >= 60 ? `${Math.floor(s / 60)}分${Math.round(s % 60)}秒` : `${(+s).toFixed(1)}秒`;
 const fmtMs = ms => ms == null ? "" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-const issues = t => t.anomalies.filter(a => a.level === "bad" || a.level === "warn").length;
-const tone = t => t.outcome.tone !== "ok" ? t.outcome.tone : issues(t) ? "warn" : "ok";
 const fmtK = n => n == null ? "—" : n >= 10000 ? `${(n / 1000).toFixed(0)}k` : n.toLocaleString();
 const ICONS = {look: "🔍", write: "📂", ask: "💬", task: "📋"};
-let dev = false; try { dev = localStorage.getItem("fb-dev") === "1"; } catch {}
-let state = {conv: null, turn: null};
+const HANDLE_KINDS = {F: "文件", E: "证据片段", C: "目录快照", P: "分类计划", X: "文件计划", T: "任务"};
+const STATE_TONE = {completed: "ok", partial: "warn", needs_review: "warn", waiting_input: "wait", cancelled: "wait", interrupted: "bad"};
+const ANSWERS = {y: "允许", a: "本轮全部允许", n: "拒绝"};
+const PART_KINDS = {organize: "整理", find: "查找", answer: "回答", classify: "分类", dedup: "查重"};
+const CLAIMS = {done: "说已完成", unfinished: "说没做到", not_needed: "说无需操作"};
+const VERDICTS = {pass: "核验通过", fail: "核验未通过", review: "需要你复核"};
+// stop reasons where the run gave up (agent/states.py RETRY, plus answers it could not prove)
+const GAVE_UP = new Set(["cost_budget", "token_budget", "max_steps", "repeated_call", "repair_limit", "exception", "unverified_answer", "unstructured_terminal"]);
+const toolLabel = name => TOOL_LABELS[name] || name;
+const opLabel = op => EFFECT_NAMES[op === "make_dir" ? "create" : op] || op;
+const taskStateLabel = s => TASK_STATES[s] || s || "—";
+const api = async url => { const r = await fetch(url); const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.detail || `请求失败 (${r.status})`); return data; };
 
-function applyDev() { document.body.dataset.dev = dev ? "1" : ""; $("toggle-dev").setAttribute("aria-pressed", String(dev)); $("toggle-dev").textContent = dev ? "开发者模式 ✓" : "开发者模式"; }
-$("toggle-dev").onclick = () => { dev = !dev; try { localStorage.setItem("fb-dev", dev ? "1" : "0"); } catch {} applyDev(); if (state.conv) renderLog(); };
+// The verdict uses the chat page's own words (labels.js outcomeLabel); colour is this page's.
+function outcome(t) {
+  if (!t.ended) return {label: "没有结束记录（可能中途崩溃）", tone: "bad"};
+  const label = outcomeLabel({stop_reason: t.stop_reason, report: {display: t.display}});
+  const d = t.display, s = t.stop_reason;
+  const tone = d ? ({done: "ok", answered: "ok", chosen: "ok", confirm: "warn", waiting: "wait", cancelled: "wait"})[d] || (GAVE_UP.has(s) ? "bad" : "warn")
+    : GAVE_UP.has(s) ? "bad" : ["partial", "needs_review"].includes(s) ? "warn" : ["waiting_input", "cancelled", "paused"].includes(s) ? "wait" : "ok";
+  return {label, tone};
+}
+const dotTone = t => { const o = outcome(t).tone; return o !== "ok" ? o : t.issues ? "warn" : "ok"; };
 
-function readHash() { const p = new URLSearchParams(location.hash.slice(1)); return {c: p.get("c"), t: +p.get("t") || null}; }
-function writeHash() { history.replaceState(null, "", `#c=${state.conv.id.slice(0, 8)}&t=${state.turn}`); }
+function anomalyText(x) {
+  switch (x.code) {
+    case "slow_request": return `第 ${x.step} 步模型请求用了 ${(x.ms / 1000).toFixed(1)} 秒，慢于 95% 的历史步骤`;
+    case "request_failed": return `第 ${x.step} 步模型请求失败（${x.error}），${x.retry ? "已自动重试" : "未重试"}`;
+    case "call_failed": return `第 ${x.step} 步 ${x.tool}（${toolLabel(x.tool)}）失败：${x.text}`;
+    case "repeat": return `第 ${x.step} 步 ${x.tool} 与之前的调用重复（第 ${x.count} 次）`;
+    case "violations": return `触发了 ${x.count} 次安全规则`;
+    case "rejections": return `有 ${x.count} 个操作被拒绝`;
+  }
+  return JSON.stringify(x);
+}
+
+// --- task forms: the server sends the fields as written and stored ---
+const paths = xs => (xs || []).map(x => x === "." || x === "" ? "全部文件" : `「${x}」`).join("、");
+const effects = xs => (xs || []).map(e => EFFECT_NAMES[e] || e).join("、");
+function conditionText(c) {
+  let text = c.kind === "tool_success" && c.tool ? `${toolLabel(c.tool)}成功` : CONDITION_NAMES[c.kind] || c.kind;
+  if (c.path) text += " " + c.path;
+  if (c.destination) text += " → " + c.destination;
+  if (c.placement) text += `（${c.placement}）`;
+  return text;
+}
+function limitLines(limits) {
+  return Object.entries(limits || {}).map(([k, v]) => k === "only_within" ? `只在 ${paths(v)} 内操作` : k === "no_effects" ? `不允许：${effects(v)}`
+    : k === "only_extensions" ? `只处理 ${v.map(x => "." + x).join("、")} 文件` : `${k}：${JSON.stringify(v)}`);
+}
+function ruleLine(r) {
+  const who = {source: "原文件", destination: "目标位置"}[r.selector] || "操作对象", vals = r.values || [];
+  const text = {within: `${who}必须在 ${paths(vals)} 内`, outside: `${who}不能在 ${paths(vals)} 内`, extensions: `${who}只能是 ${vals.map(v => "." + v).join("、")} 文件`,
+    content_unchanged: "文件内容不能变", same_extension: "扩展名不能变", empty_directory: "只能是空文件夹"}[r.predicate] || `${r.predicate} ${JSON.stringify(vals)}`;
+  return `${effects(r.effects)}时：${text}`;
+}
+
+let state = {index: null, group: null, conv: null, turn: null, detail: null, limits: null};
+const details = new Map();
+
+function readHash() { const p = new URLSearchParams(location.hash.slice(1)); return {c: p.get("c"), r: p.has("r"), t: +p.get("t") || null}; }
+function writeHash() { history.replaceState(null, "", state.group === "runs" ? `#r=1&t=${state.turn}` : `#c=${state.group}&t=${state.turn}`); }
 
 function renderConvs() {
-  const nav = $("convs"); nav.replaceChildren(el("div", "section-label", `对话 · ${DATA.conversations.length}`));
-  for (const c of DATA.conversations) {
-    const b = el("button", "lv-conv" + (c === state.conv ? " active" : "")); b.type = "button";
-    b.append(el("strong", null, c.title));
-    const bad = c.turns.filter(t => issues(t)).length;
-    const meta = el("div", "meta"); meta.append(el("span", null, `${c.turns.length} 轮 · ${c.updated_at.slice(5)}`));
-    if (bad) meta.append(el("span", "pill warn", `⚠ ${bad} 轮有异常`));
-    const dots = el("div", "dots"); for (const t of c.turns) { const d = el("i", "dot " + tone(t)); d.title = `第 ${t.index} 轮：${t.outcome.label}${issues(t) ? ` · ${issues(t)} 处异常` : ""}`; dots.append(d); }
-    b.append(meta, dots); b.onclick = () => select(c, 1); nav.append(b);
-  }
+  const nav = $("convs"), idx = state.index; nav.replaceChildren(el("div", "section-label", `对话 · ${idx.conversations.length}`));
+  const entry = (id, title, sub, turns) => {
+    const b = el("button", "lv-conv" + (id === state.group ? " active" : "")); b.type = "button"; b.append(el("strong", null, title));
+    const bad = turns.filter(t => t.issues || outcome(t).tone === "bad").length;
+    const meta = el("div", "meta"); meta.append(el("span", null, sub)); if (bad) meta.append(el("span", "pill warn", `⚠ ${bad} 轮有异常`));
+    const dots = el("div", "dots"); for (const t of turns) { const d = el("i", "dot " + dotTone(t)); d.title = `第 ${t.index} 轮：${outcome(t).label}${t.issues ? ` · ${t.issues} 处异常` : ""}`; dots.append(d); }
+    b.append(meta, dots); b.onclick = () => selectGroup(id, 1); return b;
+  };
+  for (const c of idx.conversations) nav.append(entry(c.id, c.title, `${c.turns.length} 轮 · ${c.updated_at.slice(5)}`, c.turns));
+  if (idx.runs.length) { nav.append(el("div", "section-label", "不在网页对话里的运行")); nav.append(entry("runs", `评测与命令行运行 · ${idx.runs.length} 次`, "没有对话历史，只有运行记录", idx.runs)); }
 }
 
 function renderChat() {
   const c = state.conv, box = $("chat"); box.replaceChildren();
-  $("chat-title").textContent = c.title; $("chat-sub").textContent = `${c.turns.length} 轮对话 · 点击任意一轮查看右侧日志`;
+  $("chat-title").textContent = c.title; $("chat-sub").textContent = `${c.turns.length} 轮 · 点击任意一轮查看右侧日志`;
+  $("back").disabled = state.group === "runs";
   let block = null;
   for (const m of c.messages) {
     if (m.role === "event") { const note = el("div", "event-note", "↺ " + m.content.split("\n")[0].replace(/[:：]\s*$/, "")); note.title = m.content; box.append(note); block = null; continue; }
     if (m.role === "user") {
       const t = c.turns[m.turn - 1];
       block = el("div", "turn-block" + (m.turn === state.turn ? " active" : "")); block.dataset.turn = m.turn;
-      const tag = el("div", "turn-tag"); tag.append(el("i", "dot " + tone(t)), el("span", null, `第 ${m.turn} 轮 · ${t.outcome.label} · ${fmtS(t.stats.seconds)}${issues(t) ? ` · ${issues(t)} 处异常` : ""}`));
+      const tag = el("div", "turn-tag"); tag.append(el("i", "dot " + dotTone(t)), el("span", null, `第 ${m.turn} 轮 · ${outcome(t).label} · ${fmtS(t.seconds)}${t.issues ? ` · ${t.issues} 处异常` : ""}`));
       block.append(tag);
-      const turnNo = m.turn; block.onclick = () => select(c, turnNo);
+      const turnNo = m.turn; block.onclick = () => selectTurn(turnNo);
       box.append(block);
     }
     const msg = el("div", "message " + m.role);
@@ -303,7 +138,7 @@ function argsNode(c) {
 function callNode(c, maxMs, t) {
   const d = el("details", "item call" + (c.ok === false ? " fail" : "")); d.id = `call-${t.index}-${c.i}`;
   const s = el("summary"); const what = el("div", "what"); const right = el("div", "right"); const tags = el("div", "tags");
-  const line = el("span"); line.append(el("code", "tool", c.tool), document.createTextNode(" " + c.sentence)); what.append(line);
+  const line = el("span"); line.append(el("code", "tool", c.tool), document.createTextNode(" " + (c.sentence || toolLabel(c.tool)))); what.append(line);
   if (c.outcome) what.append(el("small", null, (c.ok === false ? "失败原因：" : "→ ") + c.outcome));
   tags.append(el("span", "pill " + (c.ok === false ? "bad" : "ok"), c.ok === false ? "失败" : "成功"));
   if (c.executed === false) tags.append(el("span", "pill warn", "未执行"));
@@ -323,16 +158,15 @@ function callNode(c, maxMs, t) {
     for (const o of A.options) { const tr = el("tr"); tr.append(el("td", null, o.label), el("td", null, o.detail || "")); tb.append(tr); }
     body.append(tb);
   } else if (c.tool === "prepare_file_plan" && A.actions) {
-    const EF = {create: "新建", move: "移动", rename: "改名", trash: "回收"};
     const tb = el("table", "mini-table"); tb.innerHTML = `<tr><th>操作</th><th>原位置</th><th>目标位置</th></tr>`;
-    for (const x of A.actions.slice(0, 40)) { const tr = el("tr"); tr.append(el("td", null, EF[x.effect] || x.effect), el("td", null, x.source || "—"), el("td", null, x.destination || "—")); tb.append(tr); }
+    for (const x of A.actions.slice(0, 40)) { const tr = el("tr"); tr.append(el("td", null, EFFECT_NAMES[x.effect] || x.effect), el("td", null, x.source || "—"), el("td", null, x.destination || "—")); tb.append(tr); }
     if (A.actions.length > 40) { const tr = el("tr"); const td = el("td", null, `… 还有 ${A.actions.length - 40} 项，完整列表见上面的参数`); td.colSpan = 3; tr.append(td); tb.append(tr); }
     body.append(tb);
   }
   const hn = handlesNode(c, t);
   if (hn) body.append(el("h5", null, "句柄：这次调用引用了哪些之前拿到的 ID，又产生了哪些新 ID（点击跳到出处）"), hn);
   body.append(el("h5", null, "② 运行时怎么处理"), kvList([
-    ["工具", `${c.tool}（${c.label}）`],
+    ["工具", `${c.tool}（${toolLabel(c.tool)}）`],
     ["是否执行", c.executed === false ? "否：被运行时拦下或因重复保护没有执行" : c.executed ? "是" : null],
     ["耗时", c.ms != null ? `${fmtMs(c.ms)}` + (c.wait_ms ? `，其中等你确认 ${fmtMs(c.wait_ms)}` : "") : null],
     ["相同调用第几次", c.repeat > 1 ? String(c.repeat) : null],
@@ -357,11 +191,11 @@ function eventNode(x) {
   let ico = "•", detail = null;
   if (x.kind === "confirm") {
     ico = "✋"; what.append(el("span", null, "请你确认操作"), el("small", null, x.question.split("\n").find(l => l.trim()) || ""));
-    tags.append(el("span", "pill " + (x.answer === "n" ? "bad" : x.answer ? "ok" : "wait"), x.answer_label ? `你选了「${x.answer_label}」` : "等待中"));
+    tags.append(el("span", "pill " + (x.answer === "n" ? "bad" : x.answer ? "ok" : "wait"), x.answer ? `你选了「${ANSWERS[x.answer] || x.answer}」` : "等待中"));
     right.append(tags, el("span", "num", x.wait_s != null ? `等了 ${fmtS(x.wait_s)}` : "")); detail = x.question;
   } else if (x.kind === "state") {
-    ico = "📌"; what.append(el("span", null, `任务状态变为「${x.label}」`), el("small", null, `第 ${x.revision} 版 · ${x.task_id} · ${x.status}` + (x.blocked ? ` · 已拦截 ${x.blocked} 次越界调用` : "")));
-    tags.append(el("span", "pill " + x.tone, x.label)); right.append(tags, el("span", "num", x.at));
+    ico = "📌"; what.append(el("span", null, `任务状态变为「${taskStateLabel(x.status)}」`), el("small", null, `第 ${x.revision} 版 · ${x.task_id} · ${x.status}` + (x.blocked ? ` · 已拦截 ${x.blocked} 次越界调用` : "")));
+    tags.append(el("span", "pill " + (STATE_TONE[x.status] || "gray"), taskStateLabel(x.status))); right.append(tags, el("span", "num", x.at));
   } else if (x.kind === "context") {
     ico = "🗜"; what.append(el("span", null, x.archived ? `整理上下文：归档了 ${x.archived} 条早期消息` : "整理上下文：之前的对话全部带上，没有归档"),
       el("small", null, `历史 ${fmtK(x.before)} → ${fmtK(x.after)} 字`)); detail = show(x.detail);
@@ -453,39 +287,47 @@ function prepNode(t, conv) {
 }
 
 function formNode(f) {
-  const box = el("div", "form"); box.id = `form-${f.step}-${f.tool}`;
-  const head = el("div", "form-head"); const ht = el("span"); ht.append(el("b", null, `第 ${f.step} 步 · ${f.label}`));
-  if (dev) ht.append(document.createTextNode(`（${f.tool}）`));
+  const box = el("div", "form"); const M = f.model || {};
+  const head = el("div", "form-head"); const ht = el("span"); ht.append(el("b", null, `第 ${f.step} 步 · ${toolLabel(f.tool)}`), document.createTextNode(`（${f.tool}）`));
   head.append(ht, el("span", "pill " + (f.ok === false ? "bad" : "ok"), f.task_id ? `${f.ok === false ? "未通过" : "已登记"} · 第 ${f.revision} 版` : f.ok === false ? "未通过" : "已提交"));
   box.append(head);
-  // model side
+  // model side, as written
   const m = el("div", "form-sec"); m.append(el("h4", null, "🧠 模型填写的内容"));
-  for (const [k, v] of f.model.fields) { const r = el("div", "frow"); r.append(el("span", null, k), el("span", null, v)); m.append(r); }
-  if (f.model.parts.length) {
-    const r = el("div", "frow"); r.append(el("span", null, `拆成 ${f.model.parts.length} 部分`)); const col = el("div");
-    for (const p of f.model.parts) { const d = el("div", "part"); const top = el("div", "part-top"); top.append(el("span", "pill gray", p.kind)); if (p.id && dev) top.append(el("code", null, p.id));
+  const fields = M.raw != null ? [["原始参数", M.raw]] : [["任务摘要", M.summary], ["修改原因", M.reason], ["基于版本", M.expected_revision && `第 ${M.expected_revision} 版`]];
+  for (const [k, v] of fields) if (v) { const r = el("div", "frow"); r.append(el("span", null, k), el("span", null, v)); m.append(r); }
+  const parts = [...(M.parts || []).map(p => ({id: p.id, kind: PART_KINDS[p.kind] || p.kind || "—", description: p.description || "", scope: paths(p.scope)})),
+                 ...(M.goals || []).map(g => ({id: g.id, kind: "目标", description: g.description || "", scope: (g.conditions || []).map(conditionText).join("；")}))];
+  if (parts.length) {
+    const r = el("div", "frow"); r.append(el("span", null, `拆成 ${parts.length} 部分`)); const col = el("div");
+    for (const p of parts) { const d = el("div", "part"); const top = el("div", "part-top"); top.append(el("span", "pill gray", p.kind)); if (p.id) top.append(el("code", null, p.id));
       d.append(top, el("div", null, p.description)); if (p.scope) d.append(el("small", null, "范围：" + p.scope)); col.append(d); }
     r.append(col); m.append(r);
   }
-  const lims = f.model.limits || []; const lr = el("div", "frow"); lr.append(el("span", null, "限制"));
+  const lims = [...limitLines(M.limits && typeof M.limits === "object" && !Array.isArray(M.limits) ? M.limits : {}),
+                ...(M.write_roots ? [`写入范围：${paths(M.write_roots)}`] : []), ...(M.allowed_effects ? [`允许的操作：${effects(M.allowed_effects)}`] : []),
+                ...(M.constraints || []).map(c => c.description || c.id)];
+  const lr = el("div", "frow"); lr.append(el("span", null, "限制"));
   if (lims.length) { const ul = el("ul", "rules"); ul.style.margin = "0"; for (const x of lims) ul.append(el("li", null, x)); lr.append(ul); } else lr.append(el("span", null, "没写限制"));
   m.append(lr); box.append(m);
-  // system side
+  // the runtime's side, as stored
   const g = f.registered;
   box.append(el("div", "arrow-row", g ? "↓ 系统校验后登记为" : f.ok === false ? "↓ 系统没有接受这次登记" : "↓ 没有找到对应的登记记录"));
   if (g) {
     const sys = el("div", "form-sec sys"); const h4 = el("h4", null, "📋 系统登记的任务 "); h4.append(el("i", null, `${f.task_id} · 第 ${f.revision} 版`)); sys.append(h4);
     const gr = el("div", "frow"); gr.append(el("span", null, `${g.goals.length} 个目标`)); const col = el("div");
-    for (const x of g.goals) { const d = el("div", "part"); if (dev) { const top = el("div", "part-top"); top.append(el("code", null, x.id)); d.append(top); }
+    for (const x of g.goals) { const d = el("div", "part"); const top = el("div", "part-top"); top.append(el("code", null, x.id)); d.append(top);
       d.append(el("div", null, x.description)); const chips = el("div", "chips");
-      for (const c of x.conditions) chips.append(el("span", "chip", "完成条件：" + c));
+      for (const c of x.conditions) chips.append(el("span", "chip", "完成条件：" + conditionText(c)));
       if (x.semantic_review) chips.append(el("span", "chip review", "结果需语义复核"));
       d.append(chips); col.append(d); }
     gr.append(col); sys.append(gr);
-    for (const [k, v] of [["可以读取", g.read], ["可以写入", g.write], ["允许操作", g.effects]]) { const r = el("div", "frow"); r.append(el("span", null, k), el("span", null, v)); sys.append(r); }
-    if (g.rules.length) { const r = el("div", "frow"); r.append(el("span", null, "约束")); const col2 = el("div");
-      for (const c of g.rules) { col2.append(el("div", null, c.description)); if (c.forbidden) col2.append(el("div", null, "禁止：" + c.forbidden));
-        const ul = el("ul", "rules"); for (const x of c.rules) ul.append(el("li", null, x)); col2.append(ul); }
+    const write = g.write_roots;
+    for (const [k, v] of [["可以读取", paths(g.read_roots) || "—"],
+                          ["可以写入", write.length ? paths(write.slice(0, 6)) + (write.length > 6 ? ` 等 ${write.length} 处` : "") : "不写入任何文件"],
+                          ["允许操作", effects(g.allowed_effects) || "无（只读）"]]) { const r = el("div", "frow"); r.append(el("span", null, k), el("span", null, v)); sys.append(r); }
+    if (g.constraints.length) { const r = el("div", "frow"); r.append(el("span", null, "约束")); const col2 = el("div");
+      for (const c of g.constraints) { col2.append(el("div", null, c.description)); if (c.forbidden_effects.length) col2.append(el("div", null, "禁止：" + effects(c.forbidden_effects)));
+        const ul = el("ul", "rules"); for (const x of c.rules) ul.append(el("li", null, ruleLine(x))); col2.append(ul); }
       r.append(col2); sys.append(r); }
     box.append(sys);
   }
@@ -496,7 +338,7 @@ function formNode(f) {
 
 function opsNode(list) {
   const ops = el("div", "ops");
-  for (const o of list) { const r = el("div", "op"); r.append(el("span", "pill " + (o.undone ? "gray" : o.op === "trash" ? "warn" : "ok"), o.label + (o.undone ? "（已撤销）" : "")));
+  for (const o of list) { const r = el("div", "op"); r.append(el("span", "pill " + (o.undone ? "gray" : o.op === "trash" ? "warn" : "ok"), opLabel(o.op) + (o.undone ? "（已撤销）" : "")));
     const p = el("div", "path"); p.append(document.createTextNode(o.src || "")); if (o.dst && o.op !== "make_dir") { p.append(el("em", null, "  →  " + o.dst)); }
     r.append(p, el("span", "num", o.time)); ops.append(r); }
   return ops;
@@ -504,7 +346,7 @@ function opsNode(list) {
 
 // the model's finish declaration, filed at the step it was made
 function finishNode(sf) {
-  const sec = el("div", "form"); const head = el("div", "form-head"); const ht = el("span"); ht.append(el("b", null, `第 ${sf.step} 步 · 模型申报完成情况`)); if (dev) ht.append(document.createTextNode(`（${sf.tool}）`));
+  const sec = el("div", "form"); const head = el("div", "form-head"); const ht = el("span"); ht.append(el("b", null, `第 ${sf.step} 步 · 模型申报完成情况`), document.createTextNode(`（${sf.tool}）`));
   head.append(ht, el("span", "pill " + (sf.ok === false ? "bad" : "ok"), sf.ok === false ? "申报被拒" : "已提交")); sec.append(head);
   const m = el("div", "form-sec"); m.append(el("h4", null, "🧠 模型填写的内容"));
   for (const [kk, vv] of [["给你的话", sf.reply || "（留空）"], ["总结", sf.summary || "（留空）"]]) { const r = el("div", "frow"); r.append(el("span", null, kk), el("span", null, vv)); m.append(r); }
@@ -521,16 +363,16 @@ function finishNode(sf) {
 function jumpTo(from) {
   const go = () => { const n = document.getElementById(`call-${from.turn}-${from.i}`); if (!n) return;
     n.open = true; n.scrollIntoView({behavior: "smooth", block: "center"}); n.classList.remove("flash"); void n.offsetWidth; n.classList.add("flash"); };
-  if (from.turn !== state.turn) { select(state.conv, from.turn); setTimeout(go, 30); } else go();
+  if (state.group !== "runs" && from.turn !== state.turn) selectTurn(from.turn).then(() => setTimeout(go, 30)).catch(failed); else go();
 }
 function handleChip(u, here) {
   const chip = el("span", "handle" + (u.from ? " linked" : ""));
-  chip.append(el("code", null, u.id), el("small", null, u.kind));
+  chip.append(el("code", null, u.id), el("small", null, HANDLE_KINDS[u.kind] || u.kind));
   if (u.from) {
     const where = u.from.turn === here ? `第 ${u.from.step} 步` : `第 ${u.from.turn} 轮第 ${u.from.step} 步`;
     chip.append(el("small", null, `← ${where} ${u.from.tool}`)); chip.title = `${where}：${u.from.sentence}（点击跳转）`;
     chip.onclick = e => { e.preventDefault(); e.stopPropagation(); jumpTo(u.from); };
-  } else chip.title = state.conv.standalone ? "出处不在记录里：这次运行的结果只存了前 300 字" : "没找到产生它的调用（可能是碰巧长得像句柄的文字）";
+  } else chip.title = state.group === "runs" ? "出处不在记录里：这次运行的结果只存了前 300 字" : "没找到产生它的调用（可能是碰巧长得像句柄的文字）";
   return chip;
 }
 function handlesNode(c, t) {
@@ -539,7 +381,7 @@ function handlesNode(c, t) {
   if (c.uses.length) { const r = el("div", "handle-row"); r.append(el("span", null, "引用了"));
     const list = el("div"); for (const u of c.uses) list.append(handleChip(u, t.index)); r.append(list); box.append(r); }
   if (c.produced.length) { const r = el("div", "handle-row"); r.append(el("span", null, "新产生"));
-    const list = el("div"); for (const u of c.produced) { const chip = el("span", "handle new"); chip.append(el("code", null, u.id), el("small", null, u.kind)); list.append(chip); }
+    const list = el("div"); for (const u of c.produced) { const chip = el("span", "handle new"); chip.append(el("code", null, u.id), el("small", null, HANDLE_KINDS[u.kind] || u.kind)); list.append(chip); }
     r.append(list); box.append(r); }
   return box;
 }
@@ -596,13 +438,13 @@ function statesNode(t) {
 function endNode(t) {
   const sf = t.status_form, box = el("div", "turn-end");
   const vr = el("div", "verdict-row"); vr.append(el("span", null, "🏁 本轮结束 · 系统最终判定"));
-  vr.append(el("span", "pill " + t.outcome.tone, t.outcome.label), el("span", "num", `stop_reason = ${t.outcome.stop_reason ?? "—"}`));
-  if (sf?.task_id) vr.append(el("span", "num", `${sf.task_id} · 第 ${sf.revision} 版 · ${sf.state_label}`));
+  const o = outcome(t); vr.append(el("span", "pill " + o.tone, o.label), el("span", "num", `stop_reason = ${t.stop_reason ?? "—"}`));
+  if (sf?.task_id) vr.append(el("span", "num", `${sf.task_id} · 第 ${sf.revision} 版 · ${taskStateLabel(sf.state)}`));
   const mism = sf ? sf.rows.filter(r => !r.agree).length : 0;
   if (mism) vr.append(el("span", "pill warn", `${mism} 个目标模型和系统说法不一致`));
   box.append(vr, statesNode(t));
   if (sf && !sf.has_call && sf.rows.length) {
-    box.append(el("div", "hint", `本轮模型没有申报完成，任务停在「${sf.state_label}」；系统这边的核验：`));
+    box.append(el("div", "hint", `本轮模型没有申报完成，任务停在「${taskStateLabel(sf.state)}」；系统这边的核验：`));
     for (const r of sf.rows) box.append(goalRow(r, true));
   }
   return box;
@@ -633,35 +475,35 @@ function reportNode(t) {
 function goalRow(r, systemOnly) {
   const box = el("div", "goal-row" + (r.agree || systemOnly ? "" : " mismatch"));
   const title = el("div", "goal-title"); const tt = el("span", null, r.description); title.append(tt);
-  if (dev) title.append(el("code", "num", r.id));
+  title.append(el("code", "num", r.id));
   if (!r.agree && !systemOnly) title.append(el("span", "pill warn", "说法不一致"));
   box.append(title);
   const cols = el("div", "goal-cols");
   if (!systemOnly) { const a = el("div"); a.append(el("h5", null, "🧠 模型申报"));
-    a.append(el("span", "pill " + ({done: "ok", unfinished: "bad", not_needed: "wait"})[r.claim], r.claim_label));
+    a.append(el("span", "pill " + ({done: "ok", unfinished: "bad", not_needed: "wait"})[r.claim], CLAIMS[r.claim]));
     if (r.claim_reason) a.append(el("p", null, r.claim_reason)); cols.append(a); }
   const b = el("div"); b.append(el("h5", null, "📋 系统核验"));
-  b.append(el("span", "pill " + ({pass: "ok", fail: "bad", review: "warn"})[r.verdict], ({pass: "✓ ", fail: "✕ ", review: "⚠ "})[r.verdict] + r.verdict_label));
+  b.append(el("span", "pill " + ({pass: "ok", fail: "bad", review: "warn"})[r.verdict], ({pass: "✓ ", fail: "✕ ", review: "⚠ "})[r.verdict] + VERDICTS[r.verdict]));
   if (r.detail) b.append(el("p", null, r.detail)); cols.append(b);
   if (systemOnly) cols.style.gridTemplateColumns = "1fr";
   box.append(cols); return box;
 }
 
-function renderLog() {
-  const c = state.conv, t = c.turns[state.turn - 1], log = $("log"); log.replaceChildren();
-  if (!t) { log.append(el("div", "empty-log", "这个对话还没有运行记录")); return; }
+function renderLog(t) {
+  const c = state.conv, log = $("log"); log.replaceChildren();
   const head = el("div", "log-head"); const h = el("div");
   h.append(el("h2", null, `第 ${t.index} 轮 · ${t.instruction.length > 30 ? t.instruction.slice(0, 30) + "…" : t.instruction}`));
   h.append(el("p", null, `${t.created_at} · 模型 ${t.model || "—"} · 运行 ${t.run_id}`));
   const nav = el("div", "nav");
-  for (const [txt, delta] of [["↑ 上一轮", -1], ["下一轮 ↓", 1]]) { const b = el("button", "icon-button", txt); b.type = "button"; b.disabled = !c.turns[t.index - 1 + delta]; b.onclick = () => select(c, t.index + delta); nav.append(b); }
+  for (const [txt, delta] of [["↑ 上一轮", -1], ["下一轮 ↓", 1]]) { const b = el("button", "icon-button", txt); b.type = "button"; b.disabled = !c.turns[state.turn - 1 + delta]; b.onclick = () => selectTurn(state.turn + delta).catch(failed); nav.append(b); }
   head.append(h, nav); log.append(head);
   const body = el("div", "log-body"); log.append(body);
 
   // overview: verdict, stats, time split
   const v = card(); const verdict = el("div", "verdict");
-  verdict.append(el("span", "big " + t.outcome.tone, ({ok: "✓ ", warn: "⚠ ", bad: "✕ ", wait: "… "})[t.outcome.tone] + t.outcome.label));
-  verdict.append(el("span", "pill gray", `stop_reason = ${t.outcome.stop_reason ?? "—"}`));
+  const o = outcome(t);
+  verdict.append(el("span", "big " + o.tone, ({ok: "✓ ", warn: "⚠ ", bad: "✕ ", wait: "… "})[o.tone] + o.label));
+  verdict.append(el("span", "pill gray", `stop_reason = ${t.stop_reason ?? "—"}`));
   v.append(verdict);
   const st = t.stats, stats = el("div", "stats");
   for (const [b, s] of [[fmtS(st.seconds), "总耗时"], [st.steps ?? "—", "请求模型"], [st.tool_calls ?? "—", "工具调用"], [st.files_changed, "改动文件"],
@@ -685,8 +527,9 @@ function renderLog() {
   rc.append(ra); body.append(rc);
 
   const a = card("需要留意"); const alerts = el("div", "alerts");
-  if (!t.anomalies.length) alerts.append(el("div", "alert none", "✓ 这一轮没有失败、重复或异常慢的步骤"));
-  for (const x of t.anomalies) alerts.append(el("div", "alert " + x.level, ({bad: "✕", warn: "⚠", slow: "◷"})[x.level] + "  " + x.text));
+  if (o.tone === "warn" || o.tone === "bad") alerts.append(el("div", "alert " + o.tone, ({bad: "✕", warn: "⚠"})[o.tone] + "  本轮结局：" + o.label));
+  for (const x of t.anomalies) alerts.append(el("div", "alert " + x.level, ({bad: "✕", warn: "⚠", slow: "◷"})[x.level] + "  " + anomalyText(x)));
+  if (!alerts.childNodes.length) alerts.append(el("div", "alert none", "✓ 这一轮没有失败、重复或异常慢的步骤"));
   a.append(alerts); body.append(a);
 
   // the chain, in order
@@ -710,24 +553,57 @@ function renderLog() {
 
   const raw = el("details", "card raw"); raw.append(el("summary", null, `原始运行记录 · ${t.run_id}.trace.jsonl（${t.raw.length} 行）`));
   raw.append(el("pre", null, t.raw.map(x => JSON.stringify(x)).join("\n"))); body.append(raw);
-  body.append(el("div", "hint", `“较慢”= 慢于本机 95% 的历史同类步骤（请求模型 > ${(DATA.limits.llm_ms / 1000).toFixed(1)}s，基于 ${DATA.limits.llm_n} 次；工具 > ${(DATA.limits.tool_ms / 1000).toFixed(1)}s，基于 ${DATA.limits.tool_n} 次）。`));
+  const L = state.limits;
+  if (L?.llm_ms) body.append(el("div", "hint", `“较慢”= 慢于本机 95% 的历史同类步骤（请求模型 > ${(L.llm_ms / 1000).toFixed(1)}s，基于 ${L.llm_n} 次；工具 > ${(L.tool_ms / 1000).toFixed(1)}s，基于 ${L.tool_n} 次）。`));
   log.scrollTop = 0;
 }
 
-function select(conv, turn) {
-  const changed = conv !== state.conv;
-  state.conv = conv; state.turn = Math.min(Math.max(1, turn), conv.turns.length || 1);
-  if (changed) { renderConvs(); renderChat(); }
-  document.querySelectorAll(".turn-block").forEach(b => b.classList.toggle("active", +b.dataset.turn === state.turn));
-  const active = document.querySelector(`.turn-block[data-turn="${state.turn}"]`);
-  if (active && !changed) active.scrollIntoView({block: "nearest", behavior: "smooth"}); else if (active) active.scrollIntoView({block: "start"});
-  renderLog(); writeHash();
+
+async function selectGroup(id, turn) {
+  state.group = id; state.turn = null;
+  if (id === "runs") {
+    const runs = state.index.runs.map((r, i) => ({...r, index: i + 1}));
+    state.conv = {id: "runs", title: `评测与命令行运行 · ${runs.length} 次`, turns: runs, system_prompt: "",
+                  messages: runs.map(r => ({role: "user", content: r.instruction || "（没有记录指令）", turn: r.index}))};
+  } else {
+    $("log").replaceChildren(el("div", "empty-log", "正在读取…"));
+    state.conv = await api(`/api/logs/conversations/${encodeURIComponent(id)}`);
+    state.limits = state.conv.limits;
+  }
+  renderConvs(); renderChat();
+  await selectTurn(turn);
 }
 
-applyDev();
-const h = readHash();
-const start = DATA.conversations.find(c => h.c && c.id.startsWith(h.c)) || DATA.conversations[0];
-select(start, h.t || 1);
-</script>
-</body>
-</html>
+async function selectTurn(turn) {
+  const c = state.conv; state.turn = Math.min(Math.max(1, turn), c.turns.length || 1);
+  document.querySelectorAll(".turn-block").forEach(b => b.classList.toggle("active", +b.dataset.turn === state.turn));
+  document.querySelector(`.turn-block[data-turn="${state.turn}"]`)?.scrollIntoView({block: "nearest", behavior: "smooth"});
+  writeHash();
+  const summary = c.turns[state.turn - 1];
+  if (!summary) { $("log").replaceChildren(el("div", "empty-log", "这个对话还没有运行记录")); return; }
+  const key = state.group === "runs" ? `run:${summary.run_id}` : `${state.group}:${state.turn}`;
+  if (!details.has(key)) {
+    $("log").replaceChildren(el("div", "empty-log", "正在读取这一轮的记录…"));
+    if (state.group === "runs") { const r = await api(`/api/logs/runs/${encodeURIComponent(summary.run_id)}`); state.limits = r.limits; details.set(key, r.turn); }
+    else details.set(key, await api(`/api/logs/conversations/${encodeURIComponent(state.group)}/turns/${state.turn}`));
+  }
+  if (summary !== c.turns[state.turn - 1]) return;  // another turn was picked meanwhile
+  renderLog(details.get(key));
+}
+
+const failed = err => $("log").replaceChildren(el("div", "empty-log", "读取失败：" + err.message));
+$("back").onclick = () => { location.href = `/#c=${encodeURIComponent(state.group)}`; };
+window.addEventListener("hashchange", () => {
+  const h = readHash();
+  if (h.c && h.c !== state.group) selectGroup(h.c, h.t || 1).catch(failed);
+  else if (h.t && h.t !== state.turn) selectTurn(h.t).catch(failed);
+});
+(async () => {
+  try {
+    state.index = await api("/api/logs");
+    const h = readHash();
+    const first = h.r && state.index.runs.length ? "runs" : state.index.conversations.find(c => c.id === h.c)?.id || state.index.conversations[0]?.id || (state.index.runs.length ? "runs" : null);
+    if (!first) { renderConvs(); $("log").replaceChildren(el("div", "empty-log", "还没有任何运行记录")); return; }
+    await selectGroup(first, h.t || 1);
+  } catch (err) { failed(err); }
+})();

@@ -29,7 +29,7 @@ def _clause(text, limit=180):
     return text if len(text) <= limit else text[:limit].rstrip() + '…'
 
 
-# Tool names as the user should read them (the page has the same list, web/app.js TOOL_LABELS).
+# Tool names as the user should read them in reports (the pages' own list is web/labels.js TOOL_LABELS).
 TOOL_NAMES = {
     'prepare_file_plan': '准备文件操作', 'execute_file_plan': '执行文件操作', 'inspect_file_plan': '查看文件操作',
     'ask_user': '向你提问', 'start_task': '登记任务', 'revise_task': '修改任务',

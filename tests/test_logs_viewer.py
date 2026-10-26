@@ -1,37 +1,50 @@
-"""The offline log viewer (docs/mock/build_logs_mock.py): the timeline must show every call.
+"""The log page (web_logs.py, /api/logs, web/logs.html): the timeline must show every call.
 
 Built from small synthetic runs, never real logs (logs/ is private and gitignored).
-Pins what the viewer promises the reader learning the chain: each call the run made
+Pins what the page promises the reader learning the chain: each call the run made
 is drawn; the conversation history fills in the model's output and the full results
 only when it lines up with the trace; confirmations, file operations and task states
 sit under the call they happened in; anything that cannot be placed is reported, not
 dropped; handles link back to the call that produced them; a turn answered without
-a task says why nothing was verified. The last test renders the page in headless
-Chrome when one is installed.
+a task says why nothing was verified. The server returns codes and the page words
+them with the chat page's labels (web/labels.js). The last test drives the page in
+headless Chrome when one is installed.
 """
-import importlib.util
 import json
 import shutil
+import socket
 import sqlite3
 import subprocess
+import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
+import uvicorn
+from fastapi.testclient import TestClient
 
-SPEC = importlib.util.spec_from_file_location("build_logs_mock", Path(__file__).resolve().parents[1] / "docs/mock/build_logs_mock.py")
-V = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(V)
+import web_logs as V
+import webapp
 
 LIMITS = {"llm_ms": 10_000, "tool_ms": 1_000, "llm_n": 1, "tool_n": 1}
 LONG = "OK: file:F0123456789 evidence:E0123456789；仅支持片段范围内结论。\n<file_content>\n" + "正文" * 400
 
 
 @pytest.fixture
-def root(tmp_path, monkeypatch):
+def src(tmp_path):
     (tmp_path / "logs").mkdir()
-    (tmp_path / "sandbox/.oplog").mkdir(parents=True)
-    monkeypatch.setattr(V, "ROOT", tmp_path)
-    return tmp_path
+    (tmp_path / "oplog").mkdir()
+    state = tmp_path / "state.sqlite3"
+    with sqlite3.connect(state) as db:
+        db.executescript("""
+            CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT, created_at TEXT, updated_at TEXT, history_json TEXT);
+            CREATE TABLE turns (id TEXT PRIMARY KEY, conversation_id TEXT, run_id TEXT, status TEXT, created_at TEXT,
+                                updated_at TEXT, events_json TEXT, final TEXT, error TEXT, result_json TEXT);""")
+    tasks = tmp_path / "tasks.sqlite3"
+    with sqlite3.connect(tasks) as db:
+        db.execute("CREATE TABLE task_revisions (id TEXT, revision INTEGER, data_json TEXT)")
+    return V.Sources(log_dir=tmp_path / "logs", state_db=state, oplog_dir=tmp_path / "oplog", task_db=tasks)
 
 
 @pytest.fixture
@@ -41,8 +54,12 @@ def tasks_db():
     return db
 
 
-def write_trace(root, run_id, records):
-    (root / f"logs/{run_id}.trace.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records), encoding="utf-8")
+def write_trace(src, run_id, records):
+    (src.log_dir / f"{run_id}.trace.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records), encoding="utf-8")
+
+
+def write_ops(src, run_id, ops):
+    (src.oplog_dir / f"{run_id}.jsonl").write_text("\n".join(json.dumps(o) for o in ops), encoding="utf-8")
 
 
 def tool(step, name, args, result="OK", **kw):
@@ -63,7 +80,12 @@ def tc(cid, name, args):
     return {"id": cid, "type": "function", "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}
 
 
+def build(src, tasks_db, run_id, **kw):
+    return V.build_turn(src, tasks_db, run_id, kw.pop("index", 1), LIMITS, **kw)
+
+
 # a two-step read-only answer: search, then read and answer with finish_turn(mode=reply)
+R1, R2, W1 = "20261026-100000-000001", "20261026-100100-000002", "20261026-100200-000003"
 SEARCH = {"name_pattern": "*offer*"}
 READ = {"path": "a.pdf"}
 REPLY = {"mode": "reply", "reply": "找到 1 个"}
@@ -99,33 +121,31 @@ def levels(turn):
     return [(x["level"], x["text"]) for x in turn["completeness"]]
 
 
-def test_every_call_is_drawn_from_the_trace_even_without_ui_events(root, tasks_db):
+def test_every_call_is_drawn_from_the_trace_even_without_ui_events(src, tasks_db):
     # The bug that started this: a run whose UI events held only started/completed showed no calls at all.
-    write_trace(root, "r1", TRACE)
-    turn = V.build_turn("r1", 1, LIMITS, tasks_db, events=[ev("started", 0), ev("completed", 9)], seg=HISTORY)
+    write_trace(src, R1, TRACE)
+    turn = build(src, tasks_db, R1, events=[ev("started", 0), ev("completed", 9)], seg=HISTORY)
     assert [c["tool"] for c in calls_of(turn)] == ["search_files", "read_file", "finish_turn"]
     assert turn["shown_calls"] == turn["stats"]["tool_calls"] == 3
     assert any("网页端没有保存这一轮的过程事件" in text for _, text in levels(turn))
-    assert V.undercounted([{"id": "c", "turns": [turn]}]) == []
 
 
-def test_a_run_counting_more_calls_than_it_recorded_is_flagged(root, tasks_db):
-    write_trace(root, "r1", TRACE[:-1] + [end(4)])
-    turn = V.build_turn("r1", 1, LIMITS, tasks_db, seg=None)
+def test_a_run_counting_more_calls_than_it_recorded_is_flagged(src, tasks_db):
+    write_trace(src, R1, TRACE[:-1] + [end(4)])
+    turn = build(src, tasks_db, R1)
     assert ("bad", "运行结束时统计了 4 次工具调用，记录里只有 3 次") in levels(turn)
-    assert V.undercounted([{"id": "conversation", "turns": [turn]}]) == [("conversa", 1, "r1", 3, 4)]
 
 
-def test_a_run_without_an_end_line_is_flagged(root, tasks_db):
-    write_trace(root, "r1", TRACE[:-1])
-    turn = V.build_turn("r1", 1, LIMITS, tasks_db)
-    assert turn["outcome"]["tone"] == "bad"
+def test_a_run_without_an_end_line_is_flagged(src, tasks_db):
+    write_trace(src, R1, TRACE[:-1])
+    turn = build(src, tasks_db, R1)
+    assert turn["ended"] is False
     assert any(level == "bad" and "没有结束行" in text for level, text in levels(turn))
 
 
-def test_history_fills_in_the_model_output_and_full_results(root, tasks_db):
-    write_trace(root, "r1", TRACE)
-    turn = V.build_turn("r1", 1, LIMITS, tasks_db, seg=HISTORY)
+def test_history_fills_in_the_model_output_and_full_results(src, tasks_db):
+    write_trace(src, R1, TRACE)
+    turn = build(src, tasks_db, R1, seg=HISTORY)
     s1, s2 = turn["steps"]
     assert (s1["reasoning"], s1["decided"]) == ("先按文件名找", ["search_files"])
     assert (s2["reasoning"], s2["text"], s2["decided"]) == ("确认内容", "读一下", ["read_file", "finish_turn"])
@@ -138,25 +158,25 @@ def test_history_fills_in_the_model_output_and_full_results(root, tasks_db):
     assert turn["prep"]["request"] == {"attempt": 1, "input_chars": 900, "messages": 3, "ok": True, "ms": 40, "prompt_tokens": 300}
 
 
-def test_history_that_does_not_line_up_is_not_used(root, tasks_db):
-    write_trace(root, "r1", TRACE)
+def test_history_that_does_not_line_up_is_not_used(src, tasks_db):
+    write_trace(src, R1, TRACE)
     wrong = [m if m.get("tool_calls") is None or m["tool_calls"][0]["id"] != "c1"
              else {**m, "tool_calls": [tc("c1", "list_dir", {})]} for m in HISTORY]
-    turn = V.build_turn("r1", 1, LIMITS, tasks_db, seg=wrong)
+    turn = build(src, tasks_db, R1, seg=wrong)
     read = calls_of(turn)[1]
     assert read["result_source"] == "trace" and read["truncated"] and len(read["result"]) == 300
     assert not any(s["has_history"] for s in turn["steps"])
     assert any(level == "warn" and "对话历史和运行记录对不上" in text for level, text in levels(turn))
 
 
-def test_runs_outside_the_web_ui_say_what_is_missing(root, tasks_db):
-    write_trace(root, "r1", TRACE)
-    turn = V.build_turn("r1", 1, LIMITS, tasks_db)
+def test_runs_outside_the_web_ui_say_what_is_missing(src, tasks_db):
+    write_trace(src, R1, TRACE)
+    turn = build(src, tasks_db, R1)
     assert [lv for lv, _ in levels(turn)] == ["info"]
     assert "前 300 字" in levels(turn)[0][1]
 
 
-# a write: prepare, execute (confirmed, two files moved, task state updated), then finish
+# a write: prepare, execute (confirmed, two files moved, task state updated)
 PLAN = {"actions": [{"effect": "move", "source": "a.txt", "destination": "Archive"}]}
 WRITE_TRACE = [
     {"event": "start", "instruction": "整理", "model": "m"},
@@ -182,19 +202,15 @@ WRITE_EVENTS = [
 ]
 
 
-def write_ops(root, run_id, ops):
-    (root / f"sandbox/.oplog/{run_id}.jsonl").write_text("\n".join(json.dumps(o) for o in ops), encoding="utf-8")
-
-
-def test_confirmation_files_and_state_sit_under_their_call_in_order(root, tasks_db):
-    write_trace(root, "w1", WRITE_TRACE)
-    write_ops(root, "w1", OPS)
-    turn = V.build_turn("w1", 1, LIMITS, tasks_db, events=WRITE_EVENTS, seg=None)
+def test_confirmation_files_and_state_sit_under_their_call_in_order(src, tasks_db):
+    write_trace(src, W1, WRITE_TRACE)
+    write_ops(src, W1, OPS)
+    turn = build(src, tasks_db, W1, events=WRITE_EVENTS, seg=None)
     prepare, execute = calls_of(turn)
-    assert prepare["inner"] == []
+    assert prepare["inner"] == [] and (prepare["group"], execute["group"]) == ("task", "write")
     assert [x["kind"] for x in execute["inner"]] == ["confirm", "ops", "state"]
     confirm, ops, state = execute["inner"]
-    assert (confirm["answer_label"], confirm["wait_s"]) == ("允许", 2)
+    assert (confirm["answer"], confirm["wait_s"]) == ("y", 2)
     assert [o["src"] for o in ops["ops"]] == ["a.txt", "b.txt"] and ops["inferred"] is None
     assert (state["status"], state["revision"]) == ("running", 1)
     assert all(o["placed"] for o in turn["file_ops"])
@@ -204,73 +220,177 @@ def test_confirmation_files_and_state_sit_under_their_call_in_order(root, tasks_
     assert any("1 条页面不认识的事件" in text for _, text in levels(turn))
 
 
-def test_without_event_times_files_go_to_the_only_write_call(root, tasks_db):
-    write_trace(root, "w1", WRITE_TRACE)
-    write_ops(root, "w1", OPS)
-    turn = V.build_turn("w1", 1, LIMITS, tasks_db)
-    box = calls_of(turn)[1]["inner"][0]
+def test_without_event_times_files_go_to_the_only_write_call(src, tasks_db):
+    write_trace(src, W1, WRITE_TRACE)
+    write_ops(src, W1, OPS)
+    box = calls_of(build(src, tasks_db, W1))[1]["inner"][0]
     assert box["kind"] == "ops" and len(box["ops"]) == 2 and box["inferred"] == "这一轮只有这一次写入调用"
 
 
-def test_without_event_times_ambiguous_files_are_listed_not_guessed(root, tasks_db):
-    trace = WRITE_TRACE[:-1] + [tool(2, "execute_file_plan", {"plan_id": "Xbbbbbbbbbbbb"}, "OK"), end(3, stop_reason="done")]
-    write_trace(root, "w1", trace)
-    write_ops(root, "w1", OPS + [OPS[0] | {"src": "c.txt"}])
-    turn = V.build_turn("w1", 1, LIMITS, tasks_db)
+def test_without_event_times_ambiguous_files_are_listed_not_guessed(src, tasks_db):
+    write_trace(src, W1, WRITE_TRACE[:-1] + [tool(2, "execute_file_plan", {"plan_id": "Xbbbbbbbbbbbb"}), end(3, stop_reason="done")])
+    write_ops(src, W1, OPS + [OPS[0] | {"src": "c.txt"}])
+    turn = build(src, tasks_db, W1)
     assert all(c["inner"] == [] for c in calls_of(turn))
     assert not any(o.get("placed") for o in turn["file_ops"])
     assert any("3 项文件改动没能对应到具体步骤" in text for _, text in levels(turn))
 
 
-def test_one_atomic_call_per_change_is_matched_in_order(root, tasks_db):
-    trace = [TRACE[0], {"event": "llm", "step": 1, "ms": 1, "tokens": 1},
-             tool(1, "trash", {"path": "a"}), tool(1, "trash", {"path": "b"}), end(2, stop_reason="done")]
-    write_trace(root, "t1", trace)
-    write_ops(root, "t1", [{"op": "trash", "src": "a", "time": "x"}, {"op": "trash", "src": "b", "time": "x"}])
-    turn = V.build_turn("t1", 1, LIMITS, tasks_db)
-    assert [c["inner"][0]["ops"][0]["src"] for c in calls_of(turn)] == ["a", "b"]
+def test_one_retired_single_write_per_change_is_matched_in_order(src, tasks_db):
+    write_trace(src, W1, [TRACE[0], {"event": "llm", "step": 1, "ms": 1, "tokens": 1},
+                          tool(1, "trash", {"path": "a"}), tool(1, "trash", {"path": "b"}), end(2, stop_reason="done")])
+    write_ops(src, W1, [{"op": "trash", "src": "a", "time": "x"}, {"op": "trash", "src": "b", "time": "x"}])
+    assert [c["inner"][0]["ops"][0]["src"] for c in calls_of(build(src, tasks_db, W1))] == ["a", "b"]
 
 
-def test_an_answer_without_a_task_says_nothing_was_verified(root, tasks_db):
-    write_trace(root, "r1", TRACE)
-    turn = V.build_turn("r1", 1, LIMITS, tasks_db, seg=HISTORY, report={"state": "answered", "summary": "找到 1 个", "sections": []})
+def test_tool_groups_come_from_the_registry_and_the_runtime():
+    assert [V.group(t) for t in ("read_file", "apply_dedup", "execute_file_plan", "move", "ask_user", "start_task", "finish_turn")] == \
+        ["look", "write", "write", "write", "ask", "task", "task"]
+
+
+def test_an_answer_without_a_task_says_nothing_was_verified(src, tasks_db):
+    write_trace(src, R1, TRACE)
+    turn = build(src, tasks_db, R1, seg=HISTORY, report={"state": "answered", "display": "done", "summary": "找到 1 个", "sections": []})
     states = turn["states"]
     assert states["registered"] is False
     assert states["verification"] == {"mechanical": "not_applicable", "semantic": "not_required"}
     assert turn["states_source"] == "projected"  # no saved report.states: the product reducer projects them
     assert turn["ending"] == {"tool": "finish_turn", "step": 2, "i": 2, "mode": "reply"}
     assert (turn["evidence_calls"], turn["findings"]) == (1, False)
+    assert (turn["stop_reason"], turn["display"]) == ("answered", "done")  # codes; the page words them
 
 
-def test_saved_states_are_used_as_saved(root, tasks_db):
-    write_trace(root, "r1", TRACE)
+def test_saved_states_are_used_as_saved(src, tasks_db):
+    write_trace(src, R1, TRACE)
     saved = {"version": 1, "flow_state": "ended", "result_state": "answered", "registered": False, "parts": [],
              "verification": {"mechanical": "not_applicable", "semantic": "not_required"}, "next_action": "none"}
-    turn = V.build_turn("r1", 1, LIMITS, tasks_db, report={"state": "answered", "sections": [], "states": saved})
+    turn = build(src, tasks_db, R1, report={"state": "answered", "sections": [], "states": saved})
     assert (turn["states"], turn["states_source"]) == (saved, "saved")
 
 
-def test_handles_link_back_to_the_call_that_produced_them(root, tasks_db):
-    write_trace(root, "r1", TRACE)
-    first = V.build_turn("r1", 1, LIMITS, tasks_db, seg=HISTORY)
+def test_handles_link_back_to_the_call_that_produced_them(src, tasks_db):
+    write_trace(src, R1, TRACE)
+    first = build(src, tasks_db, R1, seg=HISTORY)
     cite = {"path": "a.pdf", "evidence": "E0123456789"}
-    write_trace(root, "r2", [TRACE[0], {"event": "llm", "step": 1, "ms": 1, "tokens": 1},
-                             tool(1, "read_file", cite, "OK"), end(1)])
-    second = V.build_turn("r2", 2, LIMITS, tasks_db,
-                          report={"state": "answered", "sections": [{"title": "文件与证据", "markdown": "[片段](evidence:E0123456789) Eggggggggggg"}]})
+    write_trace(src, R2, [TRACE[0], {"event": "llm", "step": 1, "ms": 1, "tokens": 1}, tool(1, "read_file", cite), end(1)])
+    second = build(src, tasks_db, R2, index=2,
+                   report={"state": "answered", "sections": [{"title": "文件与证据", "markdown": "[片段](evidence:E0123456789) Eggggggggggg"}]})
     V.link_handles([first, second])
     read = calls_of(first)[1]
-    assert read["produced"] == [{"id": "F0123456789", "kind": "文件"}, {"id": "E0123456789", "kind": "证据片段"}]
+    assert read["produced"] == [{"id": "F0123456789", "kind": "F"}, {"id": "E0123456789", "kind": "E"}]
     origin = {"turn": 1, "i": 1, "step": 2, "tool": "read_file", "sentence": read["sentence"]}
-    assert calls_of(second)[0]["uses"] == [{"id": "E0123456789", "kind": "证据片段", "from": origin}]
-    assert second["report"]["sections"][0]["uses"] == [{"id": "E0123456789", "kind": "证据片段", "from": origin}]
+    assert calls_of(second)[0]["uses"] == [{"id": "E0123456789", "kind": "E", "from": origin}]
+    assert second["report"]["sections"][0]["uses"] == [{"id": "E0123456789", "kind": "E", "from": origin}]
 
 
-def test_a_handle_mentioned_again_is_not_produced_twice(root, tasks_db):
-    write_trace(root, "r1", TRACE[:-1] + [tool(2, "read_file", READ, LONG), end(4)])
-    turn = V.build_turn("r1", 1, LIMITS, tasks_db)
+def test_a_handle_mentioned_again_is_not_produced_twice(src, tasks_db):
+    write_trace(src, R1, TRACE[:-1] + [tool(2, "read_file", READ, LONG), end(4)])
+    turn = build(src, tasks_db, R1)
     V.link_handles([turn])
     assert [len(c["produced"]) for c in calls_of(turn)] == [0, 2, 0, 0]
+
+
+# --- the store behind /api/logs: a conversation, a standalone run, caching, refusals ---
+
+def add_conversation(src, cid="conv1", history=HISTORY, turns=((R1, "t1"),), events=()):
+    with sqlite3.connect(src.state_db) as db:
+        db.execute("INSERT OR REPLACE INTO conversations VALUES (?,?,?,?,?)",
+                   (cid, "测试对话", "2026-10-26T10:00:00", "2026-10-26T10:05:00", json.dumps(history, ensure_ascii=False)))
+        for run_id, tid in turns:
+            db.execute("INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?)",
+                       (tid, cid, run_id, "completed", "2026-10-26T10:00:00", "2026-10-26T10:01:00", json.dumps(list(events)), "", "",
+                        json.dumps({"report": {"state": "answered", "display": "done", "summary": "找到 1 个", "sections": []}})))
+
+
+def chat_messages(cid):
+    return [{"role": "user", "content": "我有哪些 offer"},
+            {"role": "assistant", "content": "找到 1 个", "html": "<p>找到 1 个</p>", "report": {"sections": []}}]
+
+
+def test_the_store_lists_conversations_and_standalone_runs(src):
+    write_trace(src, R1, TRACE)
+    write_trace(src, W1, WRITE_TRACE)  # never went through the web UI
+    (src.log_dir / "not-a-run.trace.jsonl").write_text("{}")
+    add_conversation(src)
+    logs = V.Logs(src, chat_messages)
+    idx = logs.index()
+    [conv] = idx["conversations"]
+    assert (conv["id"], [t["run_id"] for t in conv["turns"]]) == ("conv1", [R1])
+    assert conv["turns"][0]["display"] == "done" and conv["turns"][0]["tool_calls"] == 3
+    assert [r["run_id"] for r in idx["runs"]] == [W1]
+    full = logs.conversation("conv1")
+    assert full["turns"][0]["steps"][0]["reasoning"] == "先按文件名找"  # history used
+    assert full["turns"][0]["report_html"]["summary"] == "<p>找到 1 个</p>"
+    assert logs.run(W1)["turn"]["shown_calls"] == 2
+    assert logs.run(R1) is None  # a web turn is read through its conversation
+    assert logs.run("../../config") is None and logs.conversation("missing") is None
+
+
+def test_the_store_rebuilds_when_a_trace_changes(src):
+    write_trace(src, R1, TRACE)
+    add_conversation(src)
+    logs = V.Logs(src, chat_messages)
+    assert logs.conversation("conv1")["turns"][0]["shown_calls"] == 3
+    assert logs.conversation("conv1") is logs.conversation("conv1")  # cached
+    time.sleep(0.01)
+    write_trace(src, R1, TRACE[:-1] + [tool(2, "read_file", READ, LONG), end(4)])
+    assert logs.conversation("conv1")["turns"][0]["shown_calls"] == 4
+
+
+def test_history_with_a_different_number_of_turns_is_not_used(src):
+    write_trace(src, R1, TRACE)
+    add_conversation(src, history=HISTORY + [{"role": "user", "content": "又一句"}])
+    turn = V.Logs(src, chat_messages).conversation("conv1")["turns"][0]
+    assert not turn["steps"][0]["has_history"]
+    assert "没有用历史补全" in turn["completeness"][0]["text"]
+
+
+@pytest.fixture
+def client(src, monkeypatch):
+    write_trace(src, R1, TRACE)
+    write_trace(src, W1, WRITE_TRACE)
+    write_ops(src, W1, OPS)
+    add_conversation(src)
+    monkeypatch.setattr(webapp, "_LOGS", V.Logs(src, chat_messages))
+    return TestClient(webapp.app)
+
+
+@pytest.fixture
+def browser_client(src, monkeypatch):
+    write_trace(src, R1, TRACE)
+    write_trace(src, W1, WRITE_TRACE)
+    write_ops(src, W1, OPS)
+    write_trace(src, R2, TRACE)  # outside the web UI
+    add_conversation(src)
+    add_conversation(src, "conv2", history=[{"role": "user", "content": "整理"}], turns=((W1, "t2"),), events=WRITE_EVENTS)
+    monkeypatch.setattr(webapp, "_LOGS", V.Logs(src, chat_messages))
+    return TestClient(webapp.app)
+
+
+def test_the_api_serves_summaries_and_one_turn_at_a_time(client):
+    idx = client.get("/api/logs").json()
+    assert [c["id"] for c in idx["conversations"]] == ["conv1"] and [r["run_id"] for r in idx["runs"]] == [W1]
+    conv = client.get("/api/logs/conversations/conv1").json()
+    assert set(conv) == {"id", "title", "updated_at", "system_prompt", "messages", "limits", "turns"}
+    assert "steps" not in conv["turns"][0]  # summaries only; a turn is fetched on its own
+    turn = client.get("/api/logs/conversations/conv1/turns/1").json()
+    assert turn["shown_calls"] == 3 and turn["steps"][1]["items"][0]["result"] == LONG
+    assert client.get(f"/api/logs/runs/{W1}").json()["turn"]["file_ops"][0]["placed"] is True
+    for url in ("/api/logs/conversations/nope", "/api/logs/conversations/conv1/turns/2", "/api/logs/conversations/conv1/turns/0",
+                f"/api/logs/runs/{R1}", "/api/logs/runs/..%2F..%2Fconfig"):
+        assert client.get(url).status_code == 404, url
+
+
+def test_the_page_and_shared_labels_are_served(client):
+    page = client.get("/static/logs.html").text
+    assert page.index("/static/labels.js") < page.index("/static/logs.js")
+    chat = client.get("/").text
+    assert chat.index("/static/labels.js") < chat.index("/static/app.js") and 'id="open-logs"' in chat
+    labels = client.get("/static/labels.js").text
+    for name in ("TOOL_LABELS", "outcomeLabel", "TASK_STATES", "CONDITION_NAMES", "EFFECT_NAMES"):
+        assert name in labels
+        for other in ("app.js", "tasks.js", "logs.js"):  # one copy only
+            assert f"const {name} =" not in client.get(f"/static/{other}").text and f"function {name}(" not in client.get(f"/static/{other}").text
 
 
 def chrome():
@@ -281,38 +401,46 @@ def chrome():
     return str(mac) if mac.exists() else None
 
 
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 @pytest.mark.skipif(chrome() is None, reason="needs a local Chrome for headless rendering")
-def test_every_turn_renders_in_a_browser_and_draws_every_call(root, tasks_db, tmp_path):
-    write_trace(root, "r1", TRACE)
-    write_trace(root, "w1", WRITE_TRACE)
-    write_ops(root, "w1", OPS)
-    turns = [V.build_turn("r1", 1, LIMITS, tasks_db, seg=HISTORY, report={"state": "answered", "summary": "找到 1 个", "sections": [
-                 {"title": "文件与证据", "markdown": "[片段](evidence:E0123456789)", "audience": "dev"}]}),
-             V.build_turn("w1", 2, LIMITS, tasks_db, events=WRITE_EVENTS, seg=None)]
-    V.link_handles(turns)
-    conv = {"id": "conv-test", "title": "测试", "updated_at": "2026-10-26 10:00", "system_prompt": "系统提示",
-            "messages": [{"role": "user", "content": "我有哪些 offer", "html": None, "turn": 1},
-                         {"role": "assistant", "content": "找到 1 个", "html": None, "turn": 1},
-                         {"role": "user", "content": "整理", "html": None, "turn": 2}], "turns": turns}
-    html = V.render([conv], LIMITS)
-    probe = """<script>(function(){const out=[],errs=[];
-      for(const c of DATA.conversations)for(const t of c.turns){try{select(c,t.index);const log=document.getElementById("log");
-        out.push({calls:log.querySelectorAll(".item.call").length,want:t.stats.tool_calls,states:log.querySelectorAll(".states").length,
-          report:log.querySelectorAll(".item.report").length,linked:log.querySelectorAll(".handle.linked").length,
-          text:log.textContent});}catch(e){errs.push(String(e&&e.stack||e));}}
-      const p=document.createElement("pre");p.id="probe";p.textContent=JSON.stringify({out,errs});document.body.append(p);})();</script>"""
-    i = html.rindex("</body>")
-    page = tmp_path / "page.html"
-    page.write_text(html[:i] + probe + html[i:], encoding="utf-8")
-    dom = subprocess.run([chrome(), "--headless=new", "--disable-gpu", "--virtual-time-budget=5000", "--dump-dom", page.as_uri()],
-                         capture_output=True, text=True, timeout=60).stdout
-    import html as H
-    start = dom.index('<pre id="probe">') + len('<pre id="probe">')
-    result = json.loads(H.unescape(dom[start:dom.index("</pre>", start)]))
-    assert result["errs"] == []
-    answer, write = result["out"]
-    assert (answer["calls"], write["calls"]) == (3, 2)
-    assert answer["states"] == write["states"] == 1
-    assert answer["report"] == 1 and answer["linked"] >= 1  # the report cites E… from the read
-    assert "没有登记任务" in answer["text"] and "没有调用 report_findings" in answer["text"]
-    assert "请你确认操作" in write["text"] and "改动了 2 个文件" in write["text"] and "任务状态变为" in write["text"]
+def test_the_page_draws_every_call_and_says_why_nothing_was_verified(browser_client):
+    from eval.browser_acceptance import Page, wait_http
+    # the app without its startup hook, so the real state database and sandbox are never touched
+    server = uvicorn.Server(uvicorn.Config(webapp.app, host="127.0.0.1", port=free_port(), lifespan="off", log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    profile, port = tempfile.mkdtemp(), free_port()
+    browser = subprocess.Popen([chrome(), "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+                                "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        app = f"http://127.0.0.1:{server.config.port}"
+        wait_http(f"{app}/api/logs")
+        wait_http(f"http://127.0.0.1:{port}/json/version")
+        page = Page(next(t for t in wait_http(f"http://127.0.0.1:{port}/json/list") if t["type"] == "page")["webSocketDebuggerUrl"])
+        page.call("Page.navigate", url=f"{app}/static/logs.html")
+        page.wait("!!document.querySelector('#log .card')", 30, "first turn")
+        answer = page.js("""(async () => { await selectGroup("conv1", 1); const log = document.getElementById("log");
+          return {calls: log.querySelectorAll(".item.call").length, linked: log.querySelectorAll(".handle.linked").length, text: log.innerText}; })()""")
+        assert answer["calls"] == 3
+        assert "没有登记任务" in answer["text"] and "没有调用 report_findings" in answer["text"]
+        assert "已完成" in answer["text"]  # display=done, worded by labels.js outcomeLabel
+        assert "结束本轮" in answer["text"] or "直接回答你" in answer["text"]
+        write = page.js("""(async () => { await selectGroup("conv2", 1); const log = document.getElementById("log");
+          return {calls: log.querySelectorAll(".item.call").length, text: log.innerText}; })()""")
+        assert write["calls"] == 2
+        assert "请你确认操作" in write["text"] and "你选了「允许」" in write["text"] and "改动了 2 个文件" in write["text"]
+        assert "任务状态变为「待继续」" in write["text"]  # TASK_STATES.running, the task editor's own word
+        outside = page.js("""(async () => { await selectGroup("runs", 1); const log = document.getElementById("log");
+          return {calls: log.querySelectorAll(".item.call").length, text: log.innerText}; })()""")
+        assert outside["calls"] == 3 and "不在网页对话里" in outside["text"]
+        assert not [e for e in page.events if e.get("method") == "Runtime.exceptionThrown"]
+    finally:
+        browser.terminate()
+        server.should_exit = True
+        thread.join(timeout=10)
+        shutil.rmtree(profile, ignore_errors=True)

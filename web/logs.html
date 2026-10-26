@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FileButler · 运行日志</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/chat.css">
+  <link rel="stylesheet" href="/static/logs.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">F</span><div><strong>FileButler · 运行日志</strong><small>按对话、按轮次回看 Agent 每一步做了什么</small></div></div>
+    <div class="topbar-actions"><button id="back" class="icon-button" type="button">← 返回对话</button></div>
+  </header>
+  <main class="lv">
+    <nav class="lv-convs" id="convs" aria-label="对话列表"><div class="conversation-empty">正在读取…</div></nav>
+    <section class="lv-chat"><div class="chat-heading"><div><h1 id="chat-title"></h1><p id="chat-sub"></p></div></div><div class="messages" id="chat"></div></section>
+    <section class="lv-log" id="log" aria-label="日志"></section>
+  </main>
+  <script src="/static/labels.js" defer></script>
+  <script src="/static/logs.js" defer></script>
+</body>
+</html>
