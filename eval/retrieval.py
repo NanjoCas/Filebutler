@@ -5,21 +5,16 @@
 """
 import argparse
 import json
-import re
 import time
-import unicodedata
 from pathlib import Path
 
 import yaml
 
+from eval.retrieval_library import normalize
 from safety.sandbox import Sandbox
 from tools.retrieval import PaperIndex, tokenize
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def normalize(text):
-    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", text).casefold())
 
 
 def metrics(paths, gold, k):
