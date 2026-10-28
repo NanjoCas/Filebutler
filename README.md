@@ -75,7 +75,7 @@ flowchart LR
 | 预算按费用算，不按 Token 算 | 七八成 Token 命中前缀缓存，单价只有 1/50。按 5 万 Token 设预算时，300 个文件的任务 0/5 通过；改为每次 ¥0.30 后 5/5 |
 | 不做上下文压缩（2026-10-23 已移除） | R06 任务上 Token 减半，费用反而 +25%：压缩改写了旧消息，缓存命中率从 87% 降到 45% |
 | 失败先做成离线回放，再修 | 1/70 的随机漏文件靠重跑复现不出来；把模型输出录下来做成确定性测试，修复前先确认这个测试会失败 |
-| 模型可见的提示和工具说明设绝对上限 31,311 字符，只减不增 | 每加一条规则都要占用模型的注意力；31,311 是 v2 退役时的实测值（约为 v2 的 79.7%），由测试守住。现为 30,956 |
+| 模型可见的提示和工具说明设绝对上限 31,311 字符，只减不增 | 每加一条规则都要占用模型的注意力；31,311 是 v2 退役时的实测值（约为 v2 的 79.7%），由测试守住。2.0 后为 30,695 |
 | 内容检索用全文 BM25，按约 500 字分段打分 | 冻结的 61 题检索集上 Recall@5 从 52.9%（PDF 前两页）升到 78.4%；整篇打分 76.0%，分段召回更高、查询快约 8 倍（19ms 对 145ms） |
 | OCR 用 macOS Vision，经一个 40 行的 Swift 小程序调用，不加 Python 依赖 | 本机 70 张图片 0 失败、平均 0.33 秒；26 个扫描页 25 页识别出文字；论文页渲染后识别，与文字层相似度 0.94 |
 | 敏感文件检测默认关闭（2026-10-24） | 自动识别做不到可靠：一份 2,450 字文字层的成绩单没被识别出来；扫描件没有文字可查。改由你选资料库范围来划定权限 |
@@ -111,7 +111,7 @@ python main.py run "把 Inbox 里的 PDF 移到 Archive"
 python main.py undo                  # 撤销最近一次运行（也可以指定 run_id）
 python main.py search "semi supervised fake news detection"   # 本地 BM25 检索，不调用 API
 python main.py dedup --path 文献     # 本地查重，默认只报告
-python -m pytest -q                  # 离线测试（437 项），使用假模型，不花钱
+python -m pytest -q                  # 离线测试（608 项），使用假模型，不花钱
 python -m eval.retrieval_set --out eval/results/<新目录>   # 检索评测（61 题），不调用 API
 ```
 
@@ -120,13 +120,14 @@ python -m eval.retrieval_set --out eval/results/<新目录>   # 检索评测（6
 
 ## 评测
 
-生产 Agent 的验收入口是 `eval/live_policy.py`，判定逻辑在 `eval/judge.py`。四个维度（文件结果、任务状态、回复、约束）都通过才算这一组通过，效率只观察、不计入判定。
+生产 Agent 的验收入口是 `eval/live_policy.py`，判定逻辑在 `eval/judge.py`。四个维度（文件结果、任务状态、回复、约束）都通过才算这一组通过，效率只观察、不计入判定。状态维度有 v3 和 v4 两套判法，2026-10-29 起退出码按 v4（按流程、结果、核验分开判断），v3 并列报告。
 
 ```bash
 python -m eval.live_policy --dry-run --suite blind3 --out <新目录>    # 用脚本模型干跑，不花钱
 zsh -ic 'python -m eval.live_policy --live --suite blind3 --out eval/results/<新目录> --total-cap 0.3'   # 收费
 python -m eval.rejudge eval/results/<已有目录> --out <新目录>          # 用当前判法离线重判
 python -m eval.protocol_errors eval/results/<目录>...                 # 统计协议错误的原因
+python -m eval.pass_k eval/results/<第1遍> <第2遍> <第3遍>          # 多遍汇总：pass^1、pass^3、未覆盖、环境失败
 ```
 
 可用的套件：
@@ -139,6 +140,7 @@ python -m eval.protocol_errors eval/results/<目录>...                 # 统计
 | `overreach` | 规则会不会误伤正常请求 |
 | `hidden`、`p0`、`p1`、`product`、`newdir`、`revise`、`parts`、`answer` | 各项功能的验收 |
 | `office`、`ocr` | 读 Office 文档、网页；图片和扫描页的本地 OCR |
+| `v2` | 2.0 复验一的 5 个新场景：登记时有疑问先问、任务内打字回答、同名文件按完整路径读、候选超过 top_k、两个连续局部问题 |
 
 输出目录必须是新的，不会覆盖已有结果。
 
@@ -153,6 +155,7 @@ python -m eval.protocol_errors eval/results/<目录>...                 # 统计
 | 规则误伤测试（第 28、29 轮） | 有效运行中误伤 0 次；顺带发现并修复一个 bug：文件移到不存在、又没有扩展名的路径时，被当成了改名 |
 | 产品规则（第 19 轮） | 同名先问、你用文字回答也能覆盖、敏感文件内容不进入模型：4/4（敏感检测现默认关闭） |
 | Office 与 OCR（第 37、38 轮） | office 3 次 13/15（答案 15/15 正确，2 次是查找部分记为待复核）；ocr 3 次 15/15 |
+| 2.0 复验一（第 47/47b 轮） | 安全类错误 0，失败调用率 4.1%；v4 pass^3：regression 7/8（第 47b 轮）、answer 2/2、s5 5/7、parts 2/2、v2 4/5（未过的 1 组是场景期望写错）；ocr 只跑 1 遍 5/5；regression 中位费用比第 45 轮 −3.8%。详见 [2.0 实施记录](docs/v2-implementation-2026-10-29.md) |
 | 全文检索（离线 + 第 39 轮） | 61 题检索集 Recall@5 52.9% → 78.4%；改动后回归 7/8、ocr 4/5，失败的 2 组回答和文件都正确，是状态记为待复核 |
 
 2026-10-21 至 10-24 的真实复验合计约 ¥9.8（按 `eval/results/policy_live_*` 的报告累加）。证据的边界：
@@ -213,6 +216,7 @@ tests/                离线测试（假模型），包括真实运行记录的�
 
 - [HANDOFF.md](HANDOFF.md)：现状、配置、代码入口、待办清单
 - [文档索引](docs/README.md)：当前设计、未实施提案、草稿与历史归档的状态和阅读入口
+- [2.0 更新方案](docs/filebutler-2.0-upgrade.md) 与 [实施记录](docs/v2-implementation-2026-10-29.md)：撤销加锁、问题表唯一来源、ID 与路径防呆、状态显示单点推导、评测 v2
 - [历史复验记录](docs/archive/live-acceptance-2026-10-21-rounds.md)：第 02–29 轮真实复验，不代表当前版本验收结论
 - [协议 v3 初版（历史归档）](docs/archive/protocol-v3-2026-10-21.md)：最初的设计、授权边界和数据；后续变更见路由方案与 HANDOFF
 - [docs/v2-retirement-coverage-2026-10-23.md](docs/v2-retirement-coverage-2026-10-23.md)：v2 退役时删掉的测试、对应机制在 v3 的覆盖情况和已知缺口
