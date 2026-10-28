@@ -35,6 +35,11 @@ def record_scan(ledgers, scan, request_id):
     key = dict(request=request_id, scope=scope, snapshot=scan['snapshot_id'], index_revision=scan['index_revision'])
     if old and old['key'] == key:
         ledger = old
+        # OCR can finish without changing the source's size or mtime. Refresh
+        # extraction states even when the enumeration snapshot stays identical.
+        ledger['files'] = {rel: old['files'][rel] if rel in old['files'] and
+                          old['files'][rel]['version'] == row['version'] and old['files'][rel]['state'] == row['state']
+                          else _entry(row) for rel, row in scan['files'].items()}
     else:
         files, changes = {}, dict(added=[], changed=[], removed=[])
         for rel, row in scan['files'].items():
@@ -42,8 +47,14 @@ def record_scan(ledgers, scan, request_id):
             same = before and before['version'] == row['version'] and old['key']['index_revision'] == key['index_revision']
             inherited = dict(status=before['status'], reason=before['reason'],
                              snapshot=before.get('inherited_from') or old['key']['snapshot']) \
-                if same and before['status'] == 'reviewed' else None
+                if same and before['status'] == 'reviewed' and before['state'] == row['state'] and old['key']['request'] == request_id else None
             files[rel] = _entry(row, inherited)
+            if same and before['state'] == row['state']:
+                previous = before.get('previous_review')
+                if before['status'] == 'reviewed' and old['key']['request'] != request_id:
+                    previous = dict(request=old['key']['request'], reason=before['reason'], snapshot=old['key']['snapshot'])
+                if previous:
+                    files[rel]['previous_review'] = previous
             if old and not before: changes['added'].append(rel)
             elif old and not same: changes['changed'].append(rel)
         if old:
@@ -97,6 +108,7 @@ def summary(ledger):
     pending_new = [rel for rel in changes.get('added', []) + changes.get('changed', [])
                    if ledger['files'].get(rel, {}).get('status') == 'unreviewed']
     return dict(scope=ledger['key']['scope'], total=len(readable), reviewed=count('reviewed'), excluded=count('excluded'),
+                previously_read=sum('previous_review' in f for f in readable),
                 unreviewed=count('unreviewed'), inherited=sum('inherited_from' in f for f in readable),
                 truncated=ledger['truncated'], matched=ledger.get('matched_files', 0),
                 returned=len(ledger['candidates']), pending_ocr=ledger.get('pending_ocr_units', 0),
@@ -126,6 +138,7 @@ def table(ledgers):
         s = summary(ledger)
         note = []
         if s['inherited']: note.append(f"{s['inherited']} 个沿用上次核对（内容未变）")
+        if s['previously_read']: note.append(f"{s['previously_read']} 个以前读过，不计入本次已核对")
         if s['changed']: note.append(f"{len(s['changed'])} 个新增或变更未核对")
         if s['truncated']: note.append(f"候选截断：重合 {s['matched']}、返回 {s['returned']}")
         if s['pending_ocr']: note.append(f"{s['pending_ocr']} 页待识别")

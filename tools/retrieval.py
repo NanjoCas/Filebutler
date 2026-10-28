@@ -193,7 +193,7 @@ INDEX_REVISION = f"bm25-chunk{CHUNK}-extract1"
 STRATEGY = "bm25"
 
 
-def coverage(index, scope, stats, hits, top_k, query):
+def coverage(index, scope, stats, hits, top_k, query, match='any'):
     """What one search covered (S7, 9): counted from each file's index state, not from
     this call's OCR delta, so pages left by an earlier search still count as pending.
     ``extract_complete`` is about extraction, never about having found everything."""
@@ -204,7 +204,8 @@ def coverage(index, scope, stats, hits, top_k, query):
     count = Counter(s[1] for s in states.values())
     pending = sum(s[2] for s in states.values())
     ocr_failed = sum(s[3] for s in states.values())
-    scan = hashlib.sha256(f"{scope}|{snapshot}|{INDEX_REVISION}".encode()).hexdigest()[:10]
+    parameters = json.dumps([scope, snapshot, INDEX_REVISION, query, top_k, match], ensure_ascii=False)
+    scan = hashlib.sha256(parameters.encode()).hexdigest()[:10]
     return dict(scan_id="S" + scan, scope=scope, snapshot_id=snapshot, index_revision=INDEX_REVISION,
                 enumeration_complete=stats.get("enumeration_complete", True),
                 indexed_files=count["indexed"], failed_files=count["failed"], empty_files=count["empty"],
@@ -266,7 +267,8 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
     if not hasattr(sb, "_paper_index"):
         sb._paper_index = PaperIndex()
     hits, stats = sb._paper_index.search(sb, a.query, a.path, a.top_k, a.match)
-    covered = coverage(sb._paper_index, sb.rel(_existing(sb, a.path)) or '.', stats, hits, a.top_k, a.query)
+    scope = sb.rel(_existing(sb, a.path)) or '.'
+    covered = coverage(sb._paper_index, scope, stats, hits, a.top_k, a.query, a.match)
     header = (f"OK: BM25 全文检索\n"
               f"覆盖：文件={stats['files']}，已索引={stats['indexed']}，读取失败={stats['failed']}，没有文字={stats['empty']}；"
               f"不支持的格式={stats['unsupported']}（压缩包等），跳过符号链接={stats['symlinks']}\n"
@@ -280,10 +282,14 @@ def search_content(a: ContentSearchArgs, sb: Sandbox) -> str:
                    + (f"，{failed} 个识别失败" if failed else ''))
     gap = coverage_line(dict(covered, pending_ocr_units=0, ocr_failed_units=0))
     if gap: header += "\n" + gap
-    return ToolResult(status='ok', text=_content_results(a, sb, hits, header), data=dict(coverage=covered))
+    displayed = []
+    text = _content_results(a, sb, hits, header, displayed)
+    covered = coverage(sb._paper_index, scope, stats, displayed, a.top_k, a.query, a.match)
+    covered['retained_files'] = len(hits)
+    return ToolResult(status='ok', text=text, data=dict(coverage=covered))
 
 
-def _content_results(a, sb, hits, header):
+def _content_results(a, sb, hits, header, displayed=None):
     where = lambda h: (f"page={h['page']} " if h['page'] else '') + f"offset={h['offset']}"
     artifacts = getattr(sb, 'artifacts', None)
     from agent.sensitive import enabled, reasons, granted
@@ -317,6 +323,7 @@ def _content_results(a, sb, hits, header):
         total_pages = max(1, len(batches))
         if a.page > total_pages: raise ToolError(f'共 {total_pages} 页')
         for hit, p, fid, why, prefix, snippet in (batches[a.page-1] if batches else []):
+            if displayed is not None: displayed.append(hit)
             if why:
                 blocks.append(f"{prefix}\n[敏感文件：{why}；未显示内容，读取需用户授权]")
                 continue
@@ -345,4 +352,5 @@ def _content_results(a, sb, hits, header):
     if any(len(b) > budget for b in blocks):
         raise ToolError("候选路径过长，无法安全输出；请缩小 path 范围")
     shown, footer = _paginate(blocks, a.page, a.top_k, max_chars=budget)
+    if displayed is not None: displayed.extend(hits[blocks.index(block)] for block in shown)
     return header + "\n" + "\n".join(shown or ["无命中；可更换关键词、翻译查询或逐篇读取核查。 "]) + "\n" + footer
