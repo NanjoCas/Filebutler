@@ -19,9 +19,10 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
-# The six conditions protocol v3 compiles (agent/intent.py TEMPLATES). Tasks
-# stored by protocol v2 may hold others; they are legacy, kept read-only.
-CONDITION_KINDS = ('evidence_valid', 'file_plan_verified', 'manual_review',
+# The conditions protocol v3 compiles (agent/intent.py TEMPLATES); manual_review is what
+# answer parts registered before 2026-10-29 hold (now local_fact). Tasks stored by
+# protocol v2 may hold others; they are legacy, kept read-only.
+CONDITION_KINDS = ('evidence_valid', 'file_plan_verified', 'manual_review', 'local_fact',
                    'plan_ready', 'plan_applied', 'receipt_verified')
 RULE_PREDICATES = ('within', 'outside', 'extensions', 'max_count')
 LEGACY_NOTE = '这是旧版本（协议 v2）登记的任务，只读，不再核验；需要继续请新建任务'

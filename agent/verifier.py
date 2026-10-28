@@ -129,6 +129,25 @@ def _followed(task, receipt, path):
     return path
 
 
+# Read-only tools whose results are local facts; report_findings and submit_classification
+# record the model's own judgement and are not among them.
+FACT_TOOLS = {'list_dir', 'search_files', 'inventory_files', 'file_info', 'read_file', 'search_content',
+              'find_duplicates', 'paper_profiles'}
+
+
+def _local_facts(task):
+    """This request looked at the library itself, or executed and verified operations: an
+    answer part can rest on that (user decision A1). The request is the run of the latest
+    observation or operation."""
+    rows = task.get('observations', []) + task.get('operations', [])
+    runs = [r.get('run_id') for r in rows if r.get('run_id')]
+    if not runs: return False
+    latest = runs[-1]
+    return any(o.get('run_id') == latest for o in task.get('operations', [])) or any(
+        o.get('run_id') == latest and o.get('status') == 'ok' and o.get('tool') in FACT_TOOLS
+        for o in task.get('observations', []))
+
+
 def verify_task(task, sb):
     if is_legacy(task):
         # v2-era conditions are no longer verified; the task is shown read-only.
@@ -149,6 +168,10 @@ def verify_task(task, sb):
                     ok, detail = verify_bound_plans(task, goal['id'], c, sb)
                 elif kind == 'manual_review':
                     ok, review = True, True
+                elif kind == 'local_fact':
+                    ok = True
+                    review = not _local_facts(task)
+                    detail = '' if not review else '本次请求没有本地查看或已核验的操作支撑这个回答，需要你确认'
                 elif kind == 'evidence_valid':
                     # A goal may use several independent fragments.
                     refs = _reference(c, task, 'evidence', goal['id'])

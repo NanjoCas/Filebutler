@@ -23,7 +23,9 @@ TEMPLATES = {
     'dedup': ([dict(kind='receipt_verified')], False, ['trash']),
     'organize': ([dict(kind='file_plan_verified')], False, ['create', 'move', 'rename', 'trash']),
     'classify': ([dict(kind='plan_ready')], True, []),
-    'answer': ([dict(kind='manual_review')], True, []),
+    # User decision A1 (2026-10-29): an answer backed by this request's local facts is done;
+    # without any it still needs review (agent/verifier.py local_fact).
+    'answer': ([dict(kind='local_fact')], False, []),
 }
 LIMITS_ID = 'user_limits'
 
@@ -123,7 +125,7 @@ class ReviseTask(StrictModel):
 
 
 KIND_OF = {'evidence_valid': 'find', 'receipt_verified': 'dedup', 'file_plan_verified': 'organize',
-           'plan_ready': 'classify', 'plan_applied': 'classify', 'manual_review': 'answer'}
+           'plan_ready': 'classify', 'plan_applied': 'classify', 'manual_review': 'answer', 'local_fact': 'answer'}
 
 
 def _effects(goal):

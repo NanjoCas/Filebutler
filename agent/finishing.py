@@ -123,7 +123,7 @@ class Finishing:
         named = {u['part_id'] for key in ('items', 'not_needed') for u in self.current['declared_unfinished'][key]}
         return [g['id'] for g in self.current['goals'] if g['id'] in candidates and g['id'] not in touched
                 and (any(c['kind'] in self.WRITE_CONDITIONS for c in g['conditions']) and (not nothing or g['id'] in named)
-                     or nothing and all(c['kind'] == 'manual_review' for c in g['conditions']))]
+                     or nothing and all(c['kind'] in ('manual_review', 'local_fact') for c in g['conditions']))]
 
     def _record_scoped_choice(self, chosen, scoped):
         """A choice about some parts settles only those (routing redesign S3, 5.1): skip

@@ -60,9 +60,9 @@ def test_each_kind_compiles_to_its_local_condition_with_empty_references():
         dict(kind=k, description=k) for k in ('find', 'dedup', 'organize', 'classify', 'answer')]))
     kinds = {g.id: [c.kind for c in g.conditions] for g in spec.goals}
     assert kinds == {'find_1': ['evidence_valid'], 'dedup_2': ['receipt_verified'],
-                     'organize_3': ['file_plan_verified'], 'classify_4': ['plan_ready'], 'answer_5': ['manual_review']}
+                     'organize_3': ['file_plan_verified'], 'classify_4': ['plan_ready'], 'answer_5': ['local_fact']}
     assert all(not c.reference for g in spec.goals for c in g.conditions)
-    assert {g.id for g in spec.goals if g.semantic_review} == {'find_1', 'classify_4', 'answer_5'}
+    assert {g.id for g in spec.goals if g.semantic_review} == {'find_1', 'classify_4'}  # answer: review only without local facts (A1)
     assert spec.allowed_effects == ['create', 'move', 'rename', 'trash'] and spec.write_roots == ['.']
     executed = compile_start(StartTask(summary='s', parts=[dict(kind='classify', description='c', execute=True)]))
     assert [c.kind for c in executed.goals[0].conditions] == ['plan_applied']
@@ -610,7 +610,8 @@ def test_scenario_root_only(tmp_path):
         execute(), finish('Inbox 根目录共 2 个 txt，已移入 Archive。')])
     assert errors(client) == []
     assert_root_only_files(tmp_path)
-    assert result.stop_reason == 'needs_review' and '2 个' in result.final  # the count is a model statement
+    # User decision A1 (2026-10-29): the count rests on this request's list_dir, so the answer part is done.
+    assert result.stop_reason == 'done' and '2 个' in result.final
     assert client.requests == 3
 
 

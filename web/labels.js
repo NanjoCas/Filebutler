@@ -5,7 +5,7 @@ const EFFECT_NAMES = {create: '创建目录', move: '移动', rename: '重命名
 const TASK_STATES = {running: '待继续', completed: '已完成', partial: '没有完成', needs_review: '请确认结果', waiting_input: '等你回答', interrupted: '已中断', cancelled:'已取消'};
 // The server sends task.display (agent/states.display_of); running and interrupted tasks keep their task state.
 const taskState = task => DISPLAY_LABELS[task.display] || TASK_STATES[task.status] || task.status;
-const CONDITION_NAMES = {path_exists:'路径存在', path_absent:'路径不存在', directory_empty:'目录为空', sha256:'内容哈希一致', tool_success:'工具执行成功（仍需核实）', manual_review:'人工判断', evidence_valid:'证据有效', plan_ready:'计划已保存', plan_applied:'计划执行已核验', receipt_verified:'执行回执有效', file_plan_verified:'文件计划位置与内容已核验', files_placed:'按执行前清单归集，原名与内容一致', empty_directories_removed:'范围内已无可见空子目录'};
+const CONDITION_NAMES = {path_exists:'路径存在', path_absent:'路径不存在', directory_empty:'目录为空', sha256:'内容哈希一致', tool_success:'工具执行成功（仍需核实）', manual_review:'人工判断', local_fact:'本次请求的本地查看或已核验操作', evidence_valid:'证据有效', plan_ready:'计划已保存', plan_applied:'计划执行已核验', receipt_verified:'执行回执有效', file_plan_verified:'文件计划位置与内容已核验', files_placed:'按执行前清单归集，原名与内容一致', empty_directories_removed:'范围内已无可见空子目录'};
 const TOOL_LABELS = {
   prepare_file_plan: "生成文件操作清单并预检", execute_file_plan: "本地执行并核验文件计划", inspect_file_plan: "查看文件计划和阻塞原因",
   ask_user: "向你确认不清楚的地方", start_task: "登记你的要求与限制", revise_task: "按更正修改任务（需确认）", set_task: "登记目标、范围与约束", finish_task: "逐项核验任务完成条件", inspect_run: "只读查询运行原因", inventory_files: "本地统计文件",
