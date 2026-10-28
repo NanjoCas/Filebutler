@@ -69,7 +69,6 @@ def test_findings_return_their_table_and_reads_name_the_evidence_they_issued(tmp
     assert '模型判断：' in result.final  # the table still reaches the answer
     reads = [r for r in runtime.results.values() if r['tool'] == 'read_file']
     assert all(any(ref['kind'] == 'evidence' for ref in r['references']) for r in reads)
-    assert runtime.reference_shadow == []  # the result's references agree with the old diff
 
 
 def test_a_dedup_stopped_midway_reports_done_and_remaining(tmp_path, monkeypatch):

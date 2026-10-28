@@ -1,5 +1,6 @@
 """Local completion predicates. Evidence validity is not semantic correctness."""
 from agent import choices
+from agent.completion import step_owners
 from agent.artifacts import digest
 from agent.task import LEGACY_NOTE, is_legacy
 from safety.sandbox import SandboxError
@@ -52,7 +53,7 @@ def _goal_steps(plan, goal_id):
     """
     mine, proof = set(), False
     for s in plan['payload']['steps']:
-        owners = s.get('goal_ids') or plan['payload']['goal_ids']
+        owners = step_owners(plan, s)
         if goal_id not in owners: continue
         if s['effect'] != 'create' and len(owners) > 1: continue
         mine.add(s['id'])

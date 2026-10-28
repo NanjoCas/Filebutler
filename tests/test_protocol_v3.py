@@ -222,6 +222,28 @@ def test_with_strict_terminal_off_the_v3_surface_and_words_come_back(tmp_path):
     assert total <= PROMPT_CAP, total
 
 
+def test_legacy_schema_has_no_dangling_finish_turn_refs():
+    """With strict_terminal off, no model-facing text names finish_turn after
+    legacy_terminal (2.0 P1-B). Identifiers and strict-only texts are skipped."""
+    import ast
+    from pathlib import Path
+    from agent.finishing import TERMINAL_REQUIRED
+    from agent.prompts import legacy_terminal
+    strict_only = {TERMINAL_REQUIRED}
+    dangling = []
+    for path in sorted(Path('agent').glob('*.py')) + sorted(Path('tools').glob('*.py')):
+        tree = ast.parse(path.read_text())
+        docs = {id(n.body[0].value) for n in ast.walk(tree)
+                if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef)) and n.body
+                and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Constant) and isinstance(n.value, str) and 'finish_turn' in n.value
+                    and n.value != 'finish_turn' and id(n) not in docs and n.value not in strict_only
+                    and 'finish_turn' in legacy_terminal(n.value)):
+                dangling.append(f'{path}:{n.lineno}')
+    assert dangling == []
+
+
 # ============================================================================ boundary
 
 

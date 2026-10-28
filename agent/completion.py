@@ -93,6 +93,13 @@ def attribute(task, sb, op, candidates, producers=()):
     return claimed(task, sb, op, candidates, producers) or list(candidates)
 
 
+def step_owners(plan, step):
+    """The goals one plan step serves. Plans prepared since strict attribution
+    (2026-10-24) give every step its own goal_ids; only older plans fall back to
+    the plan's list (2.0 P1-B: the one place this fallback lives)."""
+    return step.get('goal_ids') or plan['payload']['goal_ids']
+
+
 def require_receipt_producers(task, sb, bound):
     """Reject work whose receipt condition this executor can never satisfy."""
     from agent.verifier import _reference

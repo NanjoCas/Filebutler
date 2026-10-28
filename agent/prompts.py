@@ -151,5 +151,7 @@ TOOL_DESCRIPTIONS = {
 
 def legacy_terminal(text):
     """The same words for strict_terminal off: ask_user / finish_task instead of finish_turn."""
+    # finish_task has no input_resolution: a pause or cancel is said in the reply instead.
     return (text.replace(TURN_RULE, LEGACY_TURN_RULE).replace('finish_turn(mode=ask)', 'ask_user')
+            .replace('用 finish_turn 的 input_resolution 声明', '直接用文字回复说明')
             .replace('finish_turn(mode=task)', 'finish_task').replace('finish_turn.', 'finish_task.'))

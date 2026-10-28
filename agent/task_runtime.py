@@ -89,7 +89,6 @@ class TaskRuntime(Asking, Finishing):
         self._attributions = None
         self._pretask = []  # read-only facts observed before any task existed in this run
         self.results = {}  # result_id -> typed result summary (S6b), recorded once
-        self.reference_shadow = []  # calls whose issued references differ from the old diff
         self.coverage = None  # search coverage ledger before a task holds it (S7)
         self._last_observation = None
         self.pending_choice = None
@@ -668,12 +667,11 @@ class TaskRuntime(Asking, Finishing):
         if name in self.control_names:
             return
         refs = []
-        # The objects the call issued, as its result names them; the old diff over the
-        # artifact store runs beside it and any difference is recorded (8.2 shadow check).
+        # The objects the call issued, as its result names them. A result's references are
+        # the artifact-store difference across that one call (registry.dispatch_result),
+        # so they are not an independent check of it; the old shadow comparison of the
+        # two was removed in 2.0 P1-B. Untyped results fall back to the same difference.
         issued = {(r['kind'], r['id']) for r in typed.references} if typed is not None else None
-        guessed = {(k, i) for k, before in self._before_refs.items() for i in set(sb.artifacts.data[k]) - before}
-        if issued is not None and issued != {g for g in guessed if g[0] in registry.REFERENCE_KINDS}:
-            self.reference_shadow.append(dict(tool=name, issued=sorted(issued), guessed=sorted(guessed)))
         for collection, before in self._before_refs.items():
             ids = ({i for k, i in issued if k == collection} if issued is not None
                    else set(sb.artifacts.data[collection]) - before)
@@ -791,5 +789,4 @@ class TaskRuntime(Asking, Finishing):
                     document_cache=getattr(self.sb, '_document_cache_stats', {}),
                     usage=self.current.get('usage', {}) if self.current else {},
                     error_classes=dict(Counter(r['error_class'] for r in self.results.values() if r['error_class'])),
-                    reference_shadow_mismatches=len(self.reference_shadow),
                     checks=self.current.get('checks', []) if self.current else [])

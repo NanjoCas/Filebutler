@@ -20,7 +20,7 @@ from pydantic import Field, model_validator
 from agent.artifacts import digest, signature, label
 from agent.intent import InputResolution
 from agent import choices, intent
-from agent.completion import selected, walk_selection, is_package, attribute, claimed
+from agent.completion import selected, walk_selection, is_package, attribute, claimed, step_owners
 from agent.task import StrictModel
 
 
@@ -840,6 +840,8 @@ def _attribute_steps(runtime, task, steps, requested, producers):
             unresolved.append(row['destination'])
     if unresolved:
         raise ValueError(f'{AMBIGUOUS_GOAL}：无法确定以下新建文件夹属于哪个部分，请在动作上写 part：'+'、'.join(unresolved[:8]))
+    # New plans never need the plan-level fallback of step_owners.
+    assert all(row['goal_ids'] for row in steps), 'every step of a new plan has its own goal_ids'
     return list(dict.fromkeys(g for row in steps for g in row['goal_ids']))
 
 
@@ -848,7 +850,7 @@ def _operations(plan, pending=None):
     producers = ['file_plans'] + (['classification_plans'] if plan['payload'].get('classification') else [])
     return [dict(effect=s['effect'], source=s['source'],
                  destination=s['destination'] if s['effect'] != 'trash' else None,
-                 goal_ids=s.get('goal_ids') or plan['payload']['goal_ids'], producers=producers) for s in rows]
+                 goal_ids=step_owners(plan, s), producers=producers) for s in rows]
 
 
 def _validate(runtime, plan, pending=None):
@@ -923,7 +925,7 @@ def _recover_inflight(runtime, plan):
         plan['progress'][sid] = progress
         plan.pop('inflight'); runtime.store.save_file_plan(plan)
         row = dict(op=op,src=step['source'],dst=step['destination'],action_id=sid,
-                   run_id=progress['run_id'],goal_ids=step.get('goal_ids') or plan['payload']['goal_ids'],step_id=sid,
+                   run_id=progress['run_id'],goal_ids=step_owners(plan, step),step_id=sid,
                    kind='文件夹' if step['snapshot']['kind'] in FOLDER_KINDS else '文件')
         if progress['run_id'] == runtime.run_id: runtime.operations.append(row)
         else: runtime.current.setdefault('operation_history', []).append(row)
@@ -990,7 +992,7 @@ def _reconcile(runtime, plan_id):
         if not progress or step['id'] in known: continue
         row = dict(op='make_dir' if step['effect']=='create' else step['effect'],
                    src=step['source'] or step['destination'], dst=step['destination'],
-                   action_id=step['id'], run_id=progress['run_id'], goal_ids=step.get('goal_ids') or plan['payload']['goal_ids'],
+                   action_id=step['id'], run_id=progress['run_id'], goal_ids=step_owners(plan, step),
                    step_id=step['id'], kind='文件夹' if step['effect']=='create' or step['snapshot']['kind'] in FOLDER_KINDS else '文件')
         task.setdefault('operations', []).append(row)
     history = task.setdefault('operation_history', [])
@@ -1127,7 +1129,7 @@ def _run_step(runtime, plan, s, oplog):
     runtime.store.save_file_plan(plan)
     row = dict(op='make_dir' if s['effect']=='create' else s['effect'],
                src=s['source'] or s['destination'], dst=s['destination'],
-               run_id=runtime.run_id, action_id=s['id'], goal_ids=s.get('goal_ids') or plan['payload']['goal_ids'], step_id=s['id'],
+               run_id=runtime.run_id, action_id=s['id'], goal_ids=step_owners(plan, s), step_id=s['id'],
                kind='文件夹' if s['effect']=='create' or s['snapshot']['kind'] in FOLDER_KINDS else '文件')
     runtime.operations.append(row)
     runtime.current['operations'] = runtime.operations
