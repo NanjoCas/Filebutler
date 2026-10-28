@@ -130,6 +130,13 @@ class TaskPatch(StrictModel):
     cancel: bool | None = None
     policy: TaskPolicy | None = None
 
+    @model_validator(mode='before')
+    @classmethod
+    def historical_questions_are_read_only(cls, data):
+        if isinstance(data, dict) and 'unresolved_questions' in data:
+            raise ValueError('unresolved_questions 是只读历史备注；待答问题请通过提问和回答处理')
+        return data
+
 
 def add_blocker(task, source, obj, message, run_id=None):
     """Record one open blocker; identical open entries are not duplicated."""
@@ -156,12 +163,12 @@ def open_blockers(task):
     return [b for b in task.get('blockers', []) if b.get('status', 'open') == 'open']
 
 
-def task_state(task):
+def task_state(task, waiting=False):
     if task.get('cancelled'):
         return 'cancelled'
     if task.get('constraint_failures'):
         return 'partial'
-    if task['unresolved_questions']:
+    if waiting:
         return 'waiting_input'
     if not task.get('checks') or not all(c['passed'] for c in task['checks']):
         return 'partial'
@@ -236,7 +243,18 @@ class TaskStore:
                 (task_id, self.root, self.session)).fetchone()
         if not row:
             raise ValueError('任务不存在或不属于当前资料库/会话')
-        return normalized(json.loads(row['data_json']))
+        return self._question_status(normalized(json.loads(row['data_json'])))
+
+    def waiting(self, task_id):
+        from agent.interactions import Interactions
+        return Interactions(self).open_question(task_id, include_suspended=True) is not None
+
+    def _question_status(self, task):
+        if not is_legacy(task) and task.get('status') not in {'paused', 'cancelled'}:
+            waiting = self.waiting(task['id'])
+            if waiting or task.get('status') == 'waiting_input':
+                task['status'] = task_state(task, waiting=waiting)
+        return task
 
     def save_file_plan(self, plan):
         with self.connect() as db:
@@ -295,7 +313,7 @@ class TaskStore:
                     SELECT MAX(revision) FROM task_revisions WHERE id=t.id)
                 ORDER BY updated_at DESC, rowid DESC LIMIT ?''',
                 (self.root, self.session, limit)).fetchall()
-        return [normalized(json.loads(row['data_json'])) for row in rows]
+        return [self._question_status(normalized(json.loads(row['data_json']))) for row in rows]
 
     def submit(self, spec: TaskSubmission, instruction: str, run_id: str):
         """A new task; later changes go through preview_edit/apply_edit."""
@@ -333,7 +351,7 @@ class TaskStore:
             for key in removed: del rows[key]
             rows.update({x.id: x.model_dump() for x in added})
             after[collection] = list(rows.values())
-        for key in ('read_roots', 'write_roots', 'allowed_effects', 'unresolved_questions', 'policy'):
+        for key in ('read_roots', 'write_roots', 'allowed_effects', 'policy'):
             if getattr(patch, key) is not None:
                 value = getattr(patch, key)
                 after[key] = value.model_dump() if isinstance(value, BaseModel) else value
@@ -445,7 +463,7 @@ class TaskStore:
                 raise ValueError('本地完成条件未满足，不能用人工确认覆盖')
             data.setdefault('reviews', []).append(dict(revision=revision, goal_ids=goal_ids,
                 constraint_ids=constraint_ids, decision=decision, note=note, actor='user'))
-            data['status'] = task_state(data)
+            data['status'] = task_state(data, waiting=self.waiting(data['id']))
             db.execute('UPDATE task_revisions SET data_json=? WHERE id=? AND revision=? AND root=? AND session=?',
                        (json.dumps(data, ensure_ascii=False), task_id, revision, self.root, self.session))
         return data
@@ -457,7 +475,7 @@ class TaskStore:
             data=self.get(task_id)
             if data['revision']!=revision:raise ValueError('任务版本冲突')
             data['checks']=verify_task(data,sb)
-            data['status']=task_state(data)
+            data['status']=task_state(data, waiting=self.waiting(data['id']))
             db.execute('UPDATE task_revisions SET data_json=? WHERE id=? AND revision=? AND root=? AND session=?',
                        (json.dumps(data,ensure_ascii=False),task_id,revision,self.root,self.session))
         return data

@@ -183,6 +183,14 @@ SCRIPTS = {
     '验收4': {1: [dict(sleep=5, calls=[('finish_turn', dict(mode='reply', reply='慢回答完成。'))])]},
     '验收5': {1: reply('断网后重发的回答。')},
     '验收6': {1: [dict(fail=500, calls=[('finish_turn', dict(mode='reply', reply='重试后回答。'))])]},
+    '验收7': {
+        1: [[('start_task', dict(summary='移动 notes', parts=[dict(id='notes', kind='organize', description='移动 notes.md')])),
+             ('finish_turn', dict(ASK, question='notes.md 要移到哪里？', reason='missing_criterion'))]],
+        2: [[('prepare_file_plan', dict(task_id='{task_id}', description='移动 notes', input_resolution=dict(kind='answer'),
+                    actions=[dict(effect='move', source='notes.md', destination='文献/notes-v2.md')]))],
+            [('execute_file_plan', dict(plan_id='{plan_id}'))],
+            [('finish_turn', dict(mode='task', summary='已移动 notes'))]],
+    },
 }
 
 
@@ -210,8 +218,11 @@ class FakeModel:
             step = step['calls']
         tools = '\n'.join(m.get('content') or '' for m in messages if m['role'] == 'tool')
         plan = (re.findall(r'plan_id=(X[0-9a-f]{12})', tools) or ['X000000000000'])[-1]
+        task = (re.findall(r'task_id=(T[0-9a-f]{12})', tools) or
+                re.findall(r'T[0-9a-f]{12}', '\n'.join(m.get('content') or '' for m in messages)) or ['T000000000000'])[-1]
         calls = [dict(id=f'call_{turn}_{index}_{n}', type='function',
-                      function=dict(name=name, arguments=json.dumps(args, ensure_ascii=False).replace('{plan_id}', plan)))
+                      function=dict(name=name, arguments=json.dumps(args, ensure_ascii=False)
+                                    .replace('{plan_id}', plan).replace('{task_id}', task)))
                  for n, (name, args) in enumerate(step)]
         return 200, dict(id='fake', object='chat.completion', created=int(time.time()), model=body.get('model'),
                          choices=[dict(index=0, finish_reason='tool_calls',
@@ -390,15 +401,44 @@ def s6_model_error_retry(run):
                 one_user_message=sum(m['role'] == 'user' for m in conv['messages']) == 1)
 
 
+def s7_typed_answer_and_task_panel(run):
+    """2.0: a text answer continues the task without a task-edit card; history is read-only."""
+    run.new_chat(); run.send('移动 notes.md（验收7）')
+    run.page.wait("document.querySelectorAll('.choice-buttons button').length === 2", what='typed-answer question')
+    run.page.click('#open-tasks')
+    run.page.wait("!!document.querySelector('.task-card')", what='task panel')
+    waiting = '等你回答' in run.page.text('#task-editor-body')
+    run.page.click('.task-card .text-button')
+    read_only = run.page.js("[...document.querySelectorAll('#task-editor-body textarea')].some(t => t.readOnly)")
+    run.shot('s7_history_readonly')
+    run.page.click('#task-editor-close')
+    run.send('放到文献，文件名 notes-v2.md')
+    run.page.wait("!document.querySelector('#confirmation').classList.contains('hidden')", what='file move confirmation')
+    run.page.click('#confirmation .confirmation-details summary')
+    file_card = 'task_edit' not in run.page.text('#confirmation') and 'notes-v2.md' in run.page.text('#confirmation')
+    run.page.click('.confirmation-approve')
+    run.wait_status('已完成')
+    _, cid = run.conversation()
+    tasks = get(f'{run.app}/api/conversations/{cid}/tasks')['items']
+    run.shot('s7_typed_answer_done')
+    return dict(task_was_waiting=waiting, historical_notes_readonly=read_only, one_file_confirmation=file_card,
+                moved=(run.library / '文献/notes-v2.md').is_file() and not (run.library / 'notes.md').exists(),
+                same_task_completed=len(tasks) == 1 and tasks[0]['status'] == 'completed',
+                three_model_requests_for_answer=run.model.count('验收7', turn=2) == 3)
+
+
 SCENARIOS = [('问题卡按钮与按选择处理', s1_choice_buttons), ('确认卡片等待时停止', s2_stop_at_card),
              ('允许后撤销', s3_approve_and_undo), ('运行中刷新页面', s4_reload_mid_run),
-             ('断网发送后重试', s5_offline_retry), ('模型服务失败一次后重试', s6_model_error_retry)]
+             ('断网发送后重试', s5_offline_retry), ('模型服务失败一次后重试', s6_model_error_retry),
+             ('任务内文字回答与只读历史备注', s7_typed_answer_and_task_panel)]
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--out', type=Path, required=True)
     ap.add_argument('--headed', action='store_true', help='show the Chrome window')
+    ap.add_argument('--scenario', action='append', choices=[fn.__name__ for _, fn in SCENARIOS],
+                    help='run only selected scenarios when investigating a failed check')
     args = ap.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=False)
     home = Path(tempfile.mkdtemp(prefix='filebutler-browser-'))
@@ -430,7 +470,8 @@ def main(argv=None):
         page.wait("document.readyState === 'complete' && document.querySelector('#health').innerText.includes('已连接')",
                   what='page connected')
         run = Run(page, f'http://127.0.0.1:{app_port}', home, args.out, model)
-        for name, scenario in SCENARIOS:
+        selected = [(name, fn) for name, fn in SCENARIOS if not args.scenario or fn.__name__ in args.scenario]
+        for name, scenario in selected:
             started = time.perf_counter()
             try:
                 checks, error = scenario(run), None
@@ -454,7 +495,7 @@ def main(argv=None):
                 except subprocess.TimeoutExpired: proc.kill()
         server.shutdown(); app_log.close()
         shutil.rmtree(home, ignore_errors=True); shutil.rmtree(profile, ignore_errors=True)
-    print(f"{sum(r['passed'] for r in results)}/{len(SCENARIOS)} 个浏览器场景通过")
+    print(f"{sum(r['passed'] for r in results)}/{len(results)} 个浏览器场景通过")
     return 0 if ok else 1
 
 

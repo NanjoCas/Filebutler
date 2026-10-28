@@ -364,11 +364,28 @@ class Interactions:
                              (receipt_id, self.root, self.session)).fetchone()
         return dict(row, data=json.loads(row['data_json'])) if row else None
 
-    def open_question(self):
+    def open_question(self, task_id=None, *, include_suspended=False):
         with self.store.connect() as db:
-            row = db.execute("SELECT * FROM questions WHERE root=? AND session=? AND status='open'",
-                             (self.root, self.session)).fetchone()
+            sql = "SELECT * FROM questions WHERE root=? AND session=? AND "
+            sql += "status IN ('open', 'suspended')" if include_suspended else "status='open'"
+            params = [self.root, self.session]
+            if task_id is not None:
+                sql += ' AND task_id=?'
+                params.append(task_id)
+            row = db.execute(sql + ' ORDER BY rowid DESC LIMIT 1', params).fetchone()
         return dict(row, data=json.loads(row['data_json'])) if row else None
+
+    def text_relation(self, question_id, kind):
+        """A library caller has no receipt to close its open question; close it explicitly."""
+        status = 'suspended' if kind in {'new_request', 'independent_query'} else 'replied'
+        with self.store.connect() as db:
+            db.execute("UPDATE questions SET status=? WHERE question_id=? AND root=? AND session=? "
+                       "AND status IN ('open', 'replied')", (status, question_id, self.root, self.session))
+
+    def bind_question_task(self, question_id, task_id):
+        with self.store.connect() as db:
+            db.execute('UPDATE questions SET task_id=? WHERE question_id=? AND root=? AND session=? AND task_id IS NULL',
+                       (task_id, question_id, self.root, self.session))
 
     # ----- run requests (the outbox the web turns are created from) -----
 

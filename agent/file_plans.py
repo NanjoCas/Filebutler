@@ -860,7 +860,6 @@ def _validate(runtime, plan, pending=None):
     if task['revision'] != payload['revision']:
         raise ValueError(f"任务版本已变化（计划基于第 {payload['revision']} 版，当前第 {task['revision']} 版），"
                          '必须重新预览计划')
-    if task.get('unresolved_questions'): raise ValueError('任务仍有待确认问题')
     if task.get('constraint_failures'): raise ValueError('任务有未处理的约束失败')
     # Every action carries its own goals; no global step is borrowed for the plan.
     # Scope the plan lists for confirmation counts; user limits apply in full.

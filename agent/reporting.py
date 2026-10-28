@@ -238,7 +238,7 @@ def build_report(task, model_summary, records, reply=''):
         reasons='；'.join(dict.fromkeys(plain(b['message']) for b in failed[:2]))
         summary+='\n\n有文件操作没有成功：'+reasons+'。'  # always in the answer
     if task['unresolved_questions']:
-        summary += '\n\n待确认：'+'；'.join(task['unresolved_questions'])
+        sections.append(dict(title='历史疑问备注（只读）', markdown='；'.join(task['unresolved_questions'])))
     report = dict(version=1, state=state, display=display_state(state, task), summary=summary, sections=sections)
     if state == 'completed' and not operations and chosen_nothing(task):
         report.update(result='by_choice', display='chosen')

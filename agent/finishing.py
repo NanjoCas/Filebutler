@@ -297,7 +297,7 @@ class Finishing:
         if getattr(self, 'coverage', None) and not self.current.get('coverage'):
             self.current['coverage'] = self.coverage  # searched before the task existed (S7)
         self.current['checks'] = verify_task(self.current, sb)
-        state = task_state(self.current)
+        state = task_state(self.current, waiting=self.store.waiting(self.current['id']))
         self.current['status'] = state
         self.current['model_summary'] = args.summary
         self.current['operations'] = self.operations

@@ -64,7 +64,6 @@ FIELD_DOCS = {
         'task_id': '要修改的任务 ID（见近期任务）',
         'expected_revision': '该任务当前的版本号；版本不符时拒绝，防止覆盖别人的修改',
         'remove_part_ids': '用户不再要求的部分 ID',
-        'questions': '替换待用户回答的问题；空列表表示问题都已解决',
         'cancel': 'true 取消任务；false 恢复已取消的任务',
         'Part.description': '用用户的话说明这部分要做什么，包括对象和目标位置',
     },
@@ -99,7 +98,7 @@ LEGACY_TURN_RULE = '先区分询问与执行：解释、方案讨论直接回答
 TASK_GUIDANCE = (GUIDANCE_MARK + '\n'
                  + TURN_RULE +
                  '要求执行时用 start_task 说明用户要做的事：parts 按部分列出（find/dedup/organize/classify/answer），'
-                 'limits 只填用户明确说出的限制，不要自行添加数量上限或规则；notes 通常留空，每条都会让结果进入人工复核。无法确定的事放 questions，等待用户回答。'
+                 'limits 只填用户明确说出的限制，不要自行添加数量上限或规则；notes 通常留空，每条都会让结果进入人工复核。'
                  '完成条件、写入范围和目标归属由本地生成，你不需要填写。\n'
                  '文件移动、改名、建目录、回收一律用 prepare_file_plan 列出对象（actions 或 selection），'
                  'destination 可写目标目录，表示按原名放入；父目录由本地创建。'

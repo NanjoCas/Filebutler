@@ -90,7 +90,8 @@ function editTaskForm(task, cid) {
   const constraint=taskField('新增约束（可选）'); form.append(constraint.wrap);
   const read=taskField('读取范围（每行一个相对目录）', task.read_roots.join('\n'));
   const write=taskField('写入范围（每行一个相对目录，留空禁止写入）', task.write_roots.join('\n'));
-  const questions=taskField('待确认问题（每行一个，解决后可清空）', task.unresolved_questions.join('\n'));
+  const questions=taskField('历史疑问备注（只读；当前问题请在聊天中回答）', (task.unresolved_questions || []).join('\n'));
+  questions.input.readOnly=true;
   form.append(read.wrap, write.wrap, questions.wrap);
   const effects=[];
   for (const [effect, title] of Object.entries(EFFECT_NAMES)) {
@@ -108,7 +109,7 @@ function editTaskForm(task, cid) {
   form.onsubmit=async event => {
     event.preventDefault(); preview.disabled=true; apply.disabled=true; message.textContent='正在生成修改预览…';
     try {
-      const patch={expected_revision:task.revision, upsert_goals:[], remove_goal_ids:[], remove_constraint_ids:removedConstraints.filter(x=>x.input.checked).map(x=>x.id), upsert_constraints:[], read_roots:lines(read.input), write_roots:lines(write.input), allowed_effects:effects.filter(x=>x.input.checked).map(x=>x.effect), unresolved_questions:lines(questions.input), reason:reason.input.value.trim(), cancel:cancel.checked};
+      const patch={expected_revision:task.revision, upsert_goals:[], remove_goal_ids:[], remove_constraint_ids:removedConstraints.filter(x=>x.input.checked).map(x=>x.id), upsert_constraints:[], read_roots:lines(read.input), write_roots:lines(write.input), allowed_effects:effects.filter(x=>x.input.checked).map(x=>x.effect), reason:reason.input.value.trim(), cancel:cancel.checked};
       for (const {goal,input,remove} of goalInputs) {
         if (remove.checked) patch.remove_goal_ids.push(goal.id);
         else if (!input.value.trim()) throw Error('目标不能为空；需要删除时请勾选“移除此目标”。');

@@ -265,7 +265,7 @@ class TaskRuntime(Asking, Finishing):
     def relation_needed(self):
         """The message replied to a question in text: before writing, the run must say how."""
         a = self.answered_choice
-        return bool(a and not a.get('chosen') and self.cfg.get('receipt_id'))
+        return bool(a and not a.get('chosen'))
 
     def _target_request(self):
         """The request a pause or cancel means: the task's, the question's, this message's."""
@@ -288,6 +288,8 @@ class TaskRuntime(Asking, Finishing):
                 self.input_relation = kind  # an exact answer is an answer already: nothing to apply
                 return
             raise ValueError('本轮消息没有回应待答问题，不能声明 answer')
+        if self.relation_needed() and (self.answered_choice or {}).get('question_id'):
+            self._interactions().text_relation(self.answered_choice['question_id'], kind)
         if kind in ('new_request', 'independent_query'):
             # Not an answer: the question waits, and none of its options or consents carry over.
             if self.relation_needed() and (self.answered_choice or {}).get('question_id'):
@@ -385,8 +387,6 @@ class TaskRuntime(Asking, Finishing):
         self._require_writable()
         if self.current.get('cancelled'):
             raise ValueError('任务已取消，不能执行写操作')
-        if self.current['unresolved_questions']:
-            raise ValueError('任务仍有待确认问题，未开放写操作')
         if self.current.get('constraint_failures'):
             raise ValueError('此前约束核验失败，必须先检查并修订任务')
         effects = set(tool.effects)
@@ -481,6 +481,8 @@ class TaskRuntime(Asking, Finishing):
         """Register a new task (start_task)."""
         self._check_drafts(spec)
         self.current = self.store.submit(spec, self.instruction, self.run_id)
+        if self.answered_choice and self.answered_choice.get('question_id') and (self.chosen_option or self.input_relation == 'answer'):
+            self._interactions().bind_question_task(self.answered_choice['question_id'], self.current['id'])
         if self.cfg.get('request_id'):
             self.current['request_id'] = self.cfg['request_id']
             self._interactions().link_task(self.cfg['request_id'], self.current['id'])

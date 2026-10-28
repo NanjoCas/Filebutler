@@ -94,20 +94,12 @@ class Asking:
         if not a or not a['chosen'] or not a.get('task_id'): return
         try: task = self.store.get(a['task_id'])
         except ValueError: return
-        if is_legacy(task) or task.get('cancelled') or not task.get('pending_choice'): return
-        task.pop('pending_choice')
+        if is_legacy(task) or task.get('cancelled'): return
         # Earlier runs' operations join the history (as file_plans._reconcile does), so
         # this run's own ledger, written at finish, does not replace them.
         history = task.setdefault('operation_history', [])
         history += [row for row in task.get('operations', []) if row not in history]
         task['operations'] = []
-        # The questions the task waited on are answered by this exact answer (round 45: a
-        # leftover copy kept the task waiting and refused writes). Kept as a record; the
-        # model may declare any question still open again with revise_task.
-        if task.get('unresolved_questions'):
-            task.setdefault('answered_questions', []).append(
-                dict(question_id=a.get('question_id'), questions=task['unresolved_questions']))
-            task['unresolved_questions'] = []
         self.current = task
 
     def _subject_trees(self, subject, sb):

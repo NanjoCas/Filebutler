@@ -99,8 +99,6 @@ class StartTask(StrictModel):
     summary: str = Field(min_length=1, max_length=800, description='一句话概括用户要求')
     parts: list[StartPart] = Field(min_length=1, max_length=10)
     limits: Limits = Field(default_factory=Limits)
-    questions: list[str] = Field(default_factory=list, max_length=20,
-        description='必须由用户回答才能继续的问题；有问题时不开放写入')
     criteria: list[str] = Field(default_factory=list, max_length=30, description='用户的判断标准，如分类维度')
     detail: Literal['concise', 'full'] = 'concise'
     input_resolution: InputResolution | None = Field(None, description='消息回应上一问时必填')
@@ -121,7 +119,6 @@ class ReviseTask(StrictModel):
         description='每项必须写 id：写已有部分的 ID 表示替换它（用户更正时通常如此），写新 ID 表示新增')
     remove_part_ids: list[str] = Field(default_factory=list, max_length=10)
     limits: Limits | None = Field(None, description='完整的新限制；放宽原限制会在确认卡片中显示')
-    questions: list[str] | None = None
     cancel: bool | None = None
 
 
@@ -198,7 +195,6 @@ def compile_start(args: StartTask) -> TaskSubmission:
     return TaskSubmission.model_validate(dict(
         goals=goals, draft_map=drafts, read_roots=['.'], write_roots=roots,
         allowed_effects=effects, constraints=compile_limits(args.limits),
-        unresolved_questions=args.questions,
         policy=dict(criteria=args.criteria, output=dict(detail=args.detail))))
 
 
@@ -227,7 +223,6 @@ def compile_revision(args: ReviseTask, task) -> TaskPatch:
     effects, roots = authority(list(revised.values()), forbidden)
     if effects != sorted(task['allowed_effects']): patch['allowed_effects'] = effects
     if roots != task['write_roots']: patch['write_roots'] = roots
-    if args.questions is not None: patch['unresolved_questions'] = args.questions
     if args.cancel is not None: patch['cancel'] = args.cancel
     return TaskPatch.model_validate(patch)
 
@@ -243,5 +238,5 @@ def project(task):
     limits = [c['description'] for c in task['constraints']]
     plans = list(task.get('file_plan_bindings', {}))
     return dict(id=task['id'], revision=task['revision'], status=task.get('status'), parts=parts,
-                limits=limits, questions=task['unresolved_questions'], plans=plans[-6:],
+                limits=limits, historical_notes=task.get('unresolved_questions', []), plans=plans[-6:],
                 checks=[dict(part=c['goal_id'], passed=c['passed']) for c in task.get('checks', [])])
