@@ -123,8 +123,9 @@ from eval.answer_cases import ANSWER_CASES, answer_checks, answer_fixture  # noq
 from eval.s5_cases import S5_CASES, s5_checks, s5_fixture  # noqa: E402
 from eval.office_cases import OFFICE_CASES, office_checks, office_fixture  # noqa: E402
 from eval.ocr_cases import OCR_CASES, ocr_checks, ocr_fixture  # noqa: E402
+from eval.v2_cases import V2_CASES, v2_checks, v2_fixture  # noqa: E402
 
-SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES, 'blind3': BLIND3_CASES, 'ask': ASK_CASES, 'newdir': NEWDIR_CASES, 'overreach': OVERREACH_CASES, 'revise': REVISE_CASES, 'parts': PARTS_CASES, 'answer': ANSWER_CASES, 'office': OFFICE_CASES, 'ocr': OCR_CASES, 's5': S5_CASES}
+SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES, 'blind3': BLIND3_CASES, 'ask': ASK_CASES, 'newdir': NEWDIR_CASES, 'overreach': OVERREACH_CASES, 'revise': REVISE_CASES, 'parts': PARTS_CASES, 'answer': ANSWER_CASES, 'office': OFFICE_CASES, 'ocr': OCR_CASES, 's5': S5_CASES, 'v2': V2_CASES}
 CASE_SPECS = {case['id']: case for case in CASES + HOLDOUT_CASES}
 
 
@@ -191,6 +192,8 @@ def fixture(root, kind):
         office_fixture(root, kind)
     elif kind.startswith('ocr_'):
         ocr_fixture(root, kind)
+    elif kind.startswith('v2_'):
+        v2_fixture(root, kind)
     else:
         holdout_fixture(root, kind)
 
@@ -278,6 +281,8 @@ def checks(case_id, turn, root, before, store, runtime, first_task):
         return office_checks(case_id, turn, root, before, runtime, first_task)
     if case_id.startswith('ocr_'):
         return ocr_checks(case_id, turn, root, before, runtime, first_task)
+    if case_id.startswith('v2_'):
+        return v2_checks(case_id, turn, root, before, runtime, first_task)
     after = snapshot(root, True)
     result = dict(contents_preserved=files_preserved(before, after))
     if case_id in {'root_only', 'cross_turn_correction'}:
