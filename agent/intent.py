@@ -7,6 +7,7 @@ and rules are derived locally, so the model no longer writes them by hand.
 from __future__ import annotations
 
 from typing import Literal
+import unicodedata
 
 from pydantic import Field, model_validator
 
@@ -25,6 +26,36 @@ TEMPLATES = {
     'answer': ([dict(kind='manual_review')], True, []),
 }
 LIMITS_ID = 'user_limits'
+
+
+def part_key(value):
+    return unicodedata.normalize('NFKC', value).casefold().replace('-', '_')
+
+
+def normalize_part_refs(data, task):
+    """Only normalize part identifiers, never paths, file handles or option IDs."""
+    changes = []
+    known = [g['id'] for g in task['goals']]
+
+    def identifier(value):
+        if not isinstance(value, str) or not value or value in known:
+            return value
+        matches = [i for i in known if part_key(i) == part_key(value)]
+        if len(matches) == 1:
+            changes.append(f'{value} → {matches[0]}')
+            return matches[0]
+        return value
+
+    def walk(row):
+        if isinstance(row, list):
+            return [walk(v) for v in row]
+        if not isinstance(row, dict):
+            return row
+        return {k: identifier(v) if k in {'part', 'part_id'} else
+                [identifier(i) for i in v] if k in {'goal_ids', 'part_ids', 'remove_part_ids'} and isinstance(v, list)
+                else walk(v) for k, v in row.items()}
+
+    return walk(data), list(dict.fromkeys(changes))
 
 
 class Part(StrictModel):
@@ -77,7 +108,7 @@ class StartTask(StrictModel):
     @model_validator(mode='after')
     def unique_parts(self):
         ids = [p.id for p in self.parts if p.id]
-        if len(ids) != len(set(ids)):
+        if len(ids) != len({part_key(i) for i in ids}):
             raise ValueError('parts 的 ID 重复')
         return self
 
@@ -160,7 +191,7 @@ def authority(goals, forbidden):
 
 def compile_start(args: StartTask) -> TaskSubmission:
     goals = [compile_goal(p, i) for i, p in enumerate(args.parts, 1)]
-    if len({g['id'] for g in goals}) != len(goals):
+    if len({part_key(g['id']) for g in goals}) != len(goals):
         raise ValueError('parts 的 ID 重复')
     effects, roots = authority(goals, args.limits.no_effects)
     drafts = {g['id']: p.draft_id for g, p in zip(goals, args.parts) if getattr(p, 'draft_id', None)}

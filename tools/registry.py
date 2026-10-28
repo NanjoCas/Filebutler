@@ -17,6 +17,22 @@ class ToolError(Exception):
     """工具内部的可预期错误（文件不存在、重名等），信息会原样回传给模型。"""
 
 
+def error_text(code, description, candidates=(), example=None):
+    text = f'ERROR: {code}：{description}'
+    if candidates:
+        text += '。可用候选：' + '；'.join(candidates)
+    if example:
+        text += '。请按此示例重新提交：' + example
+    return text
+
+
+def argument_error(exc):
+    if isinstance(exc, ValidationError):
+        fields = '、'.join('.'.join(map(str, row['loc'])) or '参数' for row in exc.errors())
+        return error_text('INVALID_ARGUMENTS', f'参数校验失败：{fields}；请按工具字段说明补全或修正')
+    return error_text('INVALID_ARGUMENTS', '参数不是合法 JSON 对象，请使用双引号并检查括号和逗号')
+
+
 @dataclass
 class TrashBatch:
     """本地准备的批量回收计划；注册层负责确认、逐文件记日志、失败时保留已完成记录。"""

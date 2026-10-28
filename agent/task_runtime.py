@@ -16,7 +16,8 @@ from safety.sandbox import SandboxError
 from tools import registry
 from agent.file_plans import PrepareFilePlan, ExecuteFilePlan
 from agent import choices
-from agent.intent import StartTask, ReviseTask, compile_start, compile_revision, project, parts_text
+from agent.intent import StartTask, ReviseTask, compile_start, compile_revision, project, parts_text, normalize_part_refs
+from pydantic import ValidationError
 
 
 def _with_docs(schema, docs):
@@ -180,6 +181,7 @@ class TaskRuntime(Asking, Finishing):
         self._usage = None
         self._producers = ()
         self._part = None
+        self._part_id_notes = []
         if self._oplog and self._oplog.path.exists():
             self._journal_offset = len(self._oplog.path.read_text().splitlines())
         self._before_refs = {k: set(v) for k, v in sb.artifacts.data.items()
@@ -191,6 +193,10 @@ class TaskRuntime(Asking, Finishing):
             if not isinstance(args, dict):
                 raise ValueError('工具参数必须是对象')
             self._args = args
+            if self.current and name not in {'start_task', 'revise_task'}:
+                args, self._part_id_notes = normalize_part_refs(args, self.current)
+                self._args = args
+                raw = json.dumps(args, ensure_ascii=False)
             if name in self.control_names:
                 return raw, None
             tool = registry.TOOLS.get(name)
@@ -224,6 +230,9 @@ class TaskRuntime(Asking, Finishing):
                 self._part = self._named_part(args.get('part'), tool) if args.get('part') else None
                 self._check_write(tool, args)
             return raw, None
+        except (json.JSONDecodeError, ValidationError) as exc:
+            self.blocked += 1
+            return raw, registry.argument_error(exc) if name in self.control_names else 'ERROR: ' + str(exc)
         except (ValueError, SandboxError, KeyError, registry.ToolError) as exc:
             self.blocked += 1
             self.blocked_reasons.append(str(exc))
@@ -487,6 +496,10 @@ class TaskRuntime(Asking, Finishing):
 
     def dispatch(self, name, raw, sb, oplog, confirmer):
         try:
+            if self.current and name not in {'start_task', 'revise_task'}:
+                data, notes = normalize_part_refs(json.loads(raw), self.current)
+                raw = json.dumps(data, ensure_ascii=False)
+                self._part_id_notes = list(dict.fromkeys(getattr(self, '_part_id_notes', []) + notes))
             if name in {'prepare_file_plan', 'execute_file_plan', 'inspect_file_plan'}:
                 from agent import file_plans
                 if name == 'prepare_file_plan':
@@ -602,6 +615,9 @@ class TaskRuntime(Asking, Finishing):
                         row.update(run_id=self.run_id, goal_ids=attributions.get(key, active_goals(self)))
                         row['kind']='文件夹' if row['op']=='make_dir' else self._source_kinds.get(row['src'],'项')
                         self.operations.append(row)
+        except (json.JSONDecodeError, ValidationError) as exc:
+            self.blocked += 1
+            outcome = registry.ToolResult(status='error', text=registry.argument_error(exc), error_code='INVALID_ARGUMENTS')
         except (ValueError, SandboxError, registry.ToolError) as exc:
             self.blocked += 1
             self.blocked_reasons.append(str(exc))
@@ -617,6 +633,9 @@ class TaskRuntime(Asking, Finishing):
             self._resolve_blockers(name, raw)
             try: self.store.checkpoint(self.current)
             except ValueError: pass
+        if outcome.status == 'ok' and getattr(self, '_part_id_notes', None):
+            outcome.text += '\n部分 ID 已统一：' + '；'.join(self._part_id_notes)
+            self._part_id_notes = []
         self._outcome = outcome
         return outcome.text
 

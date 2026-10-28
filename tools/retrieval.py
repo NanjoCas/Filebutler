@@ -295,29 +295,37 @@ def _content_results(a, sb, hits, header):
         why = reasons(hit['path'], text)
         return '；'.join(why) if why and not granted(sb, hit['path']) else ''
     if artifacts and a.view == 'evidence':
-        blocks = []
-        # Page bounded batches; top_k is the retained candidate count, not a
-        # silent five-result cap. Only issue evidence for the displayed page.
-        page_size = 4
-        total_pages = max(1, (len(hits)+page_size-1)//page_size)
-        if a.page > total_pages: raise ToolError(f'共 {total_pages} 页')
-        shown_hits = hits[(a.page-1)*page_size:a.page*page_size]
-        allowance = max(40, (1500 - len(header)) // page_size - 150)
-        for index, hit in enumerate(shown_hits, (a.page-1)*page_size+1):
+        blocks, batches, batch, used = [], [], [], 0
+        budget = 1900 - len(header) - 140
+        # Partition with complete paths before issuing evidence. Handles and
+        # snippets fit in the tool's output budget; only displayed hits get E IDs.
+        for index, hit in enumerate(hits, 1):
             p = sb.path(hit['path'])
             fid = artifacts.register(sb.rel(p))
             why = withheld(hit)
+            prefix = f"{index}. file:{fid} {where(hit)} 路径={json.dumps(hit['path'], ensure_ascii=False)}"
+            snippet = hit['snippet'][:240]
+            estimate = len(prefix) + len(html.escape(snippet, quote=False)) + len(why) + 120
+            if estimate > budget:
+                raise ToolError('候选路径或覆盖说明过长，无法安全输出；请缩小 path 范围')
+            if batch and (len(batch) == 4 or used + estimate > budget):
+                batches.append(batch)
+                batch, used = [], 0
+            batch.append((hit, p, fid, why, prefix, snippet))
+            used += estimate
+        if batch: batches.append(batch)
+        total_pages = max(1, len(batches))
+        if a.page > total_pages: raise ToolError(f'共 {total_pages} 页')
+        for hit, p, fid, why, prefix, snippet in (batches[a.page-1] if batches else []):
             if why:
-                blocks.append(f"{index}. file:{fid} 名称={p.stem[:65]}\n[敏感文件：{why}；未显示内容，读取需用户授权]")
+                blocks.append(f"{prefix}\n[敏感文件：{why}；未显示内容，读取需用户授权]")
                 continue
             if tuple(artifacts.data['files'][fid]['stat']) != sb._paper_index.cache[p][0]:
                 raise ToolError('检索期间文件变化，请重新查询后再引用')
-            snippet = hit['snippet'][:min(240, allowance)]
             eid = artifacts.evidence(fid, 'fragment', page=hit['page'], offset=hit['offset'],
                                      excerpt=snippet, scope='全文检索命中片段',
                                      extracted_pages=len(sb._paper_index.cache[p][1].pages))
-            name = p.stem[:65]
-            blocks.append(f"{index}. file:{fid} evidence:{eid} {where(hit)} 名称={name}\n"
+            blocks.append(f"{prefix} evidence:{eid}\n"
                           f'<file_content>{html.escape(snippet, quote=False)}</file_content>')
         footer = f'第 {a.page}/{total_pages} 页'
         if a.page < total_pages: footer += f'，下一页用 page={a.page+1}'

@@ -335,6 +335,9 @@ def prepare(runtime, args):
     sb, task = runtime.sb, runtime.current
     if not task:
         raise ValueError('文件计划必须属于已登记的任务')
+    normalized, notes = intent.normalize_part_refs(args.model_dump(), task)
+    args = PrepareFilePlan.model_validate(normalized)
+    runtime._part_id_notes = list(dict.fromkeys(getattr(runtime, '_part_id_notes', []) + notes))
     actions = [a.model_dump() for a in args.actions]
     classification = None
     if args.classification_plan_id:
@@ -741,7 +744,8 @@ def _empty_selection(runtime, args):
     task, sel = runtime.current, args.selection.model_dump()
     known = {g['id'] for g in task['goals']}
     if set(args.goal_ids) - known:
-        raise ValueError('goal_ids 引用了任务中不存在的部分：' + '、'.join(sorted(set(args.goal_ids) - known)))
+        raise ValueError('goal_ids 引用了任务中不存在的部分：' + '、'.join(sorted(set(args.goal_ids) - known))
+                         + '。当前部分：' + intent.parts_text(task))
     candidates = [g['id'] for g in task['goals'] if any(c['kind'] == 'file_plan_verified' for c in g['conditions'])]
     goal_ids = list(args.goal_ids) or (candidates if len(candidates) == 1 else [])
     if not goal_ids:
@@ -792,7 +796,8 @@ def _attribute_steps(runtime, task, steps, requested, producers):
     """
     known = {g['id'] for g in task['goals']}
     if set(requested) - known:
-        raise ValueError('goal_ids 引用了任务中不存在的目标：'+'、'.join(sorted(set(requested) - known)))
+        raise ValueError('goal_ids 引用了任务中不存在的目标：'+'、'.join(sorted(set(requested) - known))
+                         + '。当前部分：' + intent.parts_text(task))
     named = {row['part'] for row in steps if row.get('part')}
     if named - known:
         raise ValueError('part 引用了任务中不存在的部分：'+'、'.join(sorted(named - known)) + '。当前部分：' + intent.parts_text(task))

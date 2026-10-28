@@ -1,6 +1,7 @@
 """只读工具：list_dir / search_files / file_info / read_file。"""
 import hashlib
 import html
+from pathlib import Path
 from datetime import date, datetime
 from fnmatch import fnmatch
 from typing import Optional
@@ -81,7 +82,18 @@ def _mtime(p) -> str:
 def _existing(sb: Sandbox, path: str):
     full = sb.path(path)
     if not full.exists():
-        raise ToolError(f"{path} 不存在。可以先用 list_dir 或 search_files 查看")
+        artifacts = getattr(sb, 'artifacts', None)
+        candidates = []
+        if artifacts:
+            for fid, row in artifacts.data['files'].items():
+                if row.get('status') == 'visible' and Path(path).name in {Path(row['path']).name, Path(row['path']).stem}:
+                    try:
+                        artifacts.resolve(fid, allow_trash=False)
+                    except ValueError:
+                        continue
+                    candidates.append(f"file:{fid}（{row['path']}）")
+        hint = f'。可能是 {candidates[0]}；请核对后明确传入该标识' if len(candidates) == 1 else ''
+        raise ToolError(f"{path} 不存在{hint}。可以先用 list_dir 或 search_files 查看")
     return full
 
 
