@@ -61,8 +61,15 @@ def plan_directory(plan, index):
 
 def _plan(store, plan_id):
     plan_id = latest_plan(store) if plan_id == 'latest' else plan_id
-    if plan_id not in store.data['classification_plans']:
-        raise ToolError('没有可执行的结构化分类计划；请先保存分类方案。旧文字清单不会自动变成移动计划。')
+    plans = store.data['classification_plans']
+    if plan_id not in plans:
+        if not plans:
+            raise ToolError('没有可执行的结构化分类计划；请先保存分类方案。旧文字清单不会自动变成移动计划。')
+        # 2.0 P0-B: a mistyped ID gets the saved plans as candidates, never a silent correction.
+        recent = list(plans.items())[-3:][::-1]
+        raise ToolError(f'分类计划 {plan_id} 不存在。可用候选：' + '；'.join(
+            f"{pid}（{'/'.join(p['categories'])}，{len(p['assignments'])} 篇）" for pid, p in recent)
+            + '。请照抄其中一个 ID 重新提交，不要重新保存分类方案')
     return plan_id, store.data['classification_plans'][plan_id]
 
 

@@ -71,3 +71,17 @@ def test_control_bad_json_has_a_chinese_invalid_arguments_error(tmp_path):
     result, _ = session.run('开始', [step(malformed)])
     message = next(json.loads(m['content']) for m in result.messages if m['role'] == 'tool')
     assert message['error_code'] == 'INVALID_ARGUMENTS' and 'JSON' in message['text'] and '请' in message['text']
+
+
+def test_a_mistyped_classification_plan_id_gets_the_saved_plans_as_candidates(tmp_path):
+    # Round 47 application_dimension r2: Pe778b3cecf copied as Pe778b3cef, three failed calls
+    # and a second classification, because the error named no saved plan.
+    from tests.test_classification import ready
+    from tools.classification import _plan
+    from tools.registry import ToolError
+    sb, _ = ready(tmp_path)
+    pid = next(reversed(sb.artifacts.data['classification_plans']))
+    with pytest.raises(ToolError) as error:
+        _plan(sb.artifacts, pid[:-2] + pid[-1])
+    assert pid in str(error.value) and 'Transformer/其他' in str(error.value)
+    assert _plan(sb.artifacts, pid)[0] == pid  # only candidates: the exact ID still works
