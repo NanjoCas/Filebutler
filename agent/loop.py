@@ -17,7 +17,7 @@ import tools.classification  # noqa: F401
 import tools.inventory  # noqa: F401
 from agent.artifacts import ArtifactStore
 from agent.llm import LLM
-from agent.prompts import SYSTEM_PROMPT
+from agent.prompts import ESCALATION, EXECUTION_NOT_SEEN, FINISH_WITH_EXECUTE, SYSTEM_PROMPT
 from agent.finishing import TERMINAL_REQUIRED
 from agent.outcomes import stop_report, close_messages, save_outcome
 from agent.states import display_of, project_run
@@ -119,6 +119,8 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
     final, stop_reason, n_calls, step = "", "max_steps", 0, 0
     repeats = RepeatDetector() if cfg.get("repeat_detection", True) else None
     repair_guard = NoProgressGuard(cfg.get('task_repair_limit', 6))
+    escalate_after = int(cfg.get('escalate_repeated_errors') or 0)  # 2.0 P2-a, 0 = off
+    error_streak = (None, 0)
     llm_seconds = tool_seconds = 0.0
     failure_stage='准备运行'
     terminal_report={}
@@ -184,6 +186,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
             if msg.content:
                 console.print(f"[italic dim]{escape(msg.content)}")
 
+            execute_failed = False  # 2.0 P2-b: an execute_file_plan of this response did not succeed
             for tc in msg.tool_calls:
                 name, raw = tc.function.name, tc.function.arguments
                 failure_stage='工具 '+name
@@ -210,6 +213,10 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 else:
                     if blocked:
                         result = blocked
+                    elif name in ('finish_turn', 'finish_task') and execute_failed and cfg.get('finish_with_execute'):
+                        # The ending was written before the execution result was seen.
+                        result = runtime.words(EXECUTION_NOT_SEEN)
+                        runtime._outcome = registry.ToolResult(status='error', text=result, error_code='EXECUTION_NOT_SEEN')
                     elif name == "search_content" and not retrieval:
                         result = "ERROR: 本次运行未启用内容检索，请使用 search_files 和 read_file"
                     else:
@@ -227,7 +234,19 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 result = names.shield(result, sandbox)  # file names reach the model as data only
                 outcome = runtime._outcome or registry.ToolResult(status='error', text=result,
                                                                    error_code=registry.error_code(result))
-                outcome.text = result  # Keep repeat warnings added after dispatch.
+                if name == 'execute_file_plan' and outcome.status != 'ok':
+                    execute_failed = True
+                if cfg.get('finish_with_execute') and name == 'prepare_file_plan' and outcome.status == 'ok':
+                    result += runtime.words(FINISH_WITH_EXECUTE)
+                if escalate_after:
+                    code = outcome.error_code or 'TOOL_ERROR'
+                    if outcome.status == 'ok' or code == 'TURN_CLOSED':
+                        error_streak = (None, 0)
+                    else:
+                        error_streak = (code, error_streak[1] + 1 if error_streak[0] == code else 1)
+                        if error_streak[1] >= escalate_after:
+                            result += runtime.words(ESCALATION.format(count=error_streak[1], code=code))
+                outcome.text = result  # Keep repeat warnings and P2 hints added after dispatch.
                 registry.typed(outcome, f"{runtime.run_id}:{tc.id}")
                 runtime.record_result(name, outcome)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": outcome.for_model()})
