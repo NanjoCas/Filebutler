@@ -11,7 +11,7 @@ import os
 import stat as stat_flags
 import unicodedata
 import uuid
-from contextlib import contextmanager
+from safety.locking import library_lock
 from pathlib import Path
 from typing import Literal
 
@@ -879,21 +879,6 @@ def _check_remaining(runtime, plan):
         if target.exists() and not any(_same_object(sb.path(r['source'], exact=True), target)
                                        for r in remaining[:i + 1] if r['source']):
             raise ValueError('计划目标已存在或计划过期：'+s['destination'])
-
-
-@contextmanager
-def library_lock(sb):
-    # Advisory lock serializes this executor across conversations and processes.
-    # Legacy executors still recheck per action; they do not share this lock yet.
-    import fcntl
-    folder = sb.root/'.oplog'; folder.mkdir(exist_ok=True)
-    if folder.is_symlink() or (folder/'file-plans.lock').is_symlink():
-        raise ValueError('内部执行目录或锁不能是符号链接')
-    with (folder/'file-plans.lock').open('a') as stream:
-        try: fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError: raise ValueError('资料库已有计划正在执行，请稍后重试')
-        try: yield
-        finally: fcntl.flock(stream, fcntl.LOCK_UN)
 
 
 def _record(oplog, step):

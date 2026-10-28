@@ -179,8 +179,13 @@ def main():
                                    f"--option {choice['option_id']}"))
         console.print(f"[dim]撤销本次运行：python main.py undo {run_id}")
     elif args.cmd == "undo":
-        for line in undo(Sandbox(cfg["sandbox"]), args.run_id):
-            console.print(("[yellow]" if line.startswith("跳过") else "") + line)
+        try:
+            report = undo(Sandbox(cfg["sandbox"]), args.run_id)
+        except (ValueError, OSError) as e:
+            console.print(Text(f'无法撤销：{e}'))
+            sys.exit(1)
+        for line in report:
+            console.print(Text(line, style='yellow' if line.startswith('跳过') else None))
 
 
 if __name__ == "__main__":

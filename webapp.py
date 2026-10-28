@@ -821,7 +821,10 @@ def undo_turn(turn_id: str):
             if "undo" in result:
                 return {"run_id": row["run_id"], "report": result["undo"]}
             restored = []
-            report = undo(Sandbox(_config()["sandbox"]), row["run_id"], on_restore=lambda src,dst: restored.append((src,dst)))
+            try:
+                report = undo(Sandbox(_config()["sandbox"]), row["run_id"], on_restore=lambda src,dst: restored.append((src,dst)))
+            except ValueError as e:
+                raise HTTPException(409, str(e)) from e
             result["undo"] = report
             db.execute("UPDATE turns SET result_json=?, updated_at=? WHERE id=?",
                        (json.dumps(result, ensure_ascii=False), _now(), turn_id))

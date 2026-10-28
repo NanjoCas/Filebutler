@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 
 from safety.sandbox import Sandbox, SandboxError
+from safety.locking import library_lock
+from safety import atomic
 
 UNDONE_SUFFIX = ".undone.jsonl"
 
@@ -34,6 +36,11 @@ def latest_run(sandbox: Sandbox) -> str | None:
 
 def undo(sandbox: Sandbox, run_id: str | None = None, *, on_restore=None) -> list[str]:
     """倒序执行反向操作。位置被占用等情况跳过并报告，不强行覆盖。返回每一步的报告。"""
+    with library_lock(sandbox):
+        return _undo_locked(sandbox, run_id, on_restore=on_restore)
+
+
+def _undo_locked(sandbox, run_id, *, on_restore=None):
     run_id = run_id or latest_run(sandbox)
     if not run_id:
         return ["没有可以撤销的运行"]
@@ -69,9 +76,13 @@ def undo(sandbox: Sandbox, run_id: str | None = None, *, on_restore=None) -> lis
         elif not orig.parent.is_dir():
             report.append(f"跳过 #{row['seq']} {op}：原文件夹 {sandbox.rel(orig.parent)} 已不存在")
         else:
-            now.rename(orig)
+            try:
+                atomic.rename_no_replace(now, orig)
+            except OSError as e:
+                report.append(f"跳过 #{row['seq']} {op}：无法安全还原 {row['dst']} → {row['src']}（{e}）")
+                continue
             if on_restore:
                 on_restore(row["dst"], row["src"])
             report.append(f"还原 {row['dst']} → {row['src']}")
-    path.rename(path.with_name(run_id + UNDONE_SUFFIX))  # 防止重复撤销
+    atomic.rename_no_replace(path, path.with_name(run_id + UNDONE_SUFFIX))  # 防止重复撤销，不覆盖已有日志
     return report
