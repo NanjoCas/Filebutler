@@ -209,30 +209,46 @@ def labels(store):
 
 
 NO_MATCH = '（评测：上一轮的选项中没有唯一符合的项）'
+# Option matching v2 (2.0 P1-C): a move and a rename are one effect; the path is still exact.
+EFFECT_FAMILY = {'rename': 'move'}
 
 
 def _declares(option, want):
-    """The option declares an action of this effect (on this path, when one is given)."""
+    """The option declares an action of this effect family (on this path, when one is given)."""
     norm = lambda p: (p or '').strip().strip('/').removeprefix('./')
-    return any(a['effect'] == want['effect'] and ('path' not in want or norm(a['path']) == norm(want['path']))
+    family = lambda e: EFFECT_FAMILY.get(e, e)
+    return any(family(a['effect']) == family(want['effect']) and ('path' not in want or norm(a['path']) == norm(want['path']))
                for a in option.get('actions') or [])
 
 
-def choose(turn, report):
+def _holds(rule, root):
+    """A rule's precondition on the library: ``when={'exists': [...], 'absent': [...]}``."""
+    when = rule.get('when') or {}
+    if not when: return True
+    if root is None: return False
+    root = Path(root)
+    return all((root/p).exists() for p in when.get('exists', [])) and not any((root/p).exists() for p in when.get('absent', []))
+
+
+def choose(turn, report, root=None):
     """A turn written as a choice stands for the user pressing the one matching option;
     option order is the model's, so a fixed letter cannot be frozen.
 
     {"choose_actions": {"has": [...], "lacks": [...]}} matches by the actions an option
     declares (round 22: labels are worded differently on every run, actions are not);
-    {"choose": [words], "avoid": [...]} matches by label. No unique match sends a fixed
-    text and is recorded. A list of action rules is tried in order (the same choice may
-    be declared differently, e.g. once part of the work is already done)."""
+    {"choose": [words], "avoid": [...]} matches by label. A list of action rules is tried
+    in order (the same choice may be declared differently, e.g. once part of the work is
+    already done); a rule with ``when`` is tried only while its precondition on the
+    library holds. No unique match sends the turn's frozen ``otherwise`` text (or a fixed
+    note) and is recorded with key None: option_not_offered (eval/judge.py v4.2)."""
     if not isinstance(turn, dict):
         return turn, None
     options = (report or {}).get('choices') or []
     if 'choose_actions' in turn:
         rules = turn['choose_actions'] if isinstance(turn['choose_actions'], list) else [turn['choose_actions']]
+        hits = []
         for rule in rules:
+            if not _holds(rule, root): continue
             hits = [c for c in options if all(_declares(c, w) for w in rule.get('has', []))
                     and not any(_declares(c, w) for w in rule.get('lacks', []))]
             if len(hits) == 1: break
@@ -242,8 +258,8 @@ def choose(turn, report):
                 and not any(w in c['label'] for w in turn.get('avoid', []))]
     if len(hits) == 1:
         return hits[0]['key'], dict(words=turn['choose'], key=hits[0]['key'], label=hits[0]['label'])
-    return NO_MATCH, dict(words=turn['choose'], key=None, matched=[c['label'] for c in hits],
-                          offered=[c['label'] for c in options])
+    return turn.get('otherwise', NO_MATCH), dict(words=turn['choose'], key=None, matched=[c['label'] for c in hits],
+                                                 offered=[c['label'] for c in options], option_not_offered=True)
 
 
 def checks(case_id, turn, root, before, store, runtime, first_task):
@@ -379,7 +395,7 @@ def run_suite(cases, out, cfg, total_cap, llm_for, mode):
             sb = Sandbox(library); fixture(sb.root, case['fixture']); before = snapshot(sb.root, True)
             store = ArtifactStore(sb); history = []; first_task = None; last_report = None
             for index, turn in enumerate(case['turns']):
-                instruction, chosen = choose(turn, last_report)
+                instruction, chosen = choose(turn, last_report, sb.root)
                 if report['cost'] >= total_cap: report['budget_stopped'] = True; break
                 turn_cfg = {**cfg, 'cost_budget': min(cfg['cost_budget'], total_cap - report['cost'])}
                 # Sensitive-file checks are off by default (2026-10-24); cases written for them turn them on.

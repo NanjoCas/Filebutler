@@ -23,7 +23,11 @@ Judgement v4 (routing redesign S6a, 7) is reported beside it, never instead:
 the same reducer, agent/states.py, applied to a saved turn) against expectations
 derived from the frozen v3 status list by ``V4_FROM_V3``, frozen 2026-10-25
 before any result was re-judged. ``accepted_v4`` = files, answer and constraints
-as in v3, plus ``status_v4``. Exit codes still follow v3. Inputs are the
+as in v3, plus ``status_v4``. Exit codes still follow v3. v4.2 (2.0 P1-C): a
+turn whose scripted choice found no matching option (``chosen_by_eval.key`` is
+None) is ``option_not_offered``: never accepted under v4, still counted in the
+denominator; ``repair_requests`` counts model requests whose every executed call
+failed. Inputs are the
 dicts the runner saves (``report.json`` turns, ``turn_N.trace.jsonl``), so the same
 code judges a fresh run and re-judges frozen historical results.
 """
@@ -45,7 +49,7 @@ CONTROL_WRITE = {'execute_file_plan', 'apply_task_edit'}
 CONTROL_SCAN = {'prepare_file_plan', 'inspect_file_plan'}
 POSITIVE_RELATIONS = ('method', 'survey', '方法相关', '综述入口')
 DEFAULT_WARN = dict(requests=15, cost=0.08, active_seconds=40, answer_chars=800)
-JUDGE_VERSION = 'v3+v4.1'
+JUDGE_VERSION = 'v3+v4.2'
 # Frozen 2026-10-25 (docs/s6-s8-implementation-2026-10-25.md 3). A v3 status accepts a
 # run in any of these states; "done" no longer requires a read-only answer's
 # semantics to be reviewed (7: it is answered, its answer is checked separately),
@@ -353,6 +357,16 @@ def judge_efficiency(turn, warn):
 
 # --------------------------------------------------------------------------- aggregation
 
+def repair_requests(calls):
+    """Model requests (trace steps) whose every executed call failed: the request repaired
+    nothing but its own mistake (routing redesign 13, repair_count)."""
+    steps = {}
+    for c in calls:
+        if c.get('executed', True) and c.get('step') is not None:
+            steps.setdefault(c['step'], []).append(c['ok'])
+    return sum(not any(oks) for oks in steps.values())
+
+
 def judge_turn(turn, expect, *, calls, history_calls, run_id, changes=None, required=REQUIRED):
     """``calls``: this turn's trace; ``history_calls``: all earlier+current calls of the case."""
     norm = normalize_status(turn)
@@ -370,15 +384,18 @@ def judge_turn(turn, expect, *, calls, history_calls, run_id, changes=None, requ
     accepted = all(d['passed'] for d in dims.values() if d['required'])
     v4_checks, v4_info = judge_status_v4(turn, expect)
     dims['status_v4'] = _dim(v4_checks, False, **v4_info)  # reported beside v3, not part of `accepted`
+    # The scripted user could not press the option the case needs: the case is not run as written.
+    option_not_offered = (turn.get('chosen_by_eval') or {}).get('key', '') is None
     accepted_v4 = all(d['passed'] for k, d in dims.items() if d['required'] and k != 'status') \
-        and (dims['status_v4']['passed'] or 'status' not in req)
+        and (dims['status_v4']['passed'] or 'status' not in req) and not option_not_offered
     files_ok, cons_ok = dims['files']['passed'], dims['constraints']['passed']
     diagnostics = dict(
         # correct files but reported unfinished: the "false partial" class
         false_incomplete=norm['klass'] in {'incomplete', 'failed'} and files_ok and cons_ok,
         review_pending=norm['klass'] == 'review',
         recovered_blockers_shown=len(answer_info['recovered_blockers_shown']),
-        open_blockers=len([b for b in blockers if b['status'] == 'open']))
+        open_blockers=len([b for b in blockers if b['status'] == 'open']),
+        option_not_offered=option_not_offered, repair_requests=repair_requests(calls))
     return dict(accepted=accepted, accepted_v4=accepted_v4, status=norm['status'], dimensions=dims, diagnostics=diagnostics)
 
 
@@ -451,6 +468,8 @@ def judge_suite(specs, report, traces_for):
                 false_incomplete=[f"{c['id']}#{n}" for c in cases for n in c['false_incomplete_turns']],
                 recovered_blockers_shown=[f"{c['id']}#{n}" for c in cases for n in c['recovered_blocker_turns']],
                 review_pending=[f"{c['id']}#{t['turn']}" for c in cases for t in c['turns'] if t['diagnostics']['review_pending']],
+                option_not_offered=[f"{c['id']}#{t['turn']}" for c in cases for t in c['turns'] if t['diagnostics']['option_not_offered']],
+                repair_requests=sum(t['diagnostics']['repair_requests'] for t in turns),
                 efficiency=efficiency, cases=cases)
 
 
