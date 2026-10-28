@@ -209,41 +209,6 @@ def test_older_histories_calling_ask_user_still_work(tmp_path):
     assert result.stop_reason == 'waiting_input' and result.report['question_id'].startswith('Q')
 
 
-def test_with_strict_terminal_off_the_v3_surface_and_words_come_back(tmp_path):
-    from agent.artifacts import ArtifactStore
-    sb = H.Sandbox(tmp_path); sb.artifacts = ArtifactStore(sb)
-    legacy = TaskRuntime('x', dict(task_db=str(tmp_path / 't.db'), strict_terminal=False), sb, 'r')
-    names = {s['function']['name'] for s in legacy.schemas(registry.schemas())}
-    assert {'ask_user', 'finish_task'} <= names and 'finish_turn' not in names
-    shown = legacy.guidance() + json.dumps(legacy.schemas(registry.schemas()), ensure_ascii=False)
-    assert 'finish_turn' not in shown and '用 ask_user 给 2–4 个具体选项' in shown and 'finish_task.reply' in shown
-    total = sum(len(json.dumps(s, ensure_ascii=False)) for s in legacy.schemas(registry.schemas())) \
-        + len(legacy.guidance()) + len(SYSTEM_PROMPT)
-    assert total <= PROMPT_CAP, total
-
-
-def test_legacy_schema_has_no_dangling_finish_turn_refs():
-    """With strict_terminal off, no model-facing text names finish_turn after
-    legacy_terminal (2.0 P1-B). Identifiers and strict-only texts are skipped."""
-    import ast
-    from pathlib import Path
-    from agent.finishing import TERMINAL_REQUIRED
-    from agent.prompts import legacy_terminal
-    strict_only = {TERMINAL_REQUIRED}
-    dangling = []
-    for path in sorted(Path('agent').glob('*.py')) + sorted(Path('tools').glob('*.py')):
-        tree = ast.parse(path.read_text())
-        docs = {id(n.body[0].value) for n in ast.walk(tree)
-                if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef)) and n.body
-                and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
-        for n in ast.walk(tree):
-            if (isinstance(n, ast.Constant) and isinstance(n.value, str) and 'finish_turn' in n.value
-                    and n.value != 'finish_turn' and id(n) not in docs and n.value not in strict_only
-                    and 'finish_turn' in legacy_terminal(n.value)):
-                dangling.append(f'{path}:{n.lineno}')
-    assert dangling == []
-
-
 # ============================================================================ boundary
 
 

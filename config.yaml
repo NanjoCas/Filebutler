@@ -14,7 +14,6 @@ repeat_detection: true         # 相同工具和参数连续第 2 次提醒，�
 task_repair_limit: 6           # 同类写入/协议失败无执行或新证据进展的上限；0 关闭
 retrieval: true                # BM25 论文主题检索（仅前两页）；false 隐藏并禁用工具，用于 E12 对照
 sensitive_files: false         # 敏感文件检测（文件名/内容规则，读取需点选授权）。2026-10-24 用户决定先关闭，交给用户自己选资料库范围；true 恢复
-strict_terminal: true          # 每轮以 finish_turn 结束（回复/提问/收尾），只输出文字会纠正一次；false 回到 ask_user/finish_task（路由改造 S5，2026-10-25）
 escalate_repeated_errors: 0    # 2.0 P2 实验：同一错误码连续出现几次后在结果里追加升级提示；0 关闭
 finish_with_execute: false     # 2.0 P2 实验：允许执行与收尾同一响应，执行未成功时拒绝该收尾
 cost_budget: 0.30              # 元/次运行。按费用而不是 Token 算：七八成 Token 命中缓存，单价只有 1/50

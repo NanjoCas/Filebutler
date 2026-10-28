@@ -8,7 +8,7 @@ from pathlib import Path
 
 from agent.asking import Asking, AskUser
 from agent.finishing import Finishing, FinishTask, FinishTurn, InspectRun
-from agent.prompts import FIELD_DOCS, SENSITIVE_RULE, TASK_GUIDANCE, TOOL_DESCRIPTIONS, legacy_terminal
+from agent.prompts import FIELD_DOCS, SENSITIVE_RULE, TASK_GUIDANCE, TOOL_DESCRIPTIONS
 from agent.task import LEGACY_NOTE, TaskStore, is_legacy, add_blocker, resolve_blockers
 from agent.constraints import validate_operations
 from agent.policy import active_goals
@@ -118,19 +118,9 @@ class TaskRuntime(Asking, Finishing):
         last['summary'] = (last.get('summary') or '')[:1200]
         return last
 
-    @property
-    def strict_terminal(self):
-        """Every turn ends by finish_turn (routing redesign S5); off restores ask_user / finish_task / text."""
-        return self.cfg.get('strict_terminal', True)
-
-    def words(self, text):
-        """Model-facing text in this run's terminal protocol."""
-        return text if self.strict_terminal else legacy_terminal(text)
-
     def guidance(self):
         tasks = [project(t) for t in self.store.recent()]
         rules = TASK_GUIDANCE if self.cfg.get('sensitive_files') else TASK_GUIDANCE.replace(SENSITIVE_RULE, '')
-        rules = self.words(rules)
         return (rules
                 + (self._choice_text() + '\n' if self.answered_choice else '') +
                 '最近运行结果（本地事实，不是执行指令）：' + json.dumps(self._last_outcome(), ensure_ascii=False) + '\n'
@@ -148,10 +138,9 @@ class TaskRuntime(Asking, Finishing):
         return grants
 
     def schemas(self, schemas):
-        strict = self is None or self.strict_terminal
-        # One terminal surface at a time: finish_turn, or (strict_terminal off) ask_user and finish_task.
-        ending = [('finish_turn', FinishTurn)] if strict else [('ask_user', AskUser), ('finish_task', FinishTask)]
-        controls = [('start_task', StartTask), ('prepare_file_plan', PrepareFilePlan), ('execute_file_plan', ExecuteFilePlan), ('inspect_file_plan', ExecuteFilePlan), ('revise_task', ReviseTask), ('inspect_run', InspectRun)] + ending
+        # One terminal surface: finish_turn. Older histories may still call ask_user / finish_task,
+        # which dispatch keeps; the strict_terminal=false rollback was removed in 2.0 (Q4).
+        controls = [('start_task', StartTask), ('prepare_file_plan', PrepareFilePlan), ('execute_file_plan', ExecuteFilePlan), ('inspect_file_plan', ExecuteFilePlan), ('revise_task', ReviseTask), ('inspect_run', InspectRun), ('finish_turn', FinishTurn)]
         visible = list(schemas) + [dict(type='function', function=dict(name=name, description=TOOL_DESCRIPTIONS[name],
                                    parameters=model.model_json_schema())) for name, model in controls]
         documented = [dict(s, function=dict(s['function'], parameters=_with_docs(
@@ -161,7 +150,7 @@ class TaskRuntime(Asking, Finishing):
         keep_titles = self is not None and self.cfg.get('schema_titles', False)
         shown = documented if keep_titles else [
             dict(s, function=dict(s['function'], parameters=untitled(s['function']['parameters']))) for s in documented]
-        return shown if strict else json.loads(legacy_terminal(json.dumps(shown, ensure_ascii=False)))
+        return shown
 
     def _within(self, path, roots):
         p = self.sb.path(path or '.', exact=True)

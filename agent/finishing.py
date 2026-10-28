@@ -2,7 +2,7 @@
 verification, the chosen option's scope, inspect_run, a plain final answer and an
 interrupted run (a mixin of TaskRuntime).
 
-Routing redesign S5 (2026-10-25): with strict_terminal on (default) every turn ends
+Routing redesign S5 (2026-10-25): every turn ends (the strict_terminal=false rollback was removed in 2.0, Q4)
 by finish_turn. ask_user and finish_task are no longer shown to the model; calls to
 them from older histories still run through the same code (_ask, _finish).
 """
@@ -239,14 +239,6 @@ class Finishing:
         self.final_answer = ((draft + '\n\n') if draft else '') + '这一轮的回复没有形成完整的交互（可能缺少需要你选择的选项），请重试或换个说法。'
         self.stop_reason = 'unstructured_terminal'
         self.report = dict(version=1, state='unstructured_terminal', summary=self.final_answer, sections=[])
-
-    def finish_plain(self, content):
-        if self.current:
-            detail = self.current.get('policy', {}).get('output', {}).get('detail')
-            self.dispatch('finish_task', json.dumps({'summary': (content or '')[:12000 if detail == 'full' else 1200]}),
-                          self.sb, None, None)
-        if self.final_answer is None:
-            self._reply(content or '本轮没有返回内容。')
 
     def _reply(self, content):
         """An answer without a task: the reply, with the local facts of any blocked call."""

@@ -493,6 +493,8 @@ UI state.sqlite3 的 turns 只有 run_request_id 唯一投影，不另行写 que
 | Q=0 且 DB 已 authoritative 或 T/L=1 | 不允许 | 启动拒绝或只读；不重新消费旧 pending_choice |
 | 新 API/new response 发送给 Q=0 服务 | 无安全适配 | 426/409 upgrade_required，不能忽略 response 后按 content=A执行 |
 
+> 2026-10-29（2.0 Q4）：strict_terminal 开关已删除，T 恒为 1。上表 T=0 各行只作历史记录：旧历史中的 ask_user/finish_task 调用仍由同一代码处理，但不再能把模型可见的收尾方式切回 v3；回滚改为 git revert 加数据只读兼容。
+
 上述表覆盖旧/新 API、会话、按钮与关键开关组合。S3/S4 新字段候选若未过容量闸门，L/专用 claim 开关为0；可读旧状态而不可解释为新授权。每片发布须对矩阵允许组合做 HTTP/重启/迁移中断测试，并对禁止组合做启动负向测试。
 
 ## 12. 文件级实施清单与每片独立发布门
@@ -504,7 +506,7 @@ UI state.sqlite3 的 turns 只有 run_request_id 唯一投影，不另行写 que
 | S2 | task.py、新 interactions.py、outcomes.py：message_receipts/questions/outbox单权威；webapp.py/web/app.js/main.py：所有消息ID、精确response、持久重试与CLI；asking.py/history.py：legacy投影adapter | 四类消息全套重试/崩溃、Q1→Q2与revision后幂等；无额外模型字段；DB迁移validated→authoritative；不能退回旧消费器 |
 | S3 | choices.py、asking.py、finishing.py、task_runtime.py、file_plans.py、task.py、webapp.py：局部scope/draft映射、输入关系、cancel/pause/resume及每步epoch栅栏 | 依赖S1+S2；容量闸门；两项原xfail到该片才要求转pass；取消不假完成；异常时L=0保持身份权威与已答事实 |
 | S4 | policy.py/constraints.py/tools/dedup.py/registry.py：专用part贯穿；finishing.py或findings.py一种evidence绑定；selection.part、contract hash | 每个新增字段候选cap；同类去重与多find的正反向测试；可独立不启用新增能力，不能恢复猜归属 |
-| S5 | loop.py/task_runtime.py/asking.py/finishing.py/prompts.py：统一TurnEnd与finish_turn；普通正文错误仅一次修复 | 旧schema不并存；纯聊天/只读/提问/写入无固定额外LLM请求；容量两配置；T可关闭回v3终止，但Q/G不回滚 |
+| S5 | loop.py/task_runtime.py/asking.py/finishing.py/prompts.py：统一TurnEnd与finish_turn；普通正文错误仅一次修复 | 旧schema不并存；纯聊天/只读/提问/写入无固定额外LLM请求；容量两配置；~~T可关闭回v3终止~~（2026-10-29 2.0 Q4：复验一通过后删除 strict_terminal 开关，回滚改为 git revert 加旧历史只读兼容），Q/G不回滚 |
 | S6a | task.py/intent.py/verifier.py/reporting.py/outcomes.py/web/tasks.js/eval/judge.py | 状态纯reducer与旧结果双报；不把取消映成完成；只读UI“已回答”保留；投影版本可回退 |
 | S6b | registry.py/task_runtime.py/findings.py/retrieval.py/file_plans.py：typed results/错误、进展与恢复 | S1确认来源不重新解释；逐工具shadow/切换；局部失败与unknown结果不重放 |
 | S7 | retrieval.py/extract.py/ocr.py/eval/retrieval_set.py/reporting.py：覆盖版本账本、多查询与有限fallback | 版本变更不复用已审结论；固定样本成本与覆盖表；无召回比例承诺 |

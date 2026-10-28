@@ -169,17 +169,14 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
             console.rule(f"[dim]第 {step} 轮 · {llm.total_tokens - tokens_before} tokens · {time.time() - t0:.1f}s")
 
             if not msg.tool_calls:
-                if runtime.strict_terminal and not corrected:
+                if not corrected:
                     # Routing redesign S5: a turn ends by finish_turn. Bare text gets one
                     # correction (it counts as a step); the draft is not shown as an answer.
                     corrected = True
                     messages.append({'role': 'system', 'content': TERMINAL_REQUIRED})
                     emit('protocol_retry', step=step, reason='TERMINAL_REQUIRED')
                     continue
-                if runtime.strict_terminal:
-                    runtime.unstructured(msg.content)
-                else:
-                    runtime.finish_plain(msg.content)
+                runtime.unstructured(msg.content)
                 final, stop_reason = runtime.final_answer, runtime.stop_reason
                 messages[-1]['content'] = final
                 break
@@ -215,13 +212,13 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                         result = blocked
                     elif name in ('finish_turn', 'finish_task') and execute_failed and cfg.get('finish_with_execute'):
                         # The ending was written before the execution result was seen.
-                        result = runtime.words(EXECUTION_NOT_SEEN)
+                        result = EXECUTION_NOT_SEEN
                         runtime._outcome = registry.ToolResult(status='error', text=result, error_code='EXECUTION_NOT_SEEN')
                     elif name == "search_content" and not retrieval:
                         result = "ERROR: 本次运行未启用内容检索，请使用 search_files 和 read_file"
                     else:
                         executed = True
-                        result = runtime.words(runtime.dispatch(name, raw, sandbox, oplog, confirmer))
+                        result = runtime.dispatch(name, raw, sandbox, oplog, confirmer)
                     if repeat_count == 2:
                         result += "\n[重复调用提醒] 你已连续两次调用相同工具和参数，结果如上。请调整做法；再次原样调用将中止运行。"
                 runtime.after(name, result, sandbox)
@@ -237,7 +234,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                 if name == 'execute_file_plan' and outcome.status != 'ok':
                     execute_failed = True
                 if cfg.get('finish_with_execute') and name == 'prepare_file_plan' and outcome.status == 'ok':
-                    result += runtime.words(FINISH_WITH_EXECUTE)
+                    result += FINISH_WITH_EXECUTE
                 if escalate_after:
                     code = outcome.error_code or 'TOOL_ERROR'
                     if outcome.status == 'ok' or code == 'TURN_CLOSED':
@@ -245,7 +242,7 @@ def run_agent(instruction: str, llm: LLM, sandbox: Sandbox, cfg: dict,
                     else:
                         error_streak = (code, error_streak[1] + 1 if error_streak[0] == code else 1)
                         if error_streak[1] >= escalate_after:
-                            result += runtime.words(ESCALATION.format(count=error_streak[1], code=code))
+                            result += ESCALATION.format(count=error_streak[1], code=code)
                 outcome.text = result  # Keep repeat warnings and P2 hints added after dispatch.
                 registry.typed(outcome, f"{runtime.run_id}:{tc.id}")
                 runtime.record_result(name, outcome)

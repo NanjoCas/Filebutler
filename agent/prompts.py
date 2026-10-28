@@ -92,8 +92,6 @@ SENSITIVE_RULE = ('敏感文件（凭据、证件、合同、财务、医疗，�
 TURN_RULE = ('每轮最后调用 finish_turn 结束，不要只输出文字：解释、回答用 mode=reply；'
              '要用户在几种做法中选择或确认（包括“要不要我……”）用 mode=ask 给出选项，不要把选项写在回复正文里；'
              '登记了任务用 mode=task。查询历史运行原因用 inspect_run。\n')
-# With strict_terminal off (rollback): the v3 ending through ask_user / finish_task or text.
-LEGACY_TURN_RULE = '先区分询问与执行：解释、方案讨论直接回答；查询历史运行原因用 inspect_run。\n'
 TASK_GUIDANCE = (GUIDANCE_MARK + '\n'
                  + TURN_RULE +
                  '要求执行时用 start_task 说明用户要做的事：parts 按部分列出（find/dedup/organize/classify/answer），'
@@ -141,21 +139,11 @@ TOOL_DESCRIPTIONS = {
     'execute_file_plan': '执行精确计划 ID：本地预检、一次确认、批量执行和核验。',
     'inspect_file_plan': '只读查看计划清单、进度和失败原因。',
     'revise_task': '按用户更正修改已有任务的部分或限制；本地展示差异并请用户确认后生效。',
-    'ask_user': '请求不清楚时向用户提问：给出 2–4 个选项并允许补充；本轮随即结束，不写入。',
     'finish_turn': '结束本轮（每轮必须以它结束）：mode=reply 回复；mode=ask 提问并给选项，等待用户；mode=task 收尾并本地核验全部部分。'
                    '要用户选择时不要把选项写进 reply。例：{"mode":"ask","question":"放哪里？","reason":"missing_criterion",'
                    '"options":[{"label":"Archive","actions":[]},{"label":"不动","actions":[]}]}',
     'inspect_run': '只读解释当前会话运行结果；finish=true 直接结束，复合请求可 false。',
-    'finish_task': '收尾并本地核验全部部分；未满足条件不能标记完成。',
 }
-
-
-def legacy_terminal(text):
-    """The same words for strict_terminal off: ask_user / finish_task instead of finish_turn."""
-    # finish_task has no input_resolution: a pause or cancel is said in the reply instead.
-    return (text.replace(TURN_RULE, LEGACY_TURN_RULE).replace('finish_turn(mode=ask)', 'ask_user')
-            .replace('用 finish_turn 的 input_resolution 声明', '直接用文字回复说明')
-            .replace('finish_turn(mode=task)', 'finish_task').replace('finish_turn.', 'finish_task.'))
 
 
 # 2.0 P2 experiments, off by default; appended to a tool result only when they apply,

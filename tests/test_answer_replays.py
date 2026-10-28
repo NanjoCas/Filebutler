@@ -288,14 +288,6 @@ def test_a_model_corrected_once_asks_with_buttons(tmp_path):
     assert [c['label'] for c in result.report['choices']] == ['只回收测试文件夹', '先不动']
 
 
-def test_with_strict_terminal_off_plain_text_still_ends_as_an_answer(tmp_path):
-    # The rollback path of S5 (strict_terminal: false): v3's ask_user / finish_task / text.
-    files_fixture(tmp_path)
-    session = Session(tmp_path, cfg=dict(H.CFG, strict_terminal=False))
-    result, _ = session.run('删掉所有测试文件', [step(call('list_dir', dict(path='.')))], final=TEXT_OPTIONS)
-    assert result.stop_reason == 'answered' and result.final.startswith('根目录有 2 个测试文件夹')
-
-
 ASK_BOTH_SCOPED = dict(ASK_SCOPE, reason='conflict', drafts=[dict(id='d_a', description='移动 a'), dict(id='d_b', description='移动 b')],
                        scope=dict(level='parts', part_ids=['d_a', 'd_b']),
                        options=[dict(ASK_SCOPE['options'][0], disposition='continue'), dict(
