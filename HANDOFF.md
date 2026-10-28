@@ -1,15 +1,18 @@
 # FileButler 项目交接（HANDOFF）
 
-更新时间：2026-10-27（Asia/Shanghai）。供新对话或下一位维护者直接接续。第 1 节是现状，第 7、8 节是逐条累积的事实和待办；第 1 节以外的旧数字是当时的记录。
+更新时间：2026-10-28（Asia/Taipei；本次仅清理文档，未重新运行产品验收）。供新对话或下一位维护者直接接续。第 1 节是现状，第 7、8 节是逐条累积的事实和待办；第 1 节以外的旧数字是当时的记录。
 
 ## 1. 接手先看这几句话
 
-**当前状态：协议 v3（唯一协议）。功能方案（`docs/feature-plan-2026-10-24.md`）阶段 0–3 已实施：读 Office 文档和网页、本地 OCR、全文 BM25；阶段 4（向量检索）未做。最近一次真实复验是第 39 轮：回归 7/8、ocr 4/5，失败的 2 组回答和文件都正确，是状态记为待复核。**
+**当前状态：协议 v3（唯一协议）。功能阶段 0–3、路由改造 S0–S8 已实施；阶段 4（向量检索）未做。最后记录的真实模型复验为第 46 轮，验证第 45 轮发现的问题已修复；最后记录的全量离线测试为 2026-10-27 的 552 passed，属于历史结果，本次未重跑。**
 
-- **2026-10-23 起只有协议 v3。** v2 协议、旧控制器（LocalRuntime）、自检、上下文压缩、单步写工具（move/rename/make_dir/trash）、apply_classification 和旧评测 runner 已退役，代码保留在本地标签 `archive-v2-legacy-20261023`（未推送）。删掉的测试和覆盖缺口见 `docs/v2-retirement-coverage-2026-10-23.md`。
-- 模型可见的提示 + 工具定义有绝对上限 31,311 字符，只减不增（`tests/test_protocol_v3.py` 的 `PROMPT_CAP`）。现为 30,956；打开敏感检测时 31,047。
-- 离线测试 526 passed，没有 xfail（2026-10-25 S6–S8 后）。模型可见提示 31,048 字（敏感检测开 31,152），上限 31,311，余量 263 / 159。
-- **2026-10-24 路由改造 S0–S2 已实施**（方案 `docs/agent-routing-redesign-2026-10-24.md`，用户要求"按文档完成路由修改"；方案建议首批只做 S0–S2）：
+- v2 协议及旧控制器已退役，代码保留在本地标签 `archive-v2-legacy-20261023`（未推送）；覆盖缺口见 `docs/v2-retirement-coverage-2026-10-23.md`。
+- 模型可见提示与工具定义上限 31,311 字符，只减不增。最后记录为 31,048 字（敏感检测开时 31,152），不是本次重新测量结果。
+- 当前方案、实施证据和历史材料统一从 [文档索引](docs/README.md) 进入。`docs/filebutler-2.0-upgrade.md` 是已审核、未实施的提案，决策项仍待用户选择；同日工程初稿与预审稿不代表方案已批准或代码已实现。
+
+### 实施历史（以下数字及旧接口名以条目日期为准）
+
+- **2026-10-24 路由改造 S0–S2 已实施**（方案 `docs/agent-routing-redesign-2026-10-25.md`，用户要求"按文档完成路由修改"；方案建议首批只做 S0–S2）：
   - S0–S1（`1a20c5f`）：一个业务动作只证明一个部分。多个候选部分而动作没写 `part` 时返回 `AMBIGUOUS_GOAL`，写了 `goal_ids` 也不行（P0：只归档 a 却让"改名 b"也通过）。`Selection.part` 从 S4 提前，否则"平铺 + 回收"两个部分放不进一个计划。共享的新建父目录不单独证明任何部分；旧计划里一个动作属于多个部分的，不再证明任何部分。确认结果分为批准、拒绝、超时、中断，并记录来源（web/cli/policy）：网页 15 分钟超时、CLI 的 EOF 和 Ctrl-C 不再报成"用户拒绝"。本轮被拒绝、超时或中断的同一清单，换计划 ID 也不再弹卡，"本轮都允许"也不能覆盖。网页重复提交同一个确认 ID 时返回第一次的决定。提示 30,956→31,000（敏感检测开 31,091）。
   - S2（`cb070d1`）：`agent/interactions.py` 在 TaskStore 库里新增接收回执、请求、问题、回答、运行请求和协议元数据 6 张表，`user_version` 为 2。每条消息按 (root, session, client_message_id) 只接收一次：同 ID 同内容重试返回原回执（即使问题已答、出了新问题或服务重启过），同 ID 不同内容返回 409。按钮提交精确的 question_id、version、option_id；裸字母只算普通文字，不产生选项授权。网页消息必须带 ID，否则返回 426 提示刷新。服务重启后，正在运行的请求记为中断、不重放；已接收但还没建 turn 的请求补建并运行一次。CLI 新增 `run --message-id`、`answer --question --option`。迁移前先备份；备份必须放在写事务外面，放在里面会卡死。在真实任务库的副本上演练：73 条运行结果，耗时 19ms，完整性检查正常。
   - **2026-10-25 S3–S5 已实施**（用户要求"做 s3-s5"）：
@@ -22,13 +25,13 @@
       - **失败原因**：A 的 5 次失败是 `ans_do_nothing` 3 次、`dedup_cleanup`（模型多写 notes 触发复核）2 次；B 的 2 次是网络中断 1 次、`dedup_cleanup` 1 次。
       - **费用**：49 对的费用基本持平（相差 0.07%）。
       - **工具报错**：失败的工具调用 A 31、B 14（全部原始 trace），按工具分是 finish_turn 12/5、prepare_file_plan 11/4、read_file 4/2、start_task 4/2、submit_classification 0/1；一次响应可以含多个调用，不等于多了这么多次往返。finish_turn 失败里包含嵌套写错、非法 JSON、编出来的字段、scope/disposition 检查，以及精确选项后声明 answer 被拒（两组各 4 次，跨工具统计）。
-      - **严格结束**：TERMINAL_REQUIRED 0 次、unstructured_terminal 0 次。详见 `docs/s5-routing-audit-2026-10-25.md` 第 3 节，复算脚本 `docs/repro/s5-ab-audit-2026-10-25.py`。
+      - **严格结束**：TERMINAL_REQUIRED 0 次、unstructured_terminal 0 次。详见 `docs/archive/s5-routing-audit-2026-10-25.md` 第 3 节，复算脚本 `docs/repro/s5-ab-audit-2026-10-25.py`。
     - **第 41 轮：提问字段平铺后的复验**（`035567c`，`policy_live_20261025_41_r{1,2}_A_{regression,answer,parts,ocr}`，¥0.67）：
       - **通过率**：31/34 = 91.2%。
       - **工具报错**：失败的工具调用 5 次，其中参数校验错误 0 次；同口径下第 40 轮 A 组为 31 和 7。
       - **严格结束**：TERMINAL_REQUIRED 1 次，纠正后正常结束。
       - **失败**：`ans_do_nothing` 2 次，模型没登记任务、直接 reply，结果是 answered；`no_answer` 1 次，模型把"查过、没找到"写进了 unfinished，状态成了 partial。
-    - **S5 审计修复**（`ba900f1`，`docs/s5-routing-audit-2026-10-25.md`，第 42、43 轮真实复验）：
+    - **S5 审计修复**（`ba900f1`，`docs/archive/s5-routing-audit-2026-10-25.md`，第 42、43 轮真实复验）：
       - **P1-A**：已登记任务时 reply 仍显示在主回复，排在本地事实之后，只出现一次；超过 2000 字明确拒绝。
       - **P1-B**：不合法的 finish_turn/ask_user/finish_task 计入无进展保护（task_repair_limit），TURN_CLOSED 不计。
       - **P2-A**：mode=ask 带 summary、unfinished、not_needed、evidence_bindings 时拒绝；ask 的 reply 显示在问题前面。
@@ -97,7 +100,7 @@
 - **2026-10-24 状态显示按"用户下一步做什么"重排，内部状态不动**（用户决定）：`agent/reporting.display_state` 给报告加上 `display` 字段，取值为 done / answered / confirm / waiting / unfinished / cancelled。只读任务（没有执行过文件操作）即使是 needs_review，也显示为"已回答"，回复里不再写"这一轮的结果待核实"；改动过文件的任务显示"请确认结果"。网页标签（`web/app.js` outcomeLabel、`web/tasks.js`）统一为：已完成 / 已回答 / 请确认结果 / 等你回答 / 没有完成 / 已取消。查找结果表里的"模型判断（待复核）"改为"模型判断"。起因是第 37 轮：同一个问题，模型登记了查找任务、引用了片段的反而显示"待核实"，直接回答的却没有任何提示。任务状态、核验和评测判定都没变，第 37 轮仍记为 13/15。
 - **2026-10-24 敏感文件检测默认关闭**（用户决定：先不做，交给用户自己选资料库范围）：新配置 `sensitive_files: false`。关闭时文件名、内容规则都不运行，任务协议不再显示敏感文件规则（`SENSITIVE_RULE`），所有文件正常读取；设为 `true` 恢复 2026-10-22 的行为。带 `sensitive` 标签的 4 个冻结场景由 `eval/live_policy.py` 单独打开。
 - **2026-10-23 `revise_task` 权限重算**（`43b884e`）：修改任务后，允许操作和写入范围按修改后的全部部分与限制重新推导（`agent/intent.py` 的 `authority`），不再只在新增写入部分时叠加。修复前，用户确认放宽"不许回收"后回收仍被拦；替换或删除部分后旧范围仍保留。第 32 轮真实复验 8/8（见第 7 节）。
-- **2026-10-23 链路方案一（目标归属）完成**（`b0f17bb`、`b39323b`；方案见 `docs/agent-chain-optimization-plan-2026-10-23.md`）：同类多个部分认领同一计划而没写 `goal_ids` 时拒绝，不再默认全部绑定（修复前"只归档 a"会让"改名 b"也判完成）；动作可写 `part`；每个部分只按自己已执行的动作核验，中断计划保留已执行步骤（`file_plan_partials`）。第 33、34 轮真实复验见第 7 节。
+- **2026-10-23 链路方案一（目标归属）完成**（`b0f17bb`、`b39323b`；方案见 `docs/archive/agent-chain-optimization-plan-2026-10-23.md`）：同类多个部分认领同一计划而没写 `goal_ids` 时拒绝，不再默认全部绑定（修复前"只归档 a"会让"改名 b"也判完成）；动作可写 `part`；每个部分只按自己已执行的动作核验，中断计划保留已执行步骤（`file_plan_partials`）。第 33、34 轮真实复验见第 7 节。
 - **2026-10-23 链路方案三（每次请求只有一份任务快照）完成**（`912b9a6`）：每轮的快照（协议规则 + 当前任务状态）不再存进对话；`run_agent` 返回 `added_messages`（不含快照），网页按它保存，不再按长度切片；`prepare_history` 丢弃已存的旧快照。本地真实对话的下一次请求历史少 43–45%，8 轮对话被归档的工具记录 16→0。**不省钱**：第 35 轮与第 32 轮同场景对比，第二轮 prompt token -13~24%，但删掉中间的旧快照打断了 DeepSeek 前缀缓存，每轮首次请求多约 1.1k 未命中 token（约 ¥0.002），总费用 ¥0.157→0.170。保留它是为了状态单一、上下文更长，不是为了费用。
 - **2026-10-23 链路方案二（回答接回提问的任务）完成**（`2636a19`、`5adc89c`）：回放测试 `tests/test_answer_replays.py`，8 个通过，2 个以 xfail 记录已知缺口：① 只针对 b 的选项会约束整份下一计划；④ 重发字母会回答当前待答的新问题，网页已防住。修复两处：点选项回答时接回提问时的任务（`asking._resume_asked_task`），上一轮的操作并入 `operation_history`；选了"什么都不做"时，只结掉模型在 `finish_task.unfinished`/`not_needed` 里点名的写入部分（`finishing._record_chosen_scope`），answer 部分仍自动结掉。历史证据（第 30 轮及以前）：24 次跨轮提问中 23 次发生在登记任务之前，所有选项都描述整件事。第 36 轮真实复验 6/6，约 ¥0.13，见第 7 节。
 - **第 20 轮：两套盲测各 3 次 + v2 对照**：v3 47/48 = 97.9%（95% 区间 89.1%–99.6%），v2 35/48 = 72.9%（59.0%–83.4%）；费用 ¥0.575 对 ¥0.978。其余功能验收每组多数只跑过 1 次，逐轮见第 7 节。
@@ -106,9 +109,9 @@
   - 评测选项匹配：move 和 rename 不分，会让规则命中多个选项、退到兜底规则（第 44 轮 `ans_skip_b`）。改动要放进新版判定或新场景，不改冻结场景。
   - 评测选项匹配：模型没给场景要的选项时，现在退到"都不动"并记为失败（第 44 轮 `ans_skip_b`、第 46 轮 `s5_skip_b`）；新版评测应把这种情况单独记为"场景未覆盖"。
   - 新增"查找、候选超过 top_k"场景，看覆盖缺口那一句在真实回复里的效果（只放进新场景，不改冻结场景）。
-  - 检索 `view=evidence` 的结果只给"名称="和 F 句柄，模型会把名称当路径（第 45 轮 8 次）。
-  - 影子比对 0 次不一致，可以考虑删掉旧的增量比对。
-  - S6：流程、结果、核验三种状态拆分，判定器版本化（新旧两套口径同时报告）；`no_answer` 这类"查过、没找到"怎样表达，以及任务里的 answer 部分能否凭本轮工具结果判 done（第 43 轮 v2），都放进这一步。
+  - 检索 `view=evidence` 的结果只给"名称="和 F 句柄，模型会把名称当路径（第 45 轮共 4 次失败调用；旧记录的 8 次已由 2.0 方案第 0.1 节更正）。
+  - 影子比对是否删除待决定；2.0 方案第 0.1 节已更正：两边来自同一个差集，0 次不一致不能作为独立校验有效的证据。
+  - S6a 状态拆分和判定器 v4 并列报告已完成；仍待决定的是 v4 是否替代 v3 的退出码，以及 answer 部分凭工具证据自动判完成的边界。
   - `unfinished` 字段说明被压缩后，可能是 `no_answer` 失败的原因之一，可以恢复原来的完整说明（约 40 字）。
   - 回收非空文件夹要拆成多个计划（用户日志：4 个计划、4 张确认卡、¥0.10）。
   - 阶段 4 向量检索（跨语言检索 12 题只命中 1 题）。
@@ -126,6 +129,8 @@
 被 `.gitignore` 排除的内容不在提交里：`eval/results/`、`logs/`、`data/real/`、`sandbox/`、`.filebutler-ui/`、`.env`。真实验收的原始证据只在本机。
 
 文档清理记录：
+- 2026-10-28 按用户要求，路由设计只保留 `docs/agent-routing-redesign-2026-10-25.md` 最终版（由含 25 号实施更新的原 24 号定稿统一命名），旧文件不保留副本，相关引用已更新。
+- 2026-10-28 将 4 份已被后续实施替代的设计/审计/验收材料移至 `docs/archive/`，保留原始结论并修正引用。新增 `docs/README.md` 区分当前方案、未实施提案、未完成草稿和历史证据。路由设计中指向 3 份已删除过程稿的说明已改为 Git 历史检索方式；这些删除在本次开始前已存在。
 - 2026-10-21 删除 8 份过时文档，备份在仓库外的 `/Users/nanjo/Desktop/projects/DocAgent/docs-archive-2026-10-21.tar.gz`。其中 4 份原本没进 git，只能从这个备份找回。
 - 2026-10-22 删除 6 份过程文档（10-20 到 10-21 的验收和优化记录、Agent 架构 V2）和 5 个旧评测脚本（`eval/acceptance*.py`、`acceptance_browser.mjs`、`compare_runtime.py`、`classification.py`）。它们都在 git 里，可以从提交 `d0c7bbc` 找回；结论摘要保留在 `docs/experiments.md`。
 
@@ -149,15 +154,14 @@
 
 ## 4. 优先阅读的材料
 
-按这个顺序读；历史描述与最新结果矛盾时，以最新复验事实为准：
+先看当前状态和未解决问题，历史材料仅用于追溯证据：
 
-1. 本文件第 7、8 节：验收结果目录和待办清单。
-2. [真实复验轮次](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/live-acceptance-2026-10-21-rounds.md)：第 02–29 轮的判定口径、逐轮数据、暴露的问题和修复；第 30 轮以后只记在本文件第 7 节。
-3. [功能方案](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/feature-plan-2026-10-24.md)：Office、OCR、全文检索、向量检索的方案、数据和实施状态。
-4. [协议 v3](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/protocol-v3-2026-10-21.md)：设计、授权边界、字符数对比。
-5. [系统文件名单](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/system-files-candidates-2026-10-22.md)：回收文件夹时的分级依据。
-6. [实验记录](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/experiments.md)、[工程笔记](/Users/nanjo/Desktop/projects/DocAgent/filebutler/docs/engineering-notes.md)：早期实验和技术取舍的时间线。
-7. [README](/Users/nanjo/Desktop/projects/DocAgent/filebutler/README.md)：对外介绍、启动和评测命令、设计决策表。
+1. 本文件第 1、7、8 节：现状、验收事实和待办。
+2. [文档索引](docs/README.md)：所有保留材料的用途和状态。
+3. [路由改造](docs/agent-routing-redesign-2026-10-25.md)、[S6–S8 实施记录](docs/s6-s8-implementation-2026-10-25.md)：已实施设计、偏差和第 45/46 轮验收。
+4. [功能方案](docs/feature-plan-2026-10-24.md)：Office、OCR、BM25 的实施证据和未实施的向量检索。
+5. [2.0 提案](docs/filebutler-2.0-upgrade.md)：已审核、未实施，决策项待用户选择。
+6. [README](README.md)：启动和对外介绍；旧协议、早期验收及 S5 原始审计见 [历史归档](docs/README.md#历史归档)。
 
 ## 5. 启动、配置和数据
 
@@ -329,7 +333,7 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
   - 文本限制列在确认卡片上，用户确认后可以写入，任务保持 needs_review。
 - 之后又加了 `finish_task.reply`、`finish_task.unfinished` 和 `ask_user`。
 - 真实复验结果：第 08 轮 13/13；两套盲测各 8/8。但每组只跑了一次。
-- 2026-10-23：目标归属。`prepare_file_plan` 的动作可写 `part`；写了 part 的动作只算那个部分，没写的归 goal_ids 中其余部分；同类多部分无法区分且没写 goal_ids 时拒绝。核验（`verifier.verify_bound_plans`）只看本部分已执行的步骤，一个部分没有自己的已执行步骤不通过。仍有缺口：模型写 `goal_ids=[g1,g2]` 而动作都不写 part 时按模型说法两者都算，若计划只做了 g1，g2 仍会误判（未强制 part，避免多一轮纠错）。
+- 2026-10-23：目标归属。`prepare_file_plan` 的动作可写 `part`；写了 part 的动作只算那个部分，没写的归 goal_ids 中其余部分；同类多部分无法区分且没写 goal_ids 时拒绝。核验（`verifier.verify_bound_plans`）只看本部分已执行的步骤，一个部分没有自己的已执行步骤不通过。该缺口已于 2026-10-24 S0–S1 修复：多个候选部分时动作必须写 part，否则返回 AMBIGUOUS_GOAL。
 - 2026-10-23：`revise_task` 每次都重算 `allowed_effects` / `write_roots`。任务的每个部分保存自己的 `scope`（`Goal.scope`）；之前登记、没有 `scope` 的部分按原任务写入范围处理，修改时不会被放大成整个资料库。此前计划确认时追加的范围在修改后作废，未执行的计划变基时会在卡片上重新列出。
 
 NoProgressGuard 仍可能漏过跨工具、伴随证据变化的长修复链，应结合失败语义和实际进展改进，不靠缩小 max_steps 或扩大权限。
@@ -455,7 +459,7 @@ NoProgressGuard 仍可能漏过跨工具、伴随证据变化的长修复链，�
 #### P3：用户意图与安全
 
 - [ ] 相对时间（"上周的""最近的"）、例外条件（"除了 X"）、只说"整理一下"、文件名打错：明确哪些情况走 `ask_user`，哪些先给方案再确认。
-- [ ] 用户拒绝确认卡片之后，模型不应换个方式重复提交同一个计划。
+- [x] 用户拒绝确认后不再重复提交同一清单：2026-10-24 S0–S1 已实现，按清单而非计划 ID 拦截，超时/中断也适用。
 - [x] 敏感文件读取策略：2026-10-22 已实现，见"待用户决定"中的产品范围。
 - [x] 扫描件和图片：2026-10-24 本地 OCR（阶段 2）。
 - [ ] 加密 PDF、压缩包内容。
@@ -568,4 +572,4 @@ zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --cases p1_swap 
 
 ## 11. 新对话可直接使用的接手提示
 
-> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `master`，只有协议 v3，552 项离线测试通过；聊天页顶栏「运行日志」可逐轮查看链路（`web_logs.py`）；模型请求默认直连不走系统代理（`llm_use_env_proxy`）；功能方案阶段 0–3 和路由改造 S0–S8 已实施，并已按 `docs/s5-routing-audit-2026-10-25.md` 修复；最近的真实复验是第 43 轮（s5 两遍各 5/7，没过的 2 个是场景预期写错）和第 44 轮回归（32/34）；S6–S8 已实施，浏览器验收 6/6；第 45 轮真实验收 v3 61/72、v4 63/72，发现并修复了已答问题残留和工具结果序列化两处问题，第 46 轮复验修复生效。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。
+> 请先阅读 `/Users/nanjo/Desktop/projects/DocAgent/filebutler/HANDOFF.md`（重点第 1、7、8 节），用 `git status -sb` 确认工作区。当前在分支 `master`，只有协议 v3，最后记录的离线测试为 2026-10-27 的 552 passed（接手时需按需重验）；聊天页顶栏「运行日志」可逐轮查看链路（`web_logs.py`）；模型请求默认直连不走系统代理（`llm_use_env_proxy`）；功能方案阶段 0–3 和路由改造 S0–S8 已实施，并已按 `docs/archive/s5-routing-audit-2026-10-25.md` 修复；第 43、44 轮属于历史回归；最近的真实模型复验是第 46 轮；S6–S8 已实施，浏览器验收 6/6；第 45 轮真实验收 v3 61/72、v4 63/72，发现并修复了已答问题残留和工具结果序列化两处问题，第 46 轮复验修复生效。下一步候选见第 1 节。不要为单个关键词或案例打补丁，不扩大权限，不弱化验收，不覆盖已有结果目录，不清空 sandbox/ 和 data/real/；推送、合并和调用付费模型前先确认我的具体要求。

@@ -160,7 +160,7 @@ python -m eval.protocol_errors eval/results/<目录>...                 # 统计
 - 场景和产品出自同一个人，不是独立的人工标准答案；
 - 每组最多只跑 3 次，样本小，所以在关键结果上给出了置信区间。
 
-完整过程见 [docs/live-acceptance-2026-10-21-rounds.md](docs/live-acceptance-2026-10-21-rounds.md)。
+完整过程见 [docs/live-acceptance-2026-10-21-rounds.md](docs/archive/live-acceptance-2026-10-21-rounds.md)。
 
 ### 早期实验（2026-10-07 之前，旧控制器）
 
@@ -212,8 +212,9 @@ tests/                离线测试（假模型），包括真实运行记录的�
 ## 文档
 
 - [HANDOFF.md](HANDOFF.md)：现状、配置、代码入口、待办清单
-- [docs/live-acceptance-2026-10-21-rounds.md](docs/live-acceptance-2026-10-21-rounds.md)：第 02–29 轮真实复验，逐轮数据、暴露的问题和修复
-- [docs/protocol-v3-2026-10-21.md](docs/protocol-v3-2026-10-21.md)：协议 v3 的设计、授权边界和数据
+- [文档索引](docs/README.md)：当前设计、未实施提案、草稿与历史归档的状态和阅读入口
+- [历史复验记录](docs/archive/live-acceptance-2026-10-21-rounds.md)：第 02–29 轮真实复验，不代表当前版本验收结论
+- [协议 v3 初版（历史归档）](docs/archive/protocol-v3-2026-10-21.md)：最初的设计、授权边界和数据；后续变更见路由方案与 HANDOFF
 - [docs/v2-retirement-coverage-2026-10-23.md](docs/v2-retirement-coverage-2026-10-23.md)：v2 退役时删掉的测试、对应机制在 v3 的覆盖情况和已知缺口
 - [docs/system-files-candidates-2026-10-22.md](docs/system-files-candidates-2026-10-22.md)：系统文件名单的来源核对
 - [docs/feature-plan-2026-10-24.md](docs/feature-plan-2026-10-24.md)：Office、OCR、全文检索、向量检索的方案和实施状态

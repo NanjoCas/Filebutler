@@ -1,5 +1,7 @@
 # S5 路由改造问题分析报告
 
+> 历史归档（2026-10-28）：正文保留当时的分析、数字和状态，不作为当前操作指引。现状见 [HANDOFF](../../HANDOFF.md)，归档原因见 [文档索引](../README.md)。
+
 日期：2026-10-25（Asia/Taipei）  
 代码基线：035567ce51a510d1e95ebcff6294132d7f748844，分支 optimize/completion-binding。  
 性质：分析报告；未修改业务代码、HANDOFF、已有方案或评测期望，未调用付费模型。
@@ -14,7 +16,7 @@ S5 已把收尾入口统一，但真实模型暴露了三个不同层次的问�
 
 ## 2. 本次核查与证据范围
 
-- 阅读最新 [HANDOFF](../HANDOFF.md)、S5/S4/S3 及后续修复提交、当前收尾/主循环/输入关系/报告/评测实现。
+- 阅读最新 [HANDOFF](../../HANDOFF.md)、S5/S4/S3 及后续修复提交、当前收尾/主循环/输入关系/报告/评测实现。
 - 独立工程审查与产品/评测复算并行进行；主线程独立复跑关键回放与 A/B 复算。
 - 阅读第 40 轮 24 个结果目录中的 manifest、report、judgement 和相关 trace/history。manifest 的生产代码快照一致，显式配置差异为 schema_titles。
 - 当前定向离线测试：152 passed、5 warnings，覆盖 test_protocol_v3、test_answer_replays、test_interactions、test_cancel。
@@ -63,7 +65,7 @@ r1 B answer 的 ans_do_nothing 第二轮网络中断；后续 ans_skip_b 未运�
 
 HANDOFF 的“嵌套提问 A8/B3”需要说明分类口径；不能把所有 finish_turn 错误都归为嵌套问题。失败还包括非法 JSON、幻造字段、scope/disposition 和精确答案关系检查。
 
-原始证据：[r1 A answer](../eval/results/policy_live_20261025_40_r1_A_answer/judgement.json)、[r1 B answer](../eval/results/policy_live_20261025_40_r1_B_answer/judgement.json)、[B 网络中断 trace](../eval/results/policy_live_20261025_40_r1_B_answer/ans_do_nothing/turn_2.trace.jsonl)、[r1 A regression](../eval/results/policy_live_20261025_40_r1_A_regression/judgement.json)。完整复算脚本见第 8 节。eval/results 被 Git 忽略，以上证据链接仅在保留原始结果的本机可用。
+原始证据：[r1 A answer](../../eval/results/policy_live_20261025_40_r1_A_answer/judgement.json)、[r1 B answer](../../eval/results/policy_live_20261025_40_r1_B_answer/judgement.json)、[B 网络中断 trace](../../eval/results/policy_live_20261025_40_r1_B_answer/ans_do_nothing/turn_2.trace.jsonl)、[r1 A regression](../../eval/results/policy_live_20261025_40_r1_A_regression/judgement.json)。完整复算脚本见第 8 节。eval/results 被 Git 忽略，以上证据链接仅在保留原始结果的本机可用。
 
 ## 4. 已暴露问题、根因与当前修复状态
 
@@ -73,7 +75,7 @@ HANDOFF 的“嵌套提问 A8/B3”需要说明分类口径；不能把所有 fi
 
 当前提交将 question 文本、reason、options 等平铺到顶层，合法旧嵌套形式由本地展开。这个修改减少了一层生成负担，也明确了 question 的含义。当前离线正反向测试存在；不能据此声称历史所有错误参数都已可接受，更不能据旧 Round 40 声称修复后纠错率下降。
 
-位置：[finishing.py](../agent/finishing.py#L48-L67)、[兼容与检查](../agent/finishing.py#L141-L157)、[回归测试](../tests/test_protocol_v3.py#L172-L183)。
+位置：[finishing.py](../../agent/finishing.py#L48-L67)、[兼容与检查](../../agent/finishing.py#L141-L157)、[回归测试](../../tests/test_protocol_v3.py#L172-L183)。
 
 ### 4.2 精确点选后声明 answer：已修正常兼容，尚未真实复验
 
@@ -81,7 +83,7 @@ HANDOFF 的“嵌套提问 A8/B3”需要说明分类口径；不能把所有 fi
 
 当前已将精确答案上的 answer 声明视为不重复应用的正常声明，保留既有决定。该错误跨工具在两组各发生 4 次；最新本地修复和测试已确认。
 
-位置：[task_runtime.py](../agent/task_runtime.py#L267-L276)、[回归测试](../tests/test_protocol_v3.py#L186-L192)。
+位置：[task_runtime.py](../../agent/task_runtime.py#L267-L276)、[回归测试](../../tests/test_protocol_v3.py#L186-L192)。
 
 ### 4.3 “不做”得到 answered 却被判失败：状态契约仍未解决
 
@@ -93,7 +95,7 @@ B 通过路径还有报告问题：零操作的 completed 会生成“已完成�
 
 建议给“不做”保存请求级决定与作用范围，区分“已按选择处理”“真正执行完成”“全部取消”“纯回答”；登记前后应产生一致的业务结论。不要为了过旧评测强迫创建虚拟 Task，也不要简单把 answered 加进旧期望。保留旧判定，冻结新的业务语义与独立文件/约束检查后再版本化判定器。dedup_cleanup 的 needs_review 也不能通过自动删除 notes 来放行。
 
-位置：[冻结期望](../eval/answer_cases.py#L38-L53)、[无任务回复](../agent/finishing.py#L172-L179)、[零操作报告](../agent/reporting.py#L173-L175)。这是 S6 应优先补的状态/报告契约，不足以支持“模型理解能力下降”的结论。
+位置：[冻结期望](../../eval/answer_cases.py#L38-L53)、[无任务回复](../../agent/finishing.py#L172-L179)、[零操作报告](../../agent/reporting.py#L173-L175)。这是 S6 应优先补的状态/报告契约，不足以支持“模型理解能力下降”的结论。
 
 ## 5. 当前代码新增复现的缺口
 
@@ -107,7 +109,7 @@ B 通过路径还有报告问题：零操作的 completed 会生成“已完成�
 
 建议：reply 在 reply/task 两条路径都保持“用户主回复”的含义，本地事实仍先展示；summary 仍用于补充。长度超限应按现有任务回复规则明确拒绝或处理，不能静默转移。测试须断言用户请求的解释在 final 中恰好出现一次，而非只断言 done。
 
-位置：[finishing.py:162–167](../agent/finishing.py#L162-L167)、[reporting.py](../agent/reporting.py#L159-L186)。
+位置：[finishing.py:162–167](../../agent/finishing.py#L162-L167)、[reporting.py](../../agent/reporting.py#L159-L186)。
 
 ### P1-B：错误 finish_turn 没有进入无进展保护
 
@@ -117,7 +119,7 @@ B 通过路径还有报告问题：零操作的 completed 会生成“已完成�
 
 建议：先将非法终止纳入现有无进展计数，覆盖参数、scope、证据绑定等无进展错误；S6 再细化机器错误码和恢复动作。已终止后的 TURN_CLOSED 不应再驱动修复。补不同参数连续错误、无新事实的交替读取、真实新证据重置、一次纠正后正常结束等回放。不能靠降低全局 max_steps 代替修复。
 
-位置：[loop.py](../agent/loop.py#L232-L243)、[NoProgressGuard](../agent/repetition.py#L21-L38)。
+位置：[loop.py](../../agent/loop.py#L232-L243)、[NoProgressGuard](../../agent/repetition.py#L21-L38)。
 
 ### P2-A：ask 静默忽略其他模式字段，文档夸大核验范围
 
@@ -125,7 +127,7 @@ B 通过路径还有报告问题：零操作的 completed 会生成“已完成�
 
 建议：定义模式字段互斥，拒绝 ask 中的 task-only 字段，或者明确独立检查点语义。HANDOFF 的“已登记任务无论哪种 mode 都走本地核验”改为“reply/task 收尾会核验；ask 检查选项、保存问题并等待”。
 
-位置：[finishing.py](../agent/finishing.py#L151-L160)、[asking.py](../agent/asking.py#L340-L354)。
+位置：[finishing.py](../../agent/finishing.py#L151-L160)、[asking.py](../../agent/asking.py#L340-L354)。
 
 ### P2-B：调用 finish_turn 不保证提问语义一定正确
 
@@ -137,7 +139,7 @@ S5 可靠地识别“有没有用收尾工具”，无法仅靠 schema 判断“
 
 终止后的调用被正确拦截，文字为 TURN_CLOSED，但回填结构化错误码可能仍为 CONTROL_REJECTED。建议统一，避免日志归因和后续恢复误判。该项属于观测缺口，本次没有发现终止后执行成功。
 
-位置：[prepare](../agent/task_runtime.py#L180-L183)、[结果回填](../agent/loop.py#L226-L230)。
+位置：[prepare](../../agent/task_runtime.py#L180-L183)、[结果回填](../../agent/loop.py#L226-L230)。
 
 ## 6. 提示词与工具负担的最新实测
 
@@ -170,9 +172,9 @@ S5 可靠地识别“有没有用收尾工具”，无法仅靠 schema 判断“
 
 ## 8. 可复现材料
 
-当前缺口回放：[s5-current-audit-2026-10-25.py](repro/s5-current-audit-2026-10-25.py)。仅创建 TemporaryDirectory，使用假模型与合成文件；修复后断言应改变，不应为保持脚本通过保留缺陷。
+当前缺口回放：[s5-current-audit-2026-10-25.py](../repro/s5-current-audit-2026-10-25.py)。仅创建 TemporaryDirectory，使用假模型与合成文件；修复后断言应改变，不应为保持脚本通过保留缺陷。
 
-A/B 复算：[s5-ab-audit-2026-10-25.py](repro/s5-ab-audit-2026-10-25.py)。只读本机第 40 轮原始结果，不调用 API；原始结果未入 Git，缺失时不能复算。
+A/B 复算：[s5-ab-audit-2026-10-25.py](../repro/s5-ab-audit-2026-10-25.py)。只读本机第 40 轮原始结果，不调用 API；原始结果未入 Git，缺失时不能复算。
 
 在项目根目录运行：
 

@@ -83,7 +83,9 @@ def draft_dev(old=OLD_SET):
         out.append(dict(id=q['id'], cluster=cluster, kind=q['kind'], query=q['query'], intent=q['intent'],
                         relevant=relevant, patterns=[]))
     return dict(title='检索开发集（2026-10-24 题目，合并库）', role='dev', derived_from=str(old.relative_to(library.ROOT)),
-                library=[dict(name='papers', source=spec['corpora']['papers']), dict(name='mixed', builder='eval.retrieval_mixed')],
+                # the same library as the held-out set, held-out files included, so term statistics match
+                library=[dict(name='papers', source=spec['corpora']['papers']), dict(name='mixed', builder='eval.retrieval_mixed'),
+                         dict(name='heldout', builder='eval.retrieval_mixed_heldout')],
                 relevance_rules='待写：合并库后的相关性范围规则（先写规则并提交，再看候选）。',
                 relabel_audit=[], queries=out)
 

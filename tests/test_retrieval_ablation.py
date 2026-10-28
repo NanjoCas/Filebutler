@@ -247,3 +247,11 @@ def test_the_dev_draft_moves_the_old_set_onto_one_library(tmp_path):
     path.write_text(yaml.safe_dump(draft, allow_unicode=True, sort_keys=False), encoding='utf-8')
     loaded = ab.load_set(path)  # the draft is a loadable set
     assert loaded['library'][1]['builder'] == 'eval.retrieval_mixed' and len(loaded['queries']) == 61
+
+
+def test_the_held_out_template_is_an_empty_set_on_the_same_library(tmp_path):
+    template = ab.load_set(library.ROOT / 'eval/retrieval_set_heldout.template.yaml')
+    assert template['role'] == 'heldout' and template['queries'] == []
+    assert template['library'] == relabel.draft_dev()['library']  # same files, same term statistics
+    import eval.retrieval_mixed_heldout as heldout
+    assert heldout.build(tmp_path / 'heldout').is_dir()

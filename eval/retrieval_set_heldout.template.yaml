@@ -1,0 +1,85 @@
+# 检索留出集模板。复制为 eval/retrieval_set_<日期>_heldout.yaml 再填写；本文件不要改成真题集。
+#
+# 用途：只用来报告检索的最终结果（eval/retrieval_ablation.py）。开发集（2026-10-24 的 61 题）只用来选分段大小。
+# 留出集在冻结（提交）前，谁都不看任何系统检索结果；冻结后只跑一次。
+#
+# ---------------------------------------------------------------- 出题规则
+# 1. 先写信息需求（intent）和查询（query），再去找证据；找到证据后不改查询的措辞。
+# 2. 出题期间不运行 search_content、eval.retrieval_set、eval.retrieval_ablation（--validate 除外）和网页里的检索。
+#    可以用 eval.retrieval_relabel 的 dump（逐文件读全文）和 scan（按关键词找出处），它们不经过检索排序。
+# 3. 不复用开发集的事实和措辞（eval/retrieval_set_20261024.yaml、eval/retrieval_queries.yaml）。
+# 4. 找全金标：每道题写 patterns（中英文关键词、同义词），用 scan 查出全库所有出处，逐条确认后写进 relevant，
+#    包括第二、第三个出处；确认为不相关的出处写进本文件末尾的 relabel_audit。
+# 5. 同一个信息需求的不同问法（改写、换语言）共用一个 cluster，统计时按 cluster 算一个样本。
+# 6. intent 写明范围。例：「找研究目标是 X 的论文；只在相关工作里提到的不算」「找我自己的组会纪要里记录 X 的那份；论文不算」。
+#
+# ---------------------------------------------------------------- 分层与题量
+# 分层由证据实际所在的位置自动判断，不用自己标：
+#   front_pdf   证据在 PDF 第 1–2 页
+#   late_pdf    证据只在 PDF 第 3 页以后（前两页不能出现同样的文字，validate 会查）
+#   nonpdf      证据在 PDF 以外的文件里（Word、PPT、Excel、网页、Markdown、图片 OCR）
+#   no_relevant 全库没有相关文件（必须用 patterns 查过全库，并写 reviewed: true）
+# 题量下限按 cluster 计，见下面的 minimums。依据：召回在 75% 左右时，要把 95% 置信区间压到约 ±10 个点，大约需要 70 题；
+# 分层内的效应要有 15–20 个有差异的样本才测得出。跨语言题在所有配置下都接近 0，可以写几道，单独看，不计入下限。
+# 新的非 PDF、OCR、后页 PDF 文件写在 eval/retrieval_mixed_heldout.py（heldout 部分）；能放进几篇新的真实论文更好，
+# 放在 data/real/heldout_papers/（不进 git），并取消下面 library 里那一行的注释。
+#
+# ---------------------------------------------------------------- 流程
+#   1. 写文件：eval/retrieval_mixed_heldout.py 的 build()
+#   2. 写题：本文件的 queries；查出处：
+#        .venv/bin/python -m eval.retrieval_relabel scan --set eval/retrieval_set_<日期>_heldout.yaml --out <临时文件>.md
+#   3. 校验（只校验，不打分）：
+#        .venv/bin/python -m eval.retrieval_ablation --set eval/retrieval_set_<日期>_heldout.yaml --validate --dev <开发集>
+#   4. 校验通过后提交（冻结 A）。之后开发集重标、选分段大小，最后留出集只跑一次。
+#
+# 字段：id（H 开头，唯一）、cluster、kind（自由填写，如 english、chinese、paraphrase、cross_language、detail）、
+#      query、intent、relevant（path 相对库根目录：papers/、mixed/、heldout/ 开头；page 为 PDF 页码、幻灯片序号、
+#      工作表序号，其他格式写 1；evidence 是该页上的原文片段，会按全文核对）、patterns、reviewed（只用于无相关题）。
+
+title: 检索留出集（填写日期）
+role: heldout
+authored: YYYY-MM-DD
+
+# 两个题集的库必须完全一样（开发集也要列出 heldout）：文件不同，词频统计就不同。
+library:
+  - {name: papers, source: data/real/papers}
+  - {name: mixed, builder: eval.retrieval_mixed}
+  - {name: heldout, builder: eval.retrieval_mixed_heldout}
+  # - {name: heldout_papers, source: data/real/heldout_papers}
+
+minimums: {front_pdf: 15, late_pdf: 15, nonpdf: 15, no_relevant: 8}
+
+relevance_rules: |
+  填写本集的相关性范围规则（写题之前先写好）：主题查找认哪些文件、细节查找认哪些文件、你自己的材料和论文怎么区分。
+
+queries: []
+# 示例（注释里的格式参考，不是真题）：
+#  - id: H001
+#    cluster: H001
+#    kind: english
+#    query: <查询原文>
+#    intent: <信息需求，写明范围>
+#    relevant:
+#      - path: papers/<文件名>.pdf
+#        page: 1
+#        evidence: <该页上的原文片段>
+#    patterns: [<关键词>, <同义词>]
+#  - id: H002
+#    cluster: H001            # 与 H001 是同一个需求的另一种问法
+#    kind: paraphrase
+#    query: <换一种说法>
+#    intent: <同 H001>
+#    relevant: <与 H001 相同>
+#    patterns: [<关键词>]
+#  - id: H040
+#    cluster: H040
+#    kind: no_relevant
+#    query: <查询原文>
+#    intent: <信息需求>
+#    relevant: []
+#    patterns: [<关键词>, <同义词>]
+#    reviewed: true            # 用 scan 查过全库，确认没有相关文件
+
+relabel_audit: []
+# 示例：
+#  - {question: H001, path: mixed/笔记/读书笔记.md, page: 1, decision: 不相关, reason: 只提到同一术语，不是研究目标}
