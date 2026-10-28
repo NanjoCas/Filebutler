@@ -202,11 +202,9 @@ def tree_snapshot(folder, src, moved_out, action, consent):
         raise ValueError(f"{src} 含特殊对象 {_names(t['special'])}（隐藏文件夹、符号链接或应用包），"
                          '可能是代码仓库或程序目录，工具不会回收此文件夹。请如实告诉用户由用户自行处理；其余操作可以照常进行')
     moving = {p for p in t['visible'] if f'{src}/{p}' in moved_out}
-    left = [p for p in t['visible'] if p not in moving]
-    if left:
-        raise ValueError(not_empty(folder, src) if not moving else
-                         f"{src} 还有 {len(left)} 个可见文件不在本计划的移动中（如 {_names(left)}），回收它会连带删除这些文件；"
-                         '如需回收，先在计划中移走它们，或只回收其中的空子文件夹')
+    # User decision A2 (2026-10-29): visible files the plan does not move out are recycled
+    # with the folder; each is recorded by digest and listed on the confirmation card.
+    left = {p: digest(folder / p) for p in t['visible'] if p not in moving}
     if t['metadata'] and not action.get('include_metadata'):
         raise ValueError(f"{src} 含系统元数据文件 {_names(t['metadata'])}（macOS/Windows 自动生成，列表工具不显示）。"
                          '若要连同回收，在这条 trash 动作中设置 include_metadata=true，确认卡片会把它们列给用户')
@@ -228,7 +226,7 @@ def tree_snapshot(folder, src, moved_out, action, consent):
     elif action.get('include_hidden'):
         raise ValueError(f'{src} 没有需要 include_hidden 的隐藏文件')
     return dict(kind='directory_tree', stat=signature(folder), sha256=None, moved_out=sorted(moving),
-                dirs=t['dirs'], files={**t['metadata'], **t['hidden']},
+                dirs=t['dirs'], files={**t['metadata'], **t['hidden']}, visible=left,
                 metadata=sorted(t['metadata']), hidden=sorted(t['hidden']), notes=t['notes'],
                 sensitive={rel: dict(name_rule=r['name_rule'], findings=r['findings']) for rel, r in sensitive.items()})
 
@@ -248,7 +246,11 @@ def _tree_same(path, expected, pending):
     if not path.is_dir() or path.is_symlink(): return False
     t = scan_tree(path)
     if t['special'] or t['busy'] or not set(t['dirs']) <= set(expected['dirs']): return False
-    if not set(t['visible']) <= (set(expected['moved_out']) if pending else set()): return False
+    # Files recycled with the folder (A2) must be exactly as confirmed; snapshots made
+    # before A2 have none, so nothing visible may be left in them.
+    kept = expected.get('visible') or {}
+    if not set(t['visible']) <= set(kept) | (set(expected['moved_out']) if pending else set()): return False
+    if any(rel not in t['visible'] or digest(path / rel) != sha for rel, sha in kept.items()): return False
     files = {**t['metadata'], **t['hidden']}
     for rel, sha in expected['files'].items():
         if rel in expected['metadata'] and rel not in files: continue  # Finder may remove its own files
@@ -447,6 +449,9 @@ def prepare(runtime, args):
     steps = [s for s in steps if not (s['effect'] == 'trash' and any(
         Path(s['source']) != f and Path(s['source']).is_relative_to(f) for f in folders))]
     steps.sort(key=lambda s: s['effect'] == 'trash' and s['snapshot']['kind'] == 'directory_tree')
+    recycled = sum(len(s['snapshot'].get('visible') or {}) for s in steps if s['effect'] == 'trash' and s['snapshot'])
+    if recycled > 500:
+        raise ValueError(f'整体回收的文件夹里共有 {recycled} 个文件，超过单个计划 500 个的上限；请分几次回收，或缩小范围')
     for row in steps:
         if row['snapshot']['kind'] == 'folder':
             row['snapshot'] = folder_snapshot(sb, row['source'], steps)
@@ -1058,6 +1063,11 @@ def _confirm(runtime, plan, remaining, confirmer):
              for s in remaining if s['snapshot'] and s['snapshot']['kind'] == 'folder']
     if whole:
         review['folders'] = whole
+    contents = [dict(folder=s['source'], files=sorted(s['snapshot']['visible'])) for s in remaining
+                if s['effect'] == 'trash' and s['snapshot'] and s['snapshot']['kind'] == 'directory_tree'
+                and s['snapshot'].get('visible')]
+    if contents:
+        review['tree_files'] = contents
     trees = [s for s in remaining if s['effect'] == 'trash' and s['snapshot'] and s['snapshot']['kind'] == 'directory_tree'
              and (s['snapshot']['metadata'] or s['snapshot']['hidden'])]
     if trees:
@@ -1084,6 +1094,7 @@ def manifest_key(plan, steps):
     """
     rows = sorted([s['effect'], s['source'], None if s['effect'] == 'trash' else s['destination'],
                    sorted((s['snapshot'] or {}).get('hidden') or []), sorted((s['snapshot'] or {}).get('metadata') or [])]
+                  + ([sorted(s['snapshot']['visible'])] if (s['snapshot'] or {}).get('visible') else [])
                   for s in steps)
     overwrites = sorted(o['target'] for o in plan['payload'].get('overwrites', []))
     return hashlib.sha256(json.dumps([rows, overwrites], ensure_ascii=False).encode()).hexdigest()[:24]

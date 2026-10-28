@@ -112,7 +112,16 @@ def _headline(tool, args):
         elif renames:
             parts.append(f"改名 {len(renames)} {unit(renames)}")
         if trashes:
-            parts.append(f"把 {len(trashes)} {unit(trashes)}移入回收区")
+            # A folder recycled whole (A2) is named with the files it takes, never counted as one file.
+            inside = {r["folder"]: len(r["files"]) for r in args.get("tree_files") or []}
+            held = sum(inside.values())
+            if len(trashes) == 1:
+                name = Path(trashes[0]["source"]).name
+                count = inside.get(trashes[0]["source"])
+                parts.append(f"把「{name}」" + (f"文件夹（含 {count} 个文件）" if count else "") + "移入回收区")
+            else:
+                parts.append(f"把 {len(trashes)} {'项' if inside else unit(trashes)}移入回收区"
+                             + (f"（其中文件夹共含 {held} 个文件）" if held else ""))
         return "，".join(parts) + "（可撤销）" if parts else "新建文件夹"
     if tool == "task_edit":
         return f"修改任务要求（{len(args['changes'])} 处）"
@@ -183,7 +192,10 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
             item=describe_path(sb,path,planned=step['effect']=='create')
             if step['effect']=='trash': item['disposition']='trash'
             else: item['destination']=step['destination']
-            groups.append(dict(key=f'action_{index}',title=names[step['effect']],tone='neutral',items=[item]))
+            # A folder recycled whole (A2) lists every file it takes with it under the same step.
+            inside=next((r['files'] for r in args.get('tree_files') or [] if r['folder']==step['source']),[])
+            members=[dict(describe_path(sb,f"{step['source']}/{rel}"),disposition='trash') for rel in inside]
+            groups.append(dict(key=f'action_{index}',title=names[step['effect']],tone='neutral',items=[item]+members))
             changed.append(item)
         title,label,tone='确认执行文件计划','确认执行此计划','neutral'
         summary=f"将执行 {len(changed)} 项操作。"
@@ -194,6 +206,10 @@ def _build_confirmation(request: dict, sb: Sandbox) -> dict:
         if suffixes:
             notes.append('⚠ 扩展名会改变，改后可能无法用原来的程序打开：'
                          + '；'.join(f"{a} → {b}" for a, b in suffixes[:5]) + ('等' if len(suffixes) > 5 else '') + '。')
+        for row in args.get('tree_files') or []:
+            sample = '、'.join(row['files'][:5]) + ('等' if len(row['files']) > 5 else '')
+            notes.append(f"⚠ 整体回收文件夹 {row['folder']}：其中 {len(row['files'])} 个文件（{sample}）一起移入回收区，"
+                         "完整清单见详情（可撤销）。")
         for row in args.get('hidden_contents') or []:
             if row['metadata']:
                 notes.append(f"回收 {row['folder']} 时，将连同系统生成的文件一起移入回收区："

@@ -112,14 +112,17 @@ def validate_operations(runtime, operations):
                 # Legacy rows with unknown attribution count conservatively.
                 prior = [row for row in prior if not row.get('goal_ids') or applies(constraint, row['goal_ids'])]
                 counted = [row for row in prior if ('create' if row['op'] == 'make_dir' else row['op']) in rule['effects']]
-                if len(counted) + len(selected) > rule['limit']:
+                # A folder recycled whole counts the files it takes with it (A2), at least one.
+                weight = lambda o: max(1, sum(m is not o and sb.path(m['source'], exact=True).is_file()
+                                              for m in _members(sb, o))) if o['effect'] == 'trash' else 1
+                if len(counted) + sum(weight(o) for o in selected) > rule['limit']:
                     # State the count itself, so the model does not have to guess why.
                     sample = lambda rows: '、'.join(rows[:3]) + ('等' if len(rows) > 3 else '')
                     raise ValueError(
                         f"约束 {constraint['id']}：超过{rule.get('count_scope', 'run')}操作数量上限 {rule['limit']}"
                         f"（计入 {'/'.join(EFFECT_NAMES[e] for e in rule['effects'])}，不含其他操作）；"
                         f"此前已计 {len(counted)} 项" + (f"（{sample([r.get('src') or r.get('dst') for r in counted])}）" if counted else '')
-                        + f"，本次新增 {len(selected)} 项（{sample([o.get('source') or o.get('destination') for o in selected])}）。"
+                        + f"，本次新增 {sum(weight(o) for o in selected)} 项（{sample([o.get('source') or o.get('destination') for o in selected])}）。"
                         "若此上限来自用户要求，请向用户说明，不要自行放宽")
                 continue
             for op in selected:

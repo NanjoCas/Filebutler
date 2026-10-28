@@ -1015,16 +1015,17 @@ def test_metadata_needs_the_explicit_flag(tmp_path):
     assert (tmp_path / '文献/01/x.pdf').is_file() and not session.approvals
 
 
-def test_folder_with_files_the_plan_does_not_move_is_not_recycled(tmp_path):
+def test_folder_with_files_the_plan_does_not_move_is_recycled_with_them_listed(tmp_path):
+    # User decision A2 (2026-10-29): before, 文献/02/y.pdf blocked the trash ("还有 1 个可见文件
+    # 不在本计划的移动中") and the model split the work into several plans and cards.
     flatten_fixture(tmp_path)
     session = Session(tmp_path)
-    _, client = session.run('回收', [step(start(PARTS), call('prepare_file_plan', dict(description='回收', actions=[
-        dict(effect='move', source='文献/01/x.pdf', destination='.'),
-        dict(effect='trash', source='文献', include_metadata=True)])))])
-    text = client.calls('prepare_file_plan')[0]['text']
-    assert '还有 1 个可见文件不在本计划的移动中' in text and '02/y.pdf' in text
-    assert (tmp_path / '文献/01/x.pdf').is_file()
-
+    session.run('回收', [step(start(PARTS), call('prepare_file_plan', dict(description='回收', actions=[
+        dict(effect='move', source='文献/01/x.pdf', destination='.', part='organize_1'),
+        dict(effect='trash', source='文献', include_metadata=True, part='organize_2')]), alias=PLAN)), execute(), finish()])
+    assert [r['files'] for r in session.approvals[-1]['args']['tree_files']] == [['02/y.pdf']]
+    assert (tmp_path / 'x.pdf').is_file() and not (tmp_path / '文献').exists()
+    assert any(p.name == 'y.pdf' for p in (tmp_path / '.trash').rglob('*'))
 
 def secrets_fixture(root):
     (root / '项目').mkdir()

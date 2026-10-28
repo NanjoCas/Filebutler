@@ -191,6 +191,10 @@ SCRIPTS = {
             [('execute_file_plan', dict(plan_id='{plan_id}'))],
             [('finish_turn', dict(mode='task', summary='已移动 notes'))]],
     },
+    '验收9': {1: [[('start_task', dict(summary='回收测试', parts=[dict(id='trash', kind='organize', description='回收测试文件夹')])),
+                  ('prepare_file_plan', dict(description='回收测试', actions=[dict(effect='trash', source='测试')]))],
+                 [('execute_file_plan', dict(plan_id='{plan_id}'))],
+                 [('finish_turn', dict(mode='task', summary='已回收测试文件夹'))]]},
     '验收8': {1: [[('start_task', dict(summary='回答 notes 内容', parts=[dict(id='ans', kind='answer', description='说明 notes.md 写了什么')]))],
                  [('finish_turn', dict(mode='task', summary='notes.md 写的是测试内容。'))]]},
 }
@@ -448,11 +452,30 @@ def s8_shown_state_from_the_server(run):
                 nothing_changed=files() == before)
 
 
+def s9_recycle_a_non_empty_folder(run):
+    """User decision A2: one card recycles a non-empty folder and lists every file it takes."""
+    for rel in ('测试/a.txt', '测试/sub/b.md'):
+        (run.library / rel).parent.mkdir(parents=True, exist_ok=True); (run.library / rel).write_text(rel)
+    run.new_chat(); run.send('回收测试文件夹（验收9）')
+    run.page.wait("!document.querySelector('#confirmation').classList.contains('hidden')", what='confirmation card')
+    card = run.page.text('#confirmation')
+    run.page.click('#confirmation .confirmation-details summary')
+    details = run.page.text('#confirmation')
+    run.shot('s9_card')
+    run.page.click('.confirmation-approve')
+    run.wait_status('已完成')
+    trashed = sorted(p.name for p in (run.library / '.trash').rglob('*') if p.is_file())
+    return dict(one_card_names_the_count='其中 2 个文件' in card, details_list_each_file='a.txt' in details and 'b.md' in details,
+                folder_recycled=not (run.library / '测试').exists(), files_in_trash={'a.txt', 'b.md'} <= set(trashed),
+                one_plan=run.model.count('验收9') == 3)
+
+
 SCENARIOS = [('问题卡按钮与按选择处理', s1_choice_buttons), ('确认卡片等待时停止', s2_stop_at_card),
              ('允许后撤销', s3_approve_and_undo), ('运行中刷新页面', s4_reload_mid_run),
              ('断网发送后重试', s5_offline_retry), ('模型服务失败一次后重试', s6_model_error_retry),
              ('任务内文字回答与只读历史备注', s7_typed_answer_and_task_panel),
-             ('服务器给出的显示状态', s8_shown_state_from_the_server)]
+             ('服务器给出的显示状态', s8_shown_state_from_the_server),
+             ('一张卡片整体回收非空文件夹', s9_recycle_a_non_empty_folder)]
 
 
 def main(argv=None):

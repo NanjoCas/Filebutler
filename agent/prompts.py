@@ -122,7 +122,7 @@ TASK_GUIDANCE = (GUIDANCE_MARK + '\n'
                  + SENSITIVE_RULE +
                  '每个选项写 actions（move/rename/trash/read 及路径，不做操作写空列表），本地会在用户看到前检查，做不到的退回给你改写；'
                  '所选选项约束下一轮计划，不能超出；完成以所选范围为准，选项不含的部分不必做，也不写进 unfinished。\n'
-                 '回收文件夹：可见文件须由同一计划先移走（整个文件夹一次回收，不必逐个列子文件夹）；'
+                 '回收文件夹：整个文件夹一次回收，其中的文件会列在确认卡片上；'
                  '系统元数据（.DS_Store 等）在该 trash 动作设 include_metadata=true；其他隐藏文件（.env 等）先 finish_turn(mode=ask)'
                  '（subject 填文件夹，同意项 consent=include_hidden），下一轮在 include_hidden 逐个列出；'
                  '隐藏文件夹、符号链接、应用包不能回收，如实告诉用户。'
