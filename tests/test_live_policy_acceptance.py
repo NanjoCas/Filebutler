@@ -306,3 +306,22 @@ def test_choose_by_declared_actions_ignores_wording():
     assert choose(turn, dict(choices=[wait, two, keep]))[0] == 'A'
     trash = dict(keep, key='D', actions=keep['actions'] + [dict(effect='trash', path='资料')])
     assert choose(turn, dict(choices=[trash, two]))[0] == NO_MATCH
+
+
+def test_evaluation_keeps_reasoning_in_its_own_file_only(tmp_path, monkeypatch):
+    # User decision A4 (2026-10-29): evaluation runs keep the model's reasoning; the judged history does not.
+    from eval import dryrun
+    from eval.live_policy import load_config, ROOT
+    real = dryrun.ScriptedClient.create
+    def thinking(self, **kw):
+        response = real(self, **kw)
+        response.choices[0].message.reasoning_content = f'思考 {self.requests}'
+        return response
+    monkeypatch.setattr(dryrun.ScriptedClient, 'create', thinking)
+    cfg = load_config(ROOT / 'config.yaml'); cfg.update(llm_retries=0, task_session='dry-run-test', model='scripted-dry-run')
+    case = [c for c in SUITES['holdout'] if c['id'] == 'holdout_ambiguous_target']
+    run_suite(case, tmp_path / 'run', cfg, 1.0, scripted_llm_factory(SCRIPTS), 'dry_run')
+    turn = tmp_path / 'run/holdout_ambiguous_target'
+    saved = json.loads((turn / 'turn_1.reasoning.json').read_text())
+    assert saved and saved[0]['reasoning'] == '思考 1' and 'tools' in saved[0]
+    assert 'reasoning_content' not in (turn / 'turn_1.history.json').read_text()

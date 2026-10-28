@@ -423,10 +423,17 @@ def run_suite(cases, out, cfg, total_cap, llm_for, mode):
                     result = run_agent(instruction, llm, sb, turn_cfg, Console(file=io.StringIO()), artifacts=store, history=history,
                                        oplog=OpLog(sb, f"{case['id']}_{index+1}"), confirmer=Confirmer('always', ask_action=approve),
                                        trace_path=case_dir/f'turn_{index+1}.trace.jsonl', on_event=observe)
-                    data = asdict(result); history = data.pop('messages'); data.pop('added_messages'); last_report = data.get('report')
+                    data = asdict(result); history = data.pop('messages'); added = data.pop('added_messages'); last_report = data.get('report')
                     if chosen: data['chosen_by_eval'] = chosen
                     safe_history = [{k: v for k, v in m.items() if k != 'reasoning_content'} for m in history]
                     (case_dir/f'turn_{index+1}.history.json').write_text(json.dumps(safe_history, ensure_ascii=False, indent=2))
+                    # User decision A4 (2026-10-29): evaluation runs keep the model's reasoning for
+                    # diagnosis, in its own file and never in the judged history; daily runs add no log.
+                    reasoning = [dict(request=n, tools=[c['function']['name'] for c in m.get('tool_calls') or []],
+                                      reasoning=m['reasoning_content'])
+                                 for n, m in enumerate(x for x in added if x.get('role') == 'assistant') if m.get('reasoning_content')]
+                    if reasoning:
+                        (case_dir/f'turn_{index+1}.reasoning.json').write_text(json.dumps(reasoning, ensure_ascii=False, indent=2))
                     (case_dir/f'turn_{index+1}.events.json').write_text(json.dumps(events, ensure_ascii=False, indent=2))
                     (case_dir/f'turn_{index+1}.approvals.json').write_text(json.dumps(approvals, ensure_ascii=False, indent=2))
                     if not first_task and sb.runtime.current: first_task = sb.runtime.current['id']
