@@ -106,6 +106,11 @@ def test_broken_status_observer_does_not_interrupt_agent(files):
     assert result.final == "完成" and result.stop_reason == "answered"
 
 
+def shown_display(task):
+    from agent.states import display_of, project
+    return None if task['status'] in {'running', 'interrupted'} else display_of(project(None, dict(state=task['status']), task))
+
+
 def test_task_api_persists_revisions_and_isolates_conversations(ui, files):
     from agent.task import TaskStore, TaskSubmission
     a = ui.post('/api/conversations').json()['id']
@@ -115,6 +120,14 @@ def test_task_api_persists_revisions_and_isolates_conversations(ui, files):
                                       conditions=[dict(kind='manual_review')])])
     task = store.submit(spec, '核对笔记', 'run-a')
     assert ui.get(f'/api/conversations/{a}/tasks').json()['items'][0]['id'] == task['id']
+    # 2.0 P1-D: the shown state comes from the server (agent/states.display_of).
+    assert ui.get(f'/api/conversations/{a}/tasks').json()['items'][0].get('display') == shown_display(task)
+    import webapp
+    review = dict(status='needs_review', goals=[dict(id='g')], operations=[],
+                  checks=[dict(goal_id='g', passed=True, needs_review=True, conditions=[])])
+    assert webapp._shown(review)['display'] == 'answered'
+    assert webapp._shown(dict(review, operation_history=[dict(op='move')]))['display'] == 'confirm'
+    assert 'display' not in webapp._shown(dict(status='running'))
     assert ui.get(f'/api/conversations/{a}/tasks/{task["id"]}').json()['revision'] == 1
     assert ui.get(f'/api/conversations/{b}/tasks').json()['items'] == []
     assert ui.get(f'/api/conversations/{b}/tasks/{task["id"]}').status_code == 404

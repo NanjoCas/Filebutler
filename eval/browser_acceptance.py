@@ -191,6 +191,8 @@ SCRIPTS = {
             [('execute_file_plan', dict(plan_id='{plan_id}'))],
             [('finish_turn', dict(mode='task', summary='已移动 notes'))]],
     },
+    '验收8': {1: [[('start_task', dict(summary='回答 notes 内容', parts=[dict(id='ans', kind='answer', description='说明 notes.md 写了什么')]))],
+                 [('finish_turn', dict(mode='task', summary='notes.md 写的是测试内容。'))]]},
 }
 
 
@@ -427,10 +429,30 @@ def s7_typed_answer_and_task_panel(run):
                 three_model_requests_for_answer=run.model.count('验收7', turn=2) == 3)
 
 
+def s8_shown_state_from_the_server(run):
+    """2.0 P1-D: a read-only task under review reads as answered, in the status line and the task card alike."""
+    files = lambda: sorted(str(p.relative_to(run.library)) for p in run.library.rglob('*') if '.oplog' not in p.parts)
+    before = files()
+    run.new_chat(); run.send('notes.md 写了什么（验收8）')
+    run.wait_status('已回答', '请确认结果', '已完成', '没有完成')
+    status = run.status()
+    _, cid = run.conversation()
+    tasks = get(f'{run.app}/api/conversations/{cid}/tasks')['items']
+    run.page.click('#open-tasks')
+    run.page.wait("!!document.querySelector('.task-card')", what='task panel')
+    card = run.page.text('.task-card h3').strip()
+    run.shot('s8_answered_task')
+    run.page.click('#task-editor-close')
+    return dict(status_answered=status == '已回答', task_under_review=len(tasks) == 1 and tasks[0]['status'] == 'needs_review',
+                server_sends_display=len(tasks) == 1 and tasks[0].get('display') == 'answered', card_answered=card == '已回答',
+                nothing_changed=files() == before)
+
+
 SCENARIOS = [('问题卡按钮与按选择处理', s1_choice_buttons), ('确认卡片等待时停止', s2_stop_at_card),
              ('允许后撤销', s3_approve_and_undo), ('运行中刷新页面', s4_reload_mid_run),
              ('断网发送后重试', s5_offline_retry), ('模型服务失败一次后重试', s6_model_error_retry),
-             ('任务内文字回答与只读历史备注', s7_typed_answer_and_task_panel)]
+             ('任务内文字回答与只读历史备注', s7_typed_answer_and_task_panel),
+             ('服务器给出的显示状态', s8_shown_state_from_the_server)]
 
 
 def main(argv=None):

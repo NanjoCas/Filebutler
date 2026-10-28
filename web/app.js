@@ -392,7 +392,7 @@ function updateActivity(turn) {
   card.querySelector(".activity-stop").classList.toggle("hidden", !working || turn.id === "submitting");
   const activeStep = [...steps].reverse().find(step => step.state === "active" || step.state === "waiting");
   const toolCount = events.filter(event => event.type === "tool_end").length;
-  const title = working ? turn.status === "waiting_confirmation" ? "等待你的确认" : activeStep?.title || (turn.id === "submitting" ? "正在提交请求" : "Agent 正在准备") : turn.status === "failed" ? "本轮处理已中断" : turn.result?.stop_reason === "done" ? (devMode ? `处理完成 · ${toolCount || turn.result?.tool_calls || 0} 次工具调用` : "已完成") : outcomeLabel(turn.result);
+  const title = working ? turn.status === "waiting_confirmation" ? "等待你的确认" : activeStep?.title || (turn.id === "submitting" ? "正在提交请求" : "Agent 正在准备") : turn.status === "failed" ? "本轮处理已中断" : (turn.result?.report?.display || turn.result?.stop_reason) === "done" ? (devMode ? `处理完成 · ${toolCount || turn.result?.tool_calls || 0} 次工具调用` : "已完成") : outcomeLabel(turn.result);
   const heading = card.querySelector(".activity-title"); if (heading.textContent !== title) heading.textContent = title;
   const localStep = [...events].reverse().find(event => event.type === "local_step");
   const detail = working ? ["本地查重与清理", "本地批量执行分类计划"].includes(activeStep?.title) && localStep ? localStep.message : activeStep?.detail || "" : turn.error || "展开查看执行步骤";

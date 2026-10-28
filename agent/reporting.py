@@ -11,18 +11,6 @@ STATE_TEXT = {'completed':'已完成', 'partial':'尚未全部完成', 'needs_re
               'waiting_input':'等待补充信息', 'cancelled':'任务已取消'}
 
 
-def display_state(state, task=None):
-    """What the user should do next (user decision 2026-10-24); the task state itself
-    is unchanged. A read-only task's review is its cited fragments, so it reads as
-    answered; only a task that changed files asks the user to confirm.
-    Keys: done / answered / confirm / waiting / unfinished / cancelled."""
-    if state == 'needs_review':
-        changed = task and (task.get('operation_history') or task.get('operations'))
-        return 'confirm' if changed else 'answered'
-    return {'completed': 'done', 'answered': 'done', 'explained': 'done', 'waiting_input': 'waiting', 'by_choice': 'chosen',
-            'cancelled': 'cancelled', 'paused': 'cancelled'}.get(state, 'unfinished')
-
-
 def _clause(text, limit=180):
     """One clause without trailing punctuation, so joining never yields "。。"."""
     text = text.strip().rstrip('。.；;，, ')
@@ -125,7 +113,7 @@ def by_choice_report(chosen, reply=''):
     reply = (reply or '').strip()
     if reply and reply not in summary:
         summary += '\n\n' + (reply if len(reply) <= 1500 else reply[:1500] + '…')
-    return dict(version=1, state='answered', result='by_choice', display='chosen', summary=summary, sections=[])
+    return dict(version=1, state='answered', result='by_choice', summary=summary, sections=[])
 
 
 def stopped_report(task, operations, state):
@@ -206,7 +194,7 @@ def build_report(task, model_summary, records, reply=''):
         elif state=='partial': summary = incomplete_reason(task, bool(reply.strip()))
         elif state=='needs_review': summary = model_summary or ''
         else: summary = model_summary or STATE_TEXT.get(state,state)+'。'
-        # No file changed: the cited fragments are the review, so no "待核实" line (display_state).
+        # No file changed: the cited fragments are the review, so no "待核实" line (states.display_of).
         if state=='waiting_input' and task.get('allowed_effects') and not task.get('operation_history'):
             summary += '\n\n本轮未执行任何文件操作，等待你的决定。'
     # What the user asked to be told, stated by the model; local facts lead.
@@ -239,9 +227,10 @@ def build_report(task, model_summary, records, reply=''):
         summary+='\n\n有文件操作没有成功：'+reasons+'。'  # always in the answer
     if task['unresolved_questions']:
         sections.append(dict(title='历史疑问备注（只读）', markdown='；'.join(task['unresolved_questions'])))
-    report = dict(version=1, state=state, display=display_state(state, task), summary=summary, sections=sections)
+    # report['display'] is written beside report['states'] (agent/loop.py, states.display_of).
+    report = dict(version=1, state=state, summary=summary, sections=sections)
     if state == 'completed' and not operations and chosen_nothing(task):
-        report.update(result='by_choice', display='chosen')
+        report.update(result='by_choice')
     policy = task.get('policy', {}).get('output', {})
     if policy.get('format') == 'json':
         report['summary'] = json.dumps(dict(state=state, summary=summary, checks=task['checks'],

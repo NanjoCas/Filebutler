@@ -445,15 +445,24 @@ def _tasks(conversation_id):
     return TaskStore(Path(cfg.get('task_db') or root / '.oplog' / 'tasks.sqlite3'), root, conversation_id)
 
 
+def _shown(task):
+    """A task with the state the pages show (2.0 P1-D: agent/states.display_of). Running
+    and interrupted tasks have no shown state and keep their task status."""
+    from agent.states import display_of, project
+    if task.get('status') not in {'running', 'interrupted'}:
+        task = dict(task, display=display_of(project(None, dict(state=task.get('status')), task)))
+    return task
+
+
 @app.get('/api/conversations/{conversation_id}/tasks')
 def conversation_tasks(conversation_id: str):
-    return {'items': _tasks(conversation_id).recent(limit=20)}
+    return {'items': [_shown(t) for t in _tasks(conversation_id).recent(limit=20)]}
 
 
 @app.get('/api/conversations/{conversation_id}/tasks/{task_id}')
 def conversation_task(conversation_id: str, task_id: str):
     try:
-        return _tasks(conversation_id).get(task_id)
+        return _shown(_tasks(conversation_id).get(task_id))
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
 

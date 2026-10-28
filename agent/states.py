@@ -146,3 +146,24 @@ def project_run(runtime, stop_reason, report, error_type=None):
             except (ValueError, KeyError, AttributeError): pass
     return project(stop_reason, report, task, operations=getattr(runtime, 'operations', ()), plans=plans,
                    error_type=error_type)
+
+
+def display_of(states):
+    """What the user should do next, from the dimensions above only (2.0 P1-D): the one
+    place a run's shown state is decided. Replaces reporting.display_state; the
+    labels are the pages' (web/labels.js DISPLAY_LABELS).
+    Keys: done / answered / chosen / confirm / waiting / unfinished / cancelled."""
+    flow, result = states['flow_state'], states['result_state']
+    if flow == 'waiting_input': return 'waiting'
+    if flow == 'cancelled': return 'cancelled'
+    if flow == 'interrupted':
+        # A pause needs nothing from the user and shows like a cancel; a crash or a limit is unfinished.
+        return 'unfinished' if states['next_action'] in {'retry', 'recover'} else 'cancelled'
+    if states.get('business') == 'by_choice': return 'chosen'
+    if result in {'partial', 'no_result'}: return 'unfinished'
+    if states['next_action'] == 'confirm_result': return 'confirm'
+    # Under review with no file changed (else confirm_result above): the review is the
+    # task's cited fragments, so it reads as an answer, not a result to confirm.
+    if states['registered'] and states['verification']['semantic'] == 'unreviewed':
+        return 'answered'
+    return 'done'
