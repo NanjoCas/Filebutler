@@ -213,6 +213,10 @@ def test_case_and_suite_overall_and_exit_code():
     incomplete = judge.judge_suite(dict(case=spec, other=spec), dict(cases=[good], suite_complete=False), lambda cid: [[]])
     assert not incomplete['overall_accepted']
     assert judge.exit_code(ok, infrastructure_blocked=True) == 2
+    # 2.0 Q5: the exit code follows v4; a judgement saved before v4 had a suite verdict falls back to v3.
+    assert judge.exit_code(dict(overall_accepted=False, overall_accepted_v4=True)) == 0
+    assert judge.exit_code(dict(overall_accepted=True, overall_accepted_v4=False)) == 1
+    assert judge.exit_code(dict(overall_accepted=True)) == 0
 
 
 def test_every_case_declares_turn_expectations_and_holdout_is_separate():

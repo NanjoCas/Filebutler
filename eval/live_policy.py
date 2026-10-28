@@ -7,8 +7,9 @@ Suites: ``regression`` (8 debugged cases, default), ``holdout`` (eval/holdout_ca
 ``all``. ``--live`` calls the paid API; ``--dry-run`` uses the scripted fake model in
 eval/dryrun.py. Each turn is judged by eval/judge.py on files / status / answer /
 constraints (required) and efficiency (observation only). report.json keeps the
-legacy ``passed_local``; ``overall_accepted`` and judgement.json hold the new verdict.
-Exit code: 0 overall accepted, 1 not accepted or suite incomplete, 2 infrastructure.
+legacy ``passed_local``; ``overall_accepted`` (v3) and ``overall_accepted_v4`` and
+judgement.json hold the verdicts. Exit code (v4 since 2.0 Q5): 0 accepted, 1 not
+accepted or suite incomplete, 2 infrastructure.
 """
 import argparse
 import hashlib
@@ -377,6 +378,7 @@ def run_suite(cases, out, cfg, total_cap, llm_for, mode):
         if final:
             judgement = judged()
             report['overall_accepted'] = judgement['overall_accepted']
+            report['overall_accepted_v4'] = judgement['overall_accepted_v4']
             report['judgement_summary'] = {k: v for k, v in judgement.items() if k != 'cases'}
             for row, case in zip(report['cases'], judgement['cases']):
                 row['overall_accepted'] = case['overall_accepted']
@@ -504,7 +506,8 @@ def main(argv=None):
     else:
         llm_for = lambda case_id, index, turn_cfg: LLM(turn_cfg)
     report, judgement, code = run_suite(cases, args.out, cfg, args.total_cap, llm_for, 'dry_run' if args.dry_run else 'live')
-    print(json.dumps(dict(overall_accepted=judgement['overall_accepted'], cases_accepted=judgement['cases_accepted'],
+    print(json.dumps(dict(overall_accepted_v4=judgement['overall_accepted_v4'], cases_accepted_v4=judgement['cases_accepted_v4'],
+                          overall_accepted=judgement['overall_accepted'], cases_accepted=judgement['cases_accepted'],
                           cases_total=judgement['cases_total'], legacy_passed_local=report['passed_local'],
                           false_incomplete=judgement['false_incomplete'],
                           recovered_blockers_shown=judgement['recovered_blockers_shown'], exit_code=code),

@@ -106,7 +106,8 @@ def main(argv=None):
     ap.add_argument('--out', type=Path, required=True)
     args = ap.parse_args(argv)
     j = rejudge(args.source, args.out, CASE_SPECS)
-    lines = [f"overall_accepted={j['overall_accepted']} cases_accepted={j['cases_accepted']}/{j['cases_total']} "
+    lines = [f"overall_accepted_v4={j['overall_accepted_v4']} cases_accepted_v4={j['cases_accepted_v4']}/{j['cases_total']} "
+             f"overall_accepted={j['overall_accepted']} cases_accepted={j['cases_accepted']}/{j['cases_total']} "
              f"legacy_passed_local={j['legacy_passed_local']} legacy_exit_code={j['legacy']['legacy_exit_code']}"]
     for c in j['cases']:
         turns = ' '.join(f"t{t['turn']}:{t['status']}" + ''.join(f"[{n}:FAIL]" for n, d in t['dimensions'].items()

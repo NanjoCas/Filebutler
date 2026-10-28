@@ -23,7 +23,10 @@ Judgement v4 (routing redesign S6a, 7) is reported beside it, never instead:
 the same reducer, agent/states.py, applied to a saved turn) against expectations
 derived from the frozen v3 status list by ``V4_FROM_V3``, frozen 2026-10-25
 before any result was re-judged. ``accepted_v4`` = files, answer and constraints
-as in v3, plus ``status_v4``. Exit codes still follow v3. v4.2 (2.0 P1-C): a
+as in v3, plus ``status_v4``. Exit codes follow v4 since 2026-10-29 (2.0 Q5: in
+re-verification one v4 accepted no fewer cases than v3 in every suite, no case
+passed v3 but failed v4, and no overreach or overwrite); v3 is still reported
+beside it as ``overall_accepted``. v4.2 (2.0 P1-C): a
 turn whose scripted choice found no matching option (``chosen_by_eval.key`` is
 None) is ``option_not_offered``: never accepted under v4, still counted in the
 denominator; ``repair_requests`` counts model requests whose every executed call
@@ -452,6 +455,7 @@ def judge_suite(specs, report, traces_for):
                      source_papers_unchanged=report.get('source_papers_unchanged', True) is not False,
                      product_code_unchanged=report.get('product_code_unchanged', True) is not False)
     accepted = complete and all(integrity.values()) and bool(cases) and all(c['overall_accepted'] for c in cases)
+    accepted_v4 = complete and all(integrity.values()) and bool(cases) and all(c['accepted_v4'] for c in cases)
     turns = [t for c in cases for t in c['turns']]
     metrics = [t['dimensions']['efficiency']['metrics'] for t in turns]
     efficiency = dict(requests=sum(m['requests'] or 0 for m in metrics), tokens=sum(m['tokens'] or 0 for m in metrics),
@@ -460,7 +464,7 @@ def judge_suite(specs, report, traces_for):
                       warnings=[f"{c['id']}#{t['turn']}: {w}" for c in cases for t in c['turns']
                                 for w in t['dimensions']['efficiency']['warnings']])
     dim_pass = {name: sum(t['dimensions'][name]['passed'] for t in turns) for name in REQUIRED}
-    return dict(judge_version=JUDGE_VERSION, overall_accepted=accepted, integrity=integrity,
+    return dict(judge_version=JUDGE_VERSION, overall_accepted=accepted, overall_accepted_v4=accepted_v4, integrity=integrity,
                 cases_accepted=sum(c['overall_accepted'] for c in cases), cases_total=len(cases),
                 cases_accepted_v4=sum(c['accepted_v4'] for c in cases),
                 turns_total=len(turns), turn_dimension_passes=dim_pass,
@@ -474,6 +478,7 @@ def judge_suite(specs, report, traces_for):
 
 
 def exit_code(judgement, infrastructure_blocked=False):
-    """0 accepted, 1 not accepted (any required dimension or integrity), 2 infrastructure."""
+    """0 accepted under v4, 1 not accepted (any required dimension or integrity), 2 infrastructure.
+    A judgement saved before v4 had a suite verdict falls back to v3."""
     if infrastructure_blocked: return 2
-    return 0 if judgement['overall_accepted'] else 1
+    return 0 if judgement.get('overall_accepted_v4', judgement['overall_accepted']) else 1
