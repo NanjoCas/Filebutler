@@ -144,13 +144,3 @@ TOOL_DESCRIPTIONS = {
                    '"options":[{"label":"Archive","actions":[]},{"label":"不动","actions":[]}]}',
     'inspect_run': '只读解释当前会话运行结果；finish=true 直接结束，复合请求可 false。',
 }
-
-
-# 2.0 P2 experiments, off by default; appended to a tool result only when they apply,
-# so the static prompt does not grow (config: escalate_repeated_errors, finish_with_execute).
-ESCALATION = ('\n[连续出错] 同一错误已连续出现 {count} 次（{code}）。不要再用同样的方式重试：'
-              '先根据报错改变做法；仍不清楚就用 finish_turn(mode=ask) 向用户说明并提问，'
-              '做不到就用 finish_turn(mode=task) 如实收尾。')
-FINISH_WITH_EXECUTE = '\n可在同一响应中依次调用 execute_file_plan 和 finish_turn(mode=task)；执行未成功时本地会拒绝这次收尾。'
-EXECUTION_NOT_SEEN = ('ERROR: EXECUTION_NOT_SEEN：本响应中的 execute_file_plan 没有成功，这次收尾未执行。'
-                      '请先看执行结果，再决定重试、提问或如实收尾。')

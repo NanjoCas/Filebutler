@@ -301,7 +301,7 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 
 2.0 已完成并推送（`8eb0625`）。下表汇总当前仍开放的事项，【已见】表示在日志、trace 或代码中核实过。付费验证一律先报估算、取得授权。
 
-**A. 产品决定（先问用户，再动手）**
+**A. 产品决定**（用户 2026-10-29 决定：A1 选方案 1、A2 选方案 1、A3 暂不动、A4 只在评测运行里保存、A5 删除代码）
 
 1. **只问不改的任务两条路结果不同**【已见，影响最大】：直接回复记为 answered，登记了 answer 部分就一律 needs_review（`agent/intent.py` TEMPLATES）。`s5_explain_after_write_v2` 在第 45、47、48 轮全部 0/3 都是这个原因（organize 部分 done、answer 部分 review）；`target_conflict`、`ocr_sideways_photo` 历史上也因此失败。候选方案：answer 部分有证据或本地事实支撑、没有 notes 时记为完成。
 2. **整体回收非空文件夹**【已见】：现在要拆成多个计划（用户日志：4 张确认卡、¥0.10；第 45/46 轮 31 次失败里 9 次）。2.0 方案明确列为单独立项。
