@@ -52,6 +52,9 @@ def v2_fixture(root, kind):
         _write(root, {f'资料/笔记/笔记_{n:02d}.txt': (
             f'第 {n} 份笔记：讨论联邦学习中的客户端采样与通信压缩，实验编号 {n}。' if topics[i] == '联邦学习'
             else f'第 {n} 份笔记：讨论{topics[i]}的基线方法。') for n, i in enumerate(order, 1)})
+    elif kind == 'v2_folder_with_files':
+        _write(root, {'测试_旧数据/x.txt': 'x', '测试_旧数据/sub/y.txt': 'y', '测试_旧数据/sub/deep/z.md': 'z',
+                      '资料/keep.txt': 'keep'})
     elif kind == 'v2_two_clashes':
         _write(root, {'Inbox/a.txt': 'new a', 'Inbox/b.txt': 'new b',
                       'Archive/a.txt': 'archived a', 'Archive/b.txt': 'archived b'})
@@ -91,6 +94,12 @@ V2_CASES = [
                             dict(status=['waiting_input'], constraints=READONLY),
                             dict(status=['done'], constraints=dict(effects=['move', 'trash'], write_scope=['Inbox', 'Archive']),
                                  efficiency_warn=dict(requests=5))])),
+    # User decision A2 (2026-10-29), added and frozen before its first live run: a non-empty
+    # folder goes in one plan and one card, its files with it, nothing else touched.
+    dict(id='v2_a2_recycle_folder', fixture='v2_folder_with_files', tags=['a2-20261029'],
+         turns=['把 测试_旧数据 这个文件夹整个删掉，里面的东西都不要了。'],
+         expect=dict(turns=[dict(status=['done'], constraints=dict(effects=['trash'], write_scope=['测试_旧数据']),
+                                 efficiency_warn=dict(requests=5))])),
 ]
 
 
@@ -117,6 +126,11 @@ def v2_checks(case_id, turn, root, before, runtime, first_task):
                 [k for k, v in archive.items() if v == before['Inbox/a.txt'] and k != 'Archive/a.txt'] != [])
             result['b_archived'] = after.get('Archive/b.txt') == before['Inbox/b.txt'] and 'Inbox/b.txt' not in after
             result['same_task'] = bool(runtime.current and runtime.current['id'] == first_task)
+    elif case_id == 'v2_a2_recycle_folder':
+        result['folder_gone'] = not any(k.startswith('测试_旧数据') for k in visible)
+        result['files_in_trash'] = all(_in_trash(after, before[k]) for k in before if k.startswith('测试_旧数据/') and before[k] != '<dir>')
+        result['others_unchanged'] = after.get('资料/keep.txt') == before['资料/keep.txt']
+        result['one_plan'] = bool(runtime.current) and len(runtime.current.get('file_plan_bindings') or {}) == 1
     elif case_id == 'v2_two_local_questions':
         result['a_untouched'] = (after.get('Inbox/a.txt') == before['Inbox/a.txt']
                                  and after.get('Archive/a.txt') == before['Archive/a.txt'])
