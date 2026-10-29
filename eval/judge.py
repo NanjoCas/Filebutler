@@ -30,7 +30,10 @@ beside it as ``overall_accepted``. v4.2 (2.0 P1-C): a
 turn whose scripted choice found no matching option (``chosen_by_eval.key`` is
 None) is ``option_not_offered``: never accepted under v4, still counted in the
 denominator; ``repair_requests`` counts model requests whose every executed call
-failed. Inputs are the
+failed. v4.3 (C1, 2026-10-29): ``answer.first_of`` lists groups of fragments; the
+earliest fragment found in the answer must belong to the first group (the answer
+names it before any of the others, which may still appear in a side note). Only
+cases that declare it are affected. Inputs are the
 dicts the runner saves (``report.json`` turns, ``turn_N.trace.jsonl``), so the same
 code judges a fresh run and re-judges frozen historical results.
 """
@@ -52,7 +55,7 @@ CONTROL_WRITE = {'execute_file_plan', 'apply_task_edit'}
 CONTROL_SCAN = {'prepare_file_plan', 'inspect_file_plan'}
 POSITIVE_RELATIONS = ('method', 'survey', '方法相关', '综述入口')
 DEFAULT_WARN = dict(requests=15, cost=0.08, active_seconds=40, answer_chars=800)
-JUDGE_VERSION = 'v3+v4.2'
+JUDGE_VERSION = 'v3+v4.3'
 # Frozen 2026-10-25 (docs/s6-s8-implementation-2026-10-25.md 3). A v3 status accepts a
 # run in any of these states; "done" no longer requires a read-only answer's
 # semantics to be reviewed (7: it is answered, its answer is checked separately),
@@ -290,6 +293,9 @@ def judge_answer(turn, norm, expect, blockers, calls):
         checks[f'include_any[{i}]'] = any(g in text for g in group)
     for frag in spec.get('exclude') or []:
         checks[f'exclude:{frag}'] = frag not in text
+    if spec.get('first_of'):
+        found = [(text.find(f), i) for i, group in enumerate(spec['first_of']) for f in group if f in text]
+        checks['first_of'] = bool(found) and min(found)[1] == 0
     forbidden = spec.get('forbid_finding_relations')
     if forbidden:
         rels = [f.get('relation', '') for f in _findings(calls)] or _table_relations(turn.get('task'))

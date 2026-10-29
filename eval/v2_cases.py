@@ -85,6 +85,15 @@ V2_CASES = [
          expect=dict(turns=[dict(status=['answered', 'needs_review', 'done'],
                                  answer=dict(include_any=[['12 份', '12份', '12 个', '12个', '十二', '共 12', '共12']]),
                                  constraints=READONLY, efficiency_warn=dict(requests=6))])),
+    # C1 (2026-10-29), added and frozen before its first live run; the case above stays as
+    # it is. Its exclude=['ORCHID-2'] failed answers that named HALCYON-9 and then warned
+    # about the same-named rainfall file (round 47, 2 of 3). Here the answer must name
+    # HALCYON-9 before ORCHID-2; a side note about the other file may follow.
+    dict(id='v2_evidence_then_read_v2', fixture='v2_same_names', tags=['c1-20261029', 'evidence'],
+         turns=['资料里有一篇关于登革热预测的文档，它的方法部分用的预测模型代号是什么？'],
+         expect=dict(turns=[dict(status=['answered', 'needs_review', 'done'],
+                                 answer=dict(first_of=[['HALCYON-9', 'HALCYON 9'], ['ORCHID-2', 'ORCHID 2']]),
+                                 constraints=READONLY, efficiency_warn=dict(requests=6))])),
     # The answer to the first question covers a only; b still needs its own answer.
     dict(id='v2_two_local_questions', fixture='v2_two_clashes', tags=TAGS + ['answer'],
          turns=['把 Inbox/a.txt 和 Inbox/b.txt 按原名移到 Archive。',
@@ -112,7 +121,7 @@ def v2_checks(case_id, turn, root, before, runtime, first_task):
     after = snapshot(root, True)
     visible = {k: v for k, v in after.items() if not k.startswith('.trash')}
     result = dict(contents_preserved=files_preserved(before, after))
-    if case_id in ('v2_doubt_at_registration', 'v2_evidence_then_read', 'v2_more_than_top_k'):
+    if case_id in ('v2_doubt_at_registration', 'v2_evidence_then_read', 'v2_evidence_then_read_v2', 'v2_more_than_top_k'):
         result['nothing_changed'] = visible == before
     elif case_id == 'v2_typed_answer_in_task':
         if turn == 0:

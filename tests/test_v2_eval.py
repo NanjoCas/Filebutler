@@ -106,3 +106,25 @@ def test_a_plain_reply_takes_one_model_request_and_registers_nothing(tmp_path):
     result, client = session.run('你好', [step(call('finish_turn', dict(mode='reply', reply='你好。')))])
     assert result.stop_reason == 'answered' and client.requests == 1
     assert session.sb.runtime.current is None
+
+
+# C1: round 47's three answers to v2_evidence_then_read (excerpts, in order), and two wrong ones.
+R47 = ['是 **HALCYON-9**。……提醒一下：`资料/其他/` 下还有一个同名文件，那个是降雨预测，模型代号是 ORCHID-2，不是登革热那篇，别混了。',
+       '方法部分使用的预测模型代号是 **HALCYON-9**。另有一篇 资料/其他/预测研究_最终版.txt，是降雨预测主题，不是登革热，未采用。',
+       '它的方法部分写的预测模型代号是 **HALCYON-9**。另外提醒一下：同名文件内容是降雨预测，用的是 ORCHID-2，不是登革热那篇。']
+WRONG = ['方法部分用的预测模型代号是 ORCHID-2（另一篇同名文件写的是 HALCYON-9）。', '没有找到这篇文档。']
+
+
+def test_the_corrected_evidence_case_accepts_a_side_note_and_still_rejects_the_wrong_code():
+    from eval import judge
+    from eval.v2_cases import V2_CASES
+    spec = {c['id']: c['expect']['turns'][0] for c in V2_CASES}
+    norm = dict(klass='complete', task_status=None)
+
+    def passed(case_id, text):
+        checks, _ = judge.judge_answer(dict(final=text), norm, spec[case_id], [], [])
+        return all(checks.values())
+    assert [passed('v2_evidence_then_read', t) for t in R47] == [False, True, False]  # frozen case, unchanged
+    assert [passed('v2_evidence_then_read_v2', t) for t in R47] == [True, True, True]
+    assert [passed('v2_evidence_then_read_v2', t) for t in WRONG] == [False, False]
+    assert judge.JUDGE_VERSION == 'v3+v4.3'
