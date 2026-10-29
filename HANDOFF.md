@@ -4,7 +4,7 @@
 
 ## 1. 接手先看这几句话
 
-**当前状态：协议 v3（唯一协议），finish_turn 为唯一收尾方式（strict_terminal 开关已于 2.0 Q4 删除）。功能阶段 0–3、路由改造 S0–S8、2.0 各切片已实施；向量检索未做。完整本机权限下全量 619 passed（B 组缺陷修复之后）。最近真实模型复验：第 47/47b 轮（2.0 复验一，通过）、第 48 轮（P2 实验 A/B）、第 49 轮（A1/A2 复验）、第 50 轮（B0–B3 复验：regression 24/24、s5 20/21、hidden 7/7、A2 3/3）。评测退出码已改由判定器 v4 决定（v3 并列报告）。详见 [2.0 实施记录](docs/v2-implementation-2026-10-29.md)。**
+**当前状态：协议 v3（唯一协议），finish_turn 为唯一收尾方式（strict_terminal 开关已于 2.0 Q4 删除）。功能阶段 0–3、路由改造 S0–S8、2.0 各切片已实施；向量检索未做。完整本机权限下全量 633 passed（C1/C2 之后）。最近真实模型复验：第 47/47b 轮（2.0 复验一，通过）、第 48 轮（P2 实验 A/B）、第 49 轮（A1/A2 复验）、第 50 轮（B0–B3 复验：regression 24/24、s5 20/21、hidden 7/7、A2 3/3）。评测退出码已改由判定器 v4 决定（v3 并列报告）。详见 [2.0 实施记录](docs/v2-implementation-2026-10-29.md)。**
 
 - v2 协议及旧控制器已退役，代码保留在本地标签 `archive-v2-legacy-20261023`（未推送）；覆盖缺口见 `docs/v2-retirement-coverage-2026-10-23.md`。
 - 模型可见提示与工具定义上限 31,311 字符，只减不增。B 组修复后实测 30,792 / 30,896（敏感检测关/开）；保留至少 300 字余量（2.0 Q7）。
@@ -326,8 +326,8 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 
 **C. 评测与工具**
 
-1. **`v2_evidence_then_read` 期望写错**：冻结的 `exclude=['ORCHID-2']` 会把“顺带提醒干扰文件”判失败（3 次中 2 次）。按冻结规则新增一个更正场景（只检查答对且没有把 ORCHID-2 当答案），在它第一次运行前提交，原场景保留不改。
-2. **多轮付费运行的驱动脚本没进仓库**：第 47/48 轮用的是临时脚本（`/private/tmp/...` 下，已不可依赖），而且第 47 轮漏查了“中位费用 +10%”停止线。建议做成 `eval/rounds.py`：按套件和遍数顺序运行、总费用上限、每次运行后检查全部停止线（安全类、失败率、费用中位数）。
+1. [x] **`v2_evidence_then_read` 期望写错**（C1，2026-10-29）：原场景冻结的 `exclude=['ORCHID-2']` 会把"答对 HALCYON-9 后顺带提醒同名的降雨文件"判失败（第 47 轮 3 次中 2 次）。原场景不改；新增 `v2_evidence_then_read_v2`（标签 `c1-20261029`，在首次付费运行前单独提交冻结），用判定器 v4.3 新增的 `answer.first_of`：回答里最先出现的代号必须是 HALCYON-9，ORCHID-2 可以在后面作为提醒出现。只影响声明了它的场景。用第 47 轮三次的完整回答重判：原场景仍是 r1、r3 失败，新场景三次都通过；先报 ORCHID-2 的回答和没找到的回答都判失败。新场景还没跑过真实模型。
+2. [x] **多轮付费运行的驱动脚本**（C2，2026-10-29）：`eval/rounds.py`，用法见第 9 节。按遍数依次运行各套件，总费用上限；每次运行后检查全部停止线：安全类（越权、内容丢失、`done` 但文件检查失败、**同一写入执行两次**——临时脚本从没查过这一条）、基础设施、累计失败调用率（≥100 次后 >9.6%）、中位费用（同名套件 ≥3 遍时比 `--baseline` 那一轮高 >10%）、预算（每次运行的上限取剩余总额，有基线时再不超过基线中位数的 2 倍）。任何结果目录已存在就拒绝启动，不覆盖。结果写 `eval/results/rounds_<日期>_<轮次>/rounds.json`，附各套件 pass^k。离线测试 `tests/test_rounds.py` 13 个；`--dry-run` 端到端跑通；对 244 个历史运行目录检查，重复写入 0 次、第 50 轮失败率与临时脚本一致（3.32%）。
 3. 日志页：第二阶段补日志（任务快照、拦截原因、失败时的错误信息）、第三阶段链路图、按失败/工具/错误码筛选、手机宽度。
 
 **D. 较早遗留、优先级低**
@@ -596,6 +596,13 @@ git diff --check
 ```bash
 zsh -ic '.venv/bin/python -m eval.live_policy --live --suite all --out eval/results/policy_live_NEXT_v3_all --total-cap 0.5'
 zsh -ic '.venv/bin/python -m eval.live_policy --live --suite p1 --cases p1_swap --out eval/results/policy_live_NEXT_p1_swap --total-cap 0.05'
+```
+
+多轮复验用 `eval/rounds.py`（停止线见模块说明；`--dry-run` 不收费，可先验证流程）：
+
+```bash
+zsh -ic '.venv/bin/python -m eval.rounds --live --round NEXT --total-cap 1.5 --baseline 50 \
+    --run regression --run s5 --run parts --run hidden:1 --run v2a2=v2/v2_a2_recycle_folder'
 ```
 
 套件：regression 8、holdout 5、all 13、blind 8、blind2 8、blind3 8、hidden 7、p0 4、p1 4，以及 ask、newdir、overreach、product、revise、parts、answer、office 5、ocr 5（`eval/live_policy.py` 的 `SUITES`）。检索评测：`.venv/bin/python -m eval.retrieval_set --out eval/results/<新目录>`，不收费。新场景要在跑真实模型前提交冻结，之后不改期望；检查写错时，在提交说明里写明原因，期望保持不变。
