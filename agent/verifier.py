@@ -93,6 +93,12 @@ def verify_bound_plans(task, goal_id, condition, sb):
             checked += 1
             continue
         mine = _goal_steps(plan, goal_id)
+        empty = (plan['payload'].get('empty_parts') or {}).get(goal_id)
+        if empty and not mine:
+            ok, detail = verify_plan(dict(plan, payload=dict(empty_selection=empty)), sb)
+            if not ok: return False, detail
+            checked += 1
+            continue
         if not mine: continue
         if plan.get('inflight') in mine:
             return False, f"计划 {pid} 的一项操作中断，结果不明：{plan['inflight']}"

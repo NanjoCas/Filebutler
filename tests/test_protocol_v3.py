@@ -350,6 +350,33 @@ def test_only_the_named_part_is_completed_by_its_plan(tmp_path):
     assert checks == {'g1': True, 'g2': False} and result.runtime['task_status'] != 'completed'
 
 
+def test_a_corrected_goal_id_is_not_a_reason_in_the_answer(tmp_path):
+    # Round 47 r1 s5_explain_after_write_v2: goal_ids=['1'] was rejected, the same plan with
+    # the right ID ran and verified, yet the answer still said "没能完成：goal_ids 引用了…：1".
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = session.run('归档 a，并把 b 改名为 c.txt', [
+        step(start(TWO_ORGANIZE), call('prepare_file_plan', dict(description='归档 a', actions=ARCHIVE_A, goal_ids=['1']))),
+        step(call('prepare_file_plan', dict(description='归档 a', actions=ARCHIVE_A, goal_ids=['g1']), alias=PLAN)),
+        execute(), finish()])
+    assert [t for t, _ in errors(client)] == ['prepare_file_plan']
+    task = session.sb.runtime.store.get(session.ids[TASK])
+    assert [b['status'] for b in task['blockers']] == ['resolved']
+    assert '不存在的目标' not in result.final
+
+
+def test_a_rejected_plan_for_a_real_goal_stays_open_after_another_goal_succeeds(tmp_path):
+    files_fixture(tmp_path)
+    session = Session(tmp_path)
+    _, client = session.run('归档 a，并把 b 改名为 c.txt', [
+        step(start(TWO_ORGANIZE), call('prepare_file_plan', dict(description='改名 b', goal_ids=['g2'], actions=[
+            dict(effect='rename', source='Inbox/missing.txt', destination='Inbox/c.txt')]))),
+        step(call('prepare_file_plan', dict(description='归档 a', actions=ARCHIVE_A, goal_ids=['g1']), alias=PLAN)),
+        execute(), finish()])
+    task = session.sb.runtime.store.get(session.ids[TASK])
+    assert [b['status'] for b in task['blockers']] == ['open']
+
+
 ARCHIVE_AND_RENAME = [dict(effect='move', source='Inbox/a.txt', destination='Archive', part='g1'),
                       dict(effect='rename', source='Inbox/b.txt', destination='Inbox/c.txt', part='g2')]
 
@@ -1234,6 +1261,23 @@ def test_part_with_nothing_to_do_is_proved_by_an_empty_selection(tmp_path):
     assert not (tmp_path / '文献').exists()
     assert result.stop_reason == 'done' and result.runtime['task_status'] == 'completed'
     assert result.final.startswith('已移入回收区 1 个文件夹') and '补充原因' not in result.final
+
+
+def test_an_empty_selection_beside_another_parts_action_proves_its_part(tmp_path):
+    # Round 49 hidden_already_empty: one plan held the empty selection (part flatten) and the
+    # folder trash (part rmdir); flatten had no step and ended "还没有执行".
+    already_empty_fixture(tmp_path)
+    session = Session(tmp_path)
+    result, client = session.run('把文献文件夹里的所有内容平铺到根目录并删除空文件夹', [
+        step(start(PARTS), call('prepare_file_plan', dict(
+            description='平铺无内容，回收空文件夹', goal_ids=['organize_1', 'organize_2'],
+            selection=dict(MOVE_ALL, part='organize_1'),
+            actions=[dict(effect='trash', source='文献', include_metadata=True, part='organize_2')]), alias=PLAN)),
+        execute(), finish()])
+    assert errors(client) == [], errors(client)
+    assert '部分 organize_1 按无需操作核验' in client.calls('prepare_file_plan')[0]['text']
+    assert not (tmp_path / '文献').exists()
+    assert result.runtime['task_status'] == 'completed' and '还没有执行' not in result.final
 
 
 def test_empty_selection_with_several_parts_needs_goal_ids(tmp_path):

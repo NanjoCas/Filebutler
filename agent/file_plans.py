@@ -353,6 +353,7 @@ def prepare(runtime, args):
             raise ValueError('此分类计划包含已在目标位置的文件，请先核对既有执行结果，不能重复执行')
         actions = [dict(effect='move', source=m['src'], destination=m['dst']) for m in moves]
 
+    sel = None
     if args.selection:
         sel = args.selection.model_dump()
         if sel['effect'] == 'move' and not sel['destination']:
@@ -367,6 +368,7 @@ def prepare(runtime, args):
                 tail = Path(src).relative_to(sel['path']) if sel['preserve_tree'] else Path(src).name
                 dst = (Path(sel['destination']) / tail).as_posix()
             actions.append(dict(effect=sel['effect'], source=src, destination=dst, part=sel['part']))
+        if files or packages: sel = None
     actions = _normalize(runtime, actions)
     chosen = getattr(runtime, 'chosen_option', None)
     # A question about some parts bounds only those parts' actions (routing redesign S3, 5.1).
@@ -498,6 +500,11 @@ def prepare(runtime, args):
                    description=args.description, steps=steps, classification=classification)
     if additions: payload['scope_additions'] = additions
     if fresh: payload['new_folders'] = fresh
+    # The selection picked nothing for a part none of the actions serve: the same
+    # local proof as a plan of an empty selection alone (verifier.verify_bound_plans).
+    if sel and sel['part'] in {g['id'] for g in task['goals']} and sel['part'] not in goal_ids:
+        payload['empty_parts'] = {sel['part']: sel}
+        payload['goal_ids'] = goal_ids = goal_ids + [sel['part']]
     if replaced:
         payload['overwrites'] = [dict(target=d, consent_source=next(v for c, v in agreed.items()
                                       if _key(d) == _key(runtime._resolve(c)))) for d in replaced]

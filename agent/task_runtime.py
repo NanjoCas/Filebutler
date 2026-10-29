@@ -457,6 +457,14 @@ class TaskRuntime(Asking, Finishing):
         obj = self._blocker_object(name, raw)
         resolve_blockers(self.current, lambda b: b.get('source') == name and b.get('object', '') in {'', obj},
                          '后续同类调用成功：'+name)
+        try: args = json.loads(raw)
+        except (json.JSONDecodeError, TypeError): args = {}
+        if isinstance(args, dict) and args.get('goal_ids') and not (args.get('plan_id') or args.get('task_id')):
+            # A rejection naming no goal of the task was a wrong ID, not a reason any goal
+            # is unmet; the same call succeeding with real IDs is its correction.
+            goals = {g['id'] for g in self.current.get('goals', [])}
+            resolve_blockers(self.current, lambda b: b.get('source') == name and b.get('object')
+                             and not set(b['object'].split(',')) & goals, '后续同类调用改用了正确的部分 ID')
         if name == 'execute_file_plan' and obj:
             # A plan's later success, or a later plan for the same goals, supersedes it.
             bindings = self.current.get('file_plan_bindings', {})
@@ -517,6 +525,8 @@ class TaskRuntime(Asking, Finishing):
                     else:
                         self.capture_output(name, file_plans.markdown(plan), plan['id'])
                         text = f"OK: plan_id={plan['id']}；已预检 {len(plan['payload']['steps'])} 项操作；尚未执行。下一步 execute_file_plan 仅需此 ID。"
+                        for part, sel in (plan['payload'].get('empty_parts') or {}).items():
+                            text += f"\n选择集 {sel['path']} 当前没有可处理的文件，执行后部分 {part} 按无需操作核验。"
                         hints = file_plans.conflicts(self, plan)
                         # User decision 2026-10-22: ask before creating a target folder the user
                         # did not ask for. A judgement for the model, so a reminder at the point

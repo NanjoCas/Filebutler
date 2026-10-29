@@ -77,7 +77,7 @@ class StartPart(Part):
 class Limits(StrictModel):
     """Only what the user said. Each field compiles to a local rule; none grants access."""
     no_effects: list[Effect] = Field(default_factory=list, description='用户禁止的操作')
-    keep_unchanged: list[str] = Field(default_factory=list, max_length=30, description='用户要求保持原样的路径')
+    keep_unchanged: list[str] = Field(default_factory=list, max_length=30, description='用户要求原地不动（不移动、改名、回收）的路径；只要求内容不变时不填，移动不改内容')
     only_within: list[str] = Field(default_factory=list, max_length=30, description='用户限定的操作范围')
     only_extensions: list[str] = Field(default_factory=list, max_length=30, description='只处理这些后缀')
     max_files: int | None = Field(None, ge=0, description='移动/改名/回收的对象总数上限，不含自动创建的目录')

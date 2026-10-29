@@ -54,7 +54,7 @@ FIELD_DOCS = {
         'Selection.preserve_tree': 'true 在目标目录下保留原来的子目录结构；false 全部放进目标目录这一层',
     },
     'start_task': {
-        'parts': '用户要求的各个部分；复合请求每个子目标一项，不要遗漏',
+        'parts': '用户要求做的各个部分；复合请求每个子目标一项，不要遗漏；保持原样、不要做的写进 limits',
         'limits': '用户明确说出的限制；用户没说就留空，不要替用户添加',
         'detail': '最终回复详略：concise 简要（默认）；用户要求详细说明时用 full',
         'StartPart.description': '用用户的话说明这部分要做什么，包括对象和目标位置',

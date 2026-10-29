@@ -60,7 +60,7 @@ class FinishTurn(StrictModel):
     scope: Scope | None = AskUser.model_fields['scope']
     drafts: list[Draft] = AskUser.model_fields['drafts']
     summary: str = FinishTask.model_fields['summary']
-    unfinished: list[Unfinished] = Field(default_factory=list, max_length=10, description='没有做到的部分，会标为未完成')
+    unfinished: list[Unfinished] = Field(default_factory=list, max_length=10, description='没有做到的部分（被拒绝、无法完成或决定不做），会标为未完成；查过没有结果是结论，不写这里')
     not_needed: list[Unfinished] = Field(default_factory=list, max_length=10, description='没有对象而无需操作的部分，结果待核实')
     input_resolution: InputResolution | None = Field(None, description='消息回应上一问、要暂停或取消时必填')
     evidence_bindings: list[EvidenceBinding] = Field(default_factory=list, max_length=10,

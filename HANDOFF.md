@@ -4,10 +4,10 @@
 
 ## 1. 接手先看这几句话
 
-**当前状态：协议 v3（唯一协议），finish_turn 为唯一收尾方式（strict_terminal 开关已于 2.0 Q4 删除）。功能阶段 0–3、路由改造 S0–S8、2.0 各切片已实施；向量检索未做。完整本机权限下全量 616 passed（A1/A2/A4/A5 之后）。最近真实模型复验：第 47/47b 轮（2.0 复验一，通过）、第 48 轮（P2 实验 A/B）、第 49 轮（A1/A2 复验：regression 8/8、s5 6/7、新 A2 场景 3/3）。评测退出码已改由判定器 v4 决定（v3 并列报告）。详见 [2.0 实施记录](docs/v2-implementation-2026-10-29.md)。**
+**当前状态：协议 v3（唯一协议），finish_turn 为唯一收尾方式（strict_terminal 开关已于 2.0 Q4 删除）。功能阶段 0–3、路由改造 S0–S8、2.0 各切片已实施；向量检索未做。完整本机权限下全量 619 passed（B 组缺陷修复之后）。最近真实模型复验：第 47/47b 轮（2.0 复验一，通过）、第 48 轮（P2 实验 A/B）、第 49 轮（A1/A2 复验：regression 8/8、s5 6/7、新 A2 场景 3/3）。评测退出码已改由判定器 v4 决定（v3 并列报告）。详见 [2.0 实施记录](docs/v2-implementation-2026-10-29.md)。**
 
 - v2 协议及旧控制器已退役，代码保留在本地标签 `archive-v2-legacy-20261023`（未推送）；覆盖缺口见 `docs/v2-retirement-coverage-2026-10-23.md`。
-- 模型可见提示与工具定义上限 31,311 字符，只减不增。A2 后实测 30,684 / 30,788（敏感检测关/开）；保留至少 300 字余量（2.0 Q7）。
+- 模型可见提示与工具定义上限 31,311 字符，只减不增。B 组修复后实测 30,792 / 30,896（敏感检测关/开）；保留至少 300 字余量（2.0 Q7）。
 - 当前方案、实施证据和历史材料统一从 [文档索引](docs/README.md) 进入。2.0 的全部提交已于 2026-10-29 推送到 GitHub（`8eb0625`）；标签 `archive-v2-legacy-20261023` 仍只在本地。待办以第 8 节开头的总表为准。
 - 2.0 新增的实验开关 `escalate_repeated_errors`、`finish_with_execute` 默认关闭；第 48 轮 A/B 中两者都没有起作用（A 0 次触发，B 模型 0 次采纳），保持关闭。
 - 新工具：`eval/pass_k.py`（多遍汇总 pass^1/pass^k、未覆盖、环境失败）、`eval/v2_cases.py`（套件 `v2`）、`docs/repro/v2-display-audit-2026-10-29.py`。
@@ -309,13 +309,13 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 4. [x] **已实施（`ae8b937`，A4）**：评测运行单独保存 `turn_N.reasoning.json`，日常运行不另存。原问题：**日志是否落盘 `reasoning_content`**：与第 10 节“不记录模型隐藏推理”冲突。
 5. [x] **已删除（`751c39b`，A5）**，可从 `061c33b` 恢复。原问题：**P2 两个实验开关的去留**：第 48 轮 A/B 都无效果（A 0 次触发，B 模型 0 次采纳），目前默认关闭保留。可选：删除代码，或改到错误更多的场景再测 A。
 
-**B. 已确认的缺陷，可直接修（离线，有测试即可）**
+**B. 已确认的缺陷**（2026-10-29 离线修完，全量 619 passed；B2、B3 改的是模型可见的字段说明，效果要等下一次付费复验确认）
 
-0. **没有对象的部分未声明无需操作记为 partial**【已见，第 49 轮 `hidden_already_empty`】：文件结果正确，模型把“平铺”登记为部分却没有用空选择集证明，也没写 not_needed。查字段说明或提示是否需要更明确。
-
-1. **已恢复的中途报错仍出现在最终回复的“没能完成”里**【已见，第 47 轮 r1 `s5_explain_after_write_v2`】：模型一次 `goal_ids` 写错后已纠正、任务完成，回复仍写“没能完成：goal_ids 引用了任务中不存在的目标：1”。判定器的 `no_recovered_blocker_in_answer` 没拦住，需查 reporting 的未完成原因来源。
-2. **模型把用户的限制登记成部分或多加限制**【已见，第 47 轮】：`root_only` 把“子目录保持原样”登记成一个 organize 部分（结果 partial）；`application_dimension` r1 自加“保持原文件不动”的限制，后来 revise 才执行。先做成离线回放，查是字段说明还是本地编译的问题，不按关键词打补丁。
-3. **查找任务登记了却没绑定证据记为 partial**【已见，第 47b 轮 `no_answer` r3】：结论正确但状态 partial；和第 1 节“下一步候选”里“`unfinished` 字段说明被压缩”一条可能同源。
+0. [x] **没有对象的部分记为 partial**（第 49 轮 `hidden_already_empty`）：原因不是模型没证明——它在**同一个计划**里写了选到 0 个文件的 selection（part=flatten）和回收文件夹的动作（part=rmdir）；空选择集证明只在计划没有动作时记录，flatten 没有步骤，记为"还没有执行"。修复：`file_plans.prepare` 在 selection 选到 0 个、它的部分没有任何步骤时记 `payload.empty_parts` 并把该部分绑定到计划；`verifier.verify_bound_plans` 对这个部分按空选择集核验（之后又出现文件即不成立）；预检回复写明"执行后部分 X 按无需操作核验"。测试 `test_an_empty_selection_beside_another_parts_action_proves_its_part`。
+1. [x] **已纠正的中途报错仍出现在"没能完成"里**（第 47 轮 r1 `s5_explain_after_write_v2`）：被拒的 prepare_file_plan 阻塞按对象 `goal_ids` 记为"1"，纠正后的调用对象是"organize_1"，对不上，阻塞一直是 open；判定器信任结构化状态所以也没拦。修复：`task_runtime._resolve_blockers` 在同一工具带 goal_ids 调用成功时，把对象里没有任何任务中真实部分 ID 的阻塞记为已解决（"后续同类调用改用了正确的部分 ID"）；对象是真实部分的阻塞不受影响。测试 `test_a_corrected_goal_id_is_not_a_reason_in_the_answer`、`test_a_rejected_plan_for_a_real_goal_stays_open_after_another_goal_succeeds`。
+2. [x] **把用户的限制登记成部分或多加限制**（第 47 轮）：按 trace 核对，本地编译都按模型的参数执行，问题在字段说明。`root_only` r1 把"子目录保持原样"另登记成 organize 部分（同时也写进了 keep_unchanged），没有计划所以 partial；`application_dimension` r1 把"内容不能改变"写成三个 PDF 的 keep_unchanged（本地含义是不准移动），被拒后 revise。修改：`parts` 说明加"保持原样、不要做的写进 limits"；`keep_unchanged` 说明改为"原地不动（不移动、改名、回收）的路径；只要求内容不变时不填，移动不改内容"。
+3. [x] **查找任务记为 partial**（第 47b 轮 `no_answer` r3）：和 r1/r2 唯一的区别是模型把"查过、没找到"写进了 `finish_turn.unfinished`（r1/r2 没写，needs_review 通过）；与证据绑定无关。修改：`finish_turn.unfinished` 说明恢复区分"被拒绝、无法完成或决定不做"，并写明"查过没有结果是结论，不写这里"。
+- 提示字数：30,792 / 30,896（敏感检测关/开），比第 49 轮多 108 字，余量 415。
 
 **C. 评测与工具**
 
