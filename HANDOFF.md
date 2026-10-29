@@ -4,13 +4,13 @@
 
 ## 1. 接手先看这几句话
 
-**当前状态：协议 v3（唯一协议），finish_turn 为唯一收尾方式（strict_terminal 开关已于 2.0 Q4 删除）。功能阶段 0–3、路由改造 S0–S8、2.0 各切片已实施；向量检索未做。完整本机权限下全量 651 passed（模糊请求离线部分之后）。最近真实模型复验：第 47/47b 轮（2.0 复验一，通过）、第 48 轮（P2 实验 A/B）、第 49 轮（A1/A2 复验）、第 50 轮（B0–B3 复验：regression 24/24、s5 20/21、hidden 7/7、A2 3/3）、第 51 轮（C1 新场景 3/3）、第 52 轮（A3 出处行 6/6 出现）、第 53 轮（模糊请求第一遍：amb 7/7、regression 8/8）。评测退出码已改由判定器 v4 决定（v3 并列报告）。详见 [2.0 实施记录](docs/v2-implementation-2026-10-29.md)。**
+**当前状态：协议 v3（唯一协议），finish_turn 为唯一收尾方式（strict_terminal 开关已于 2.0 Q4 删除）。功能阶段 0–3、路由改造 S0–S8、2.0 各切片已实施；向量检索未做。完整本机权限下全量 652 passed（模糊请求与 ask2 之后）。最近真实模型复验：第 47/47b 轮（2.0 复验一，通过）、第 48 轮（P2 实验 A/B）、第 49 轮（A1/A2 复验）、第 50 轮（B0–B3 复验：regression 24/24、s5 20/21、hidden 7/7、A2 3/3）、第 51 轮（C1 新场景 3/3）、第 52 轮（A3 出处行 6/6 出现）、第 53 轮（模糊请求第一遍：amb 7/7、regression 8/8）、第 54 轮（ask2 更正版两遍 8/8）。评测退出码已改由判定器 v4 决定（v3 并列报告）。详见 [2.0 实施记录](docs/v2-implementation-2026-10-29.md)。**
 
 - v2 协议及旧控制器已退役，代码保留在本地标签 `archive-v2-legacy-20261023`（未推送）；覆盖缺口见 `docs/v2-retirement-coverage-2026-10-23.md`。
-- 模型可见提示与工具定义上限 31,311 字符，只减不增。B 组修复后实测 30,792 / 30,896（敏感检测关/开）；保留至少 300 字余量（2.0 Q7）。
+- 模型可见提示与工具定义上限 31,311 字符，只减不增。模糊请求规则加入后实测 30,893 / 30,997（敏感检测关/开，余量 418 / 314）；保留至少 300 字余量（2.0 Q7），剩余空间已不多。
 - 当前方案、实施证据和历史材料统一从 [文档索引](docs/README.md) 进入。2.0 的全部提交已于 2026-10-29 推送到 GitHub（`8eb0625`）；标签 `archive-v2-legacy-20261023` 仍只在本地。待办以第 8 节开头的总表为准。
 - 2.0 新增的实验开关 `escalate_repeated_errors`、`finish_with_execute` 默认关闭；第 48 轮 A/B 中两者都没有起作用（A 0 次触发，B 模型 0 次采纳），保持关闭。
-- 新工具：`eval/pass_k.py`（多遍汇总 pass^1/pass^k、未覆盖、环境失败）、`eval/v2_cases.py`（套件 `v2`）、`docs/repro/v2-display-audit-2026-10-29.py`。
+- 新工具：`eval/pass_k.py`（多遍汇总 pass^1/pass^k、未覆盖、环境失败）、`eval/rounds.py`（多套件多遍付费复验，含全部停止线，用法见第 9 节）、`eval/v2_cases.py`（套件 `v2`）、`eval/amb_cases.py`（套件 `amb`）、`eval/ask_cases.py` 的 `ASK_CLR_V2`（套件 `ask2`）、`docs/repro/v2-display-audit-2026-10-29.py`。
 
 ### 实施历史（以下数字及旧接口名以条目日期为准）
 
@@ -290,6 +290,14 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 | `policy_live_20261024_37_r{1,2,3}_v3_office/`、`_37_v3_regression/` | 阶段 0、1（`9893ed0`）后，新场景 `--suite office`（docx、pptx 表格、xlsx 数值、html 截止时间、在 4 个未点名文件里找一个标记词）3 次 13/15：15 次答案全部正确，每次都用 read_file 直接读 Office 文件；找标记词时模型一次并行读完 4 个文件。2 次失败都在 `off_find_marker`：模型登记了 find 部分，用 report_findings 报告"提到"关系，按现有规则判为 needs_review（模型的判断待复核）；没有登记任务的那次是 answered。回归 8/8。费用 office ¥0.055/0.026/0.029，回归 ¥0.186，合计约 ¥0.30。新场景在改动之后编写，不是盲测 |
 | `policy_live_20261024_38_r{1,2,3}_v3_ocr/`、`_38_v3_regression/`、`_38b_v3_regression_rest/` | OCR（`2ee7b3f`）后，新场景 `--suite ocr`（扫描通知、截图、横着存的手机照片、3 张图里找一个词、靠检索才能找到的扫描论文）3 次 15/15。检索那组 3 次都经 search_content 的 OCR 找到了扫描论文（结果头部有"扫描页本地 OCR：1 页已识别"）。回归第一次运行遇到 APIConnectionError，只跑完 7 组，6/6 通过后中止；补跑剩下 2 组得到 1/2。失败的 `target_conflict` 是模型登记了 answer 部分，状态成了 needs_review，场景不接受这个状态。这是已知问题，历史上也失败过 2 次，回答和文件结果都正确，与 OCR 无关。回归合计 7/8。费用 ocr ¥0.067/0.038/0.039，回归 ¥0.158+0.033，合计约 ¥0.34。新场景在改动之后编写，不是盲测 |
 | `policy_live_20261024_39_v3_regression/`、`_39b_v3_regression_rest/`、`_39_v3_ocr/` | 全文 BM25（`3862f4f`）后的回归。回归第一次运行到第 3 组遇到 APIConnectionError；跑完的 2 组中 `root_only` 通过，`dedup_cleanup` 文件全对，但模型在 `start_task.limits.notes` 里复述了两条约束（"内容不同的文件保持原样"等），写了 notes 的任务按规则进人工复核，状态为 needs_review，冻结预期不接受（第 38 轮这组通过；没调用检索）。补跑剩下 6 组 6/6。回归合计 7/8。ocr 4/5：失败的 `ocr_sideways_photo` 回答正确，是 answer 部分成了 needs_review（已知问题）。新检索被真实调用 4 次，用法都正确：`ocr_find_image` 直接用 search_content 在 3 张图片里找到"蓝鲸计划"（原来只能逐张 read_file）；`ocr_search_scan` 找到扫描论文；`no_answer` 无命中后如实报告没有。费用 ¥0.081+0.153+0.043，合计约 ¥0.28（最新） |
+| `policy_live_20261029_47_r{1,2,3}_*`、`_47b_r{1,2,3}_regression` | 2.0 复验一：安全类 0，失败调用率 4.14%；第 47 轮 regression 中位费用 +21% 超线（P1-A 删掉的一句恢复，`ece5821`），第 47b 轮 −3.8%、23/24。详见 2.0 实施记录 |
+| `policy_live_20261029_48_*` | P2 两个实验开关 A/B，都无效果，随后删除（A5） |
+| `policy_live_20261029_49_r{1,2,3}_*` | A1/A2 复验：regression 24/24、s5 18/21、parts 6/6、A2 新场景 3/3、hidden 6/7；¥1.192 |
+| `policy_live_20261029_50_r{1,2,3}_*` | B0–B3 复验：regression 24/24、s5 20/21、parts 6/6、A2 3/3、hidden 7/7；A2 场景中位费用 +32.7% 触发停止线（单场景波动）；¥1.230 |
+| `policy_live_20261029_51_r{1,2,3}_v2e`、`rounds_20261029_51/` | C1 更正场景首次运行 3/3；`eval/rounds.py` 首次真实使用；¥0.049 |
+| `policy_live_20261029_52_r1_{ocr,v2read}`、`rounds_20261029_52/` | A3 出处行：6 次未引用的直接回复都带上；ocr 5/5；¥0.076 |
+| `policy_live_20261029_53_r1_*`、`_53_r2_amb`、`_53_r2_ask`（中途停止） | 模糊请求：amb 两遍 14/14、regression 8/8（−2.0%）、ask 12/16（说清楚的 4 组场景期望过时）；用户要求只跑第一遍；约 ¥0.59 |
+| `policy_live_20261029_54_r{1,2,3}_ask2`、`rounds_20261029_54/` | ask2 更正版：两遍 8/8，第 3 遍被费用上限截断、用户决定不补；¥0.100 |
 
 每个目录有 `manifest.json`（配置、输入、代码与原论文哈希）、`report.json`（含旧口径 `passed_local`）、`judgement.json`（新判定）和逐场景脱敏历史、trace、事件、确认记录。**总验收看 `overall_accepted` 和退出码，不看 `passed_local`。**
 
@@ -335,7 +343,7 @@ uvicorn webapp:app --host 127.0.0.1 --port 8000
 - [x] **资料库路径不存在**（2026-10-29）：原来 `Sandbox` 会建出任何不存在的路径（连上级目录），资料库被移走、改名或路径写错时界面显示一个空资料库；外接硬盘没插时文件列表返回 Internal Server Error。现在网页（`webapp._config`）和命令行（run/answer/search/dedup/undo）先过 `safety.sandbox.open_library`：存在就记入 `.filebutler-ui/libraries.json`；不存在且以前用过→不新建，说明"可能被移动、改名，或所在的硬盘没有连接"；从没用过（第一次使用）→只建最后一级，上级也不存在就不建并说明。网页返回 503，顶部显示"资料库不可用"并给出原因；服务照常启动。评测用的 `load_config` 和 `Sandbox` 本身不变（评测的临时资料库照旧自动建）。测试 `tests/test_library_path.py` 5 个；浏览器验收新增 s10，10/10。
 - [x] **加密 PDF 不读取，说清原因**（2026-10-29，用户决定不读取）：原来要密码的 PDF 读取时报 pypdf 的英文错误（AES："cryptography>=3.1 is required for AES algorithm"，像缺软件包；RC4："FileNotDecryptedError"）。现在 `fs_read._pdf_pages` 打开后先看 `needs_pass`，报"X 设有打开密码，FileButler 不读取加密 PDF 的内容；这个文件仍可移动、改名或回收"，所有读内容的路径（读取、检索、查重、敏感检测）都经过这里；`file_info` 显示"加密: 设有打开密码，不读取内容"。只有权限密码、不用密码能打开的照常读取。
 - [x] **压缩包不解压，检索算覆盖缺口**（2026-10-29，用户决定不读取）：读取原本就明确拒绝；检索覆盖行只记"不支持的格式=N"，没有"不能据此说没有其他相关文件"的提醒。现在压缩包（.zip/.rar/.7z/.tar/.gz/.tgz/.bz2/.xz）单独计数并写进覆盖缺口；视频、程序等其他不支持的文件不算缺口。
-- **模糊请求**（2026-10-29 用户决定，已离线实现，待付费复验）：现有 114 个场景里有 9 个歧义场景（ask 套件 8 个 + `blind_vague_criterion`），都期望先问，最后一次运行是 10-22 的旧协议；相对时间、"除了 X" 0 个。另发现**模型不知道今天的日期**（提示和上下文都没有）。用户决定：① 每轮上下文给出今天日期（`TaskRuntime.guidance`，在消息末尾，不动缓存前缀），有界限的相对时间（昨天、上周、上个月）换算成日期范围直接做、回复写明范围，"最近""新的"照旧问；② "除了 X"在 X 唯一时直接做（登记为限制），X 对得上多个时问；③ "整理一下"先只读查看再给具体方案问；④ 文件名打错且只有一个相近文件：只读问题直接用并说明，移动/改名/回收先问。提示 30,893 / 30,997（余量 314）。新套件 `amb`（7 个场景，`eval/amb_cases.py`，`b032e34` 冻结），检查在正确和错误回放上验证过（`tests/test_amb_cases.py`）。**第 53 轮（2026-10-29，用户要求只跑第一遍；驱动已进入第二遍时停下，约 ¥0.59）**：`amb` 7/7（第二遍也 7/7，共 14/14），行为都对：上个月换算成 2026-09-01～09-30 并只移上月 PDF；"最近"问并给出带日期的选项；"除了 keep.md"登记为 keep_unchanged 直接做；两份报告时问指哪份；"整理一下"先 list_dir/inventory_files 再给 4 个具体方案；reprot.txt 只读时直接读 report.txt 并说明，移动时先问。`blind_vague_criterion` 问（通过）；regression 8/8，费用比第 50 轮中位 −2.0%；`ask` 12/16：歧义 8/8，说清楚的对照 4/8——失败的 4 个（大于 1MB→Big、2024 年前→归档、PDF→文档、含"重要"→重要）都是目标文件夹不存在，模型按 10-22 用户规则"目标文件夹不存在先问"问了建在哪里；该规则在 `ask` 套件冻结并最后一次运行（10-22 20:13，第 24 轮）之后才定，属于场景期望过时，与 s5_explain_after_write 同类，冻结期望不改。新增修正版套件 `ask2`（4 个，目标文件夹预先建好，期望直接做；`1a2ef2a` 冻结）。**第 54 轮（¥0.100，上限 ¥0.10）**：第 1、2 遍 8/8，都直接做、没有提问；第 3 遍只跑了 `ask_clr_size_v2` 一个，在准备计划时到达费用上限被截断（cost_budget，不是模型失败），其余 3 个未运行。原估算 3 遍 ¥0.05 偏低，实际每遍约 ¥0.045。
+- **模糊请求**（2026-10-29 用户决定，已离线实现，待付费复验）：现有 114 个场景里有 9 个歧义场景（ask 套件 8 个 + `blind_vague_criterion`），都期望先问，最后一次运行是 10-22 的旧协议；相对时间、"除了 X" 0 个。另发现**模型不知道今天的日期**（提示和上下文都没有）。用户决定：① 每轮上下文给出今天日期（`TaskRuntime.guidance`，在消息末尾，不动缓存前缀），有界限的相对时间（昨天、上周、上个月）换算成日期范围直接做、回复写明范围，"最近""新的"照旧问；② "除了 X"在 X 唯一时直接做（登记为限制），X 对得上多个时问；③ "整理一下"先只读查看再给具体方案问；④ 文件名打错且只有一个相近文件：只读问题直接用并说明，移动/改名/回收先问。提示 30,893 / 30,997（余量 314）。新套件 `amb`（7 个场景，`eval/amb_cases.py`，`b032e34` 冻结），检查在正确和错误回放上验证过（`tests/test_amb_cases.py`）。**第 53 轮（2026-10-29，用户要求只跑第一遍；驱动已进入第二遍时停下，约 ¥0.59）**：`amb` 7/7（第二遍也 7/7，共 14/14），行为都对：上个月换算成 2026-09-01～09-30 并只移上月 PDF；"最近"问并给出带日期的选项；"除了 keep.md"登记为 keep_unchanged 直接做；两份报告时问指哪份；"整理一下"先 list_dir/inventory_files 再给 4 个具体方案；reprot.txt 只读时直接读 report.txt 并说明，移动时先问。`blind_vague_criterion` 问（通过）；regression 8/8，费用比第 50 轮中位 −2.0%；`ask` 12/16：歧义 8/8，说清楚的对照 4/8——失败的 4 个（大于 1MB→Big、2024 年前→归档、PDF→文档、含"重要"→重要）都是目标文件夹不存在，模型按 10-22 用户规则"目标文件夹不存在先问"问了建在哪里；该规则在 `ask` 套件冻结并最后一次运行（10-22 20:13，第 24 轮）之后才定，属于场景期望过时，与 s5_explain_after_write 同类，冻结期望不改。新增修正版套件 `ask2`（4 个，目标文件夹预先建好，期望直接做；`1a2ef2a` 冻结）。**第 54 轮（¥0.100，上限 ¥0.10）**：第 1、2 遍 8/8，都直接做、没有提问；第 3 遍只跑了 `ask_clr_size_v2` 一个，在准备计划时到达费用上限被截断（cost_budget，不是模型失败），其余 3 个未运行。原估算 3 遍 ¥0.05 偏低，实际每遍约 ¥0.045。用户决定第 3 遍不补（2026-10-29）。
 - needs_review 结果的真人复核抽样；实验 E1/E2/E3/E5；README 演示动图（需用户录屏）。
 - 持久化全文索引、清理被删对话残留记录、网页轮询改 SSE；向量检索（阶段 4，先测出 BM25 的语义召回短板再评估）。
 - 本地标签 `archive-v2-legacy-20261023` 未推送（需要时再推）。
@@ -608,7 +616,7 @@ zsh -ic '.venv/bin/python -m eval.rounds --live --round NEXT --total-cap 1.5 --b
     --run regression --run s5 --run parts --run hidden:1 --run v2a2=v2/v2_a2_recycle_folder'
 ```
 
-套件：regression 8、holdout 5、all 13、blind 8、blind2 8、blind3 8、hidden 7、p0 4、p1 4，以及 ask、newdir、overreach、product、revise、parts、answer、office 5、ocr 5（`eval/live_policy.py` 的 `SUITES`）。检索评测：`.venv/bin/python -m eval.retrieval_set --out eval/results/<新目录>`，不收费。新场景要在跑真实模型前提交冻结，之后不改期望；检查写错时，在提交说明里写明原因，期望保持不变。
+套件：regression 8、holdout 5、all 13、blind 8、blind2 8、blind3 8、hidden 7、p0 4、p1 4，以及 ask 16、newdir、overreach、product、revise、parts、answer、office 5、ocr 5、s5 7、v2 7、amb 7、ask2 4（`eval/live_policy.py` 的 `SUITES`）。检索评测：`.venv/bin/python -m eval.retrieval_set --out eval/results/<新目录>`，不收费。新场景要在跑真实模型前提交冻结，之后不改期望；检查写错时，在提交说明里写明原因，期望保持不变。
 
 评测设置了关闭自动重试，遇到网络中断整套会中止，只能用新目录重跑。总 cap 是按轮检查的软上限。复验期间冻结产品代码。
 
