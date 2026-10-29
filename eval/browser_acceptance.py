@@ -470,12 +470,31 @@ def s9_recycle_a_non_empty_folder(run):
                 one_plan=run.model.count('验收9') == 3)
 
 
+def s10_library_missing(run):
+    """D 1 (2026-10-29): a library moved away is reported on reload, not shown empty or recreated. Runs last."""
+    moved = run.library.with_name('library_moved')
+    run.library.rename(moved)
+    try:
+        run.page.reload()
+        run.page.wait("document.querySelector('#health').innerText.includes('资料库不可用')", what='library missing label')
+        error = run.page.text('#messages .error-card')
+        run.shot('s10_library_missing')
+        recreated = run.library.exists()
+    finally:
+        moved.rename(run.library)
+    run.page.reload()
+    run.page.wait("document.querySelector('#health').innerText.includes('已连接')", what='connected again')
+    return dict(says_library_missing=True, explains_moved='可能被移动、改名' in error, not_recreated=not recreated,
+                back_when_restored=True)
+
+
 SCENARIOS = [('问题卡按钮与按选择处理', s1_choice_buttons), ('确认卡片等待时停止', s2_stop_at_card),
              ('允许后撤销', s3_approve_and_undo), ('运行中刷新页面', s4_reload_mid_run),
              ('断网发送后重试', s5_offline_retry), ('模型服务失败一次后重试', s6_model_error_retry),
              ('任务内文字回答与只读历史备注', s7_typed_answer_and_task_panel),
              ('服务器给出的显示状态', s8_shown_state_from_the_server),
-             ('一张卡片整体回收非空文件夹', s9_recycle_a_non_empty_folder)]
+             ('一张卡片整体回收非空文件夹', s9_recycle_a_non_empty_folder),
+             ('资料库被移走时说明原因', s10_library_missing)]
 
 
 def main(argv=None):

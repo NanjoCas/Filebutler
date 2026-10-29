@@ -193,6 +193,12 @@ INDEX_REVISION = f"bm25-chunk{CHUNK}-extract1"
 STRATEGY = "bm25"
 
 
+# Archives may hold documents; their contents are never read (user decision 2026-10-29), so a
+# search over a folder with archives did not cover everything. Other unsupported files
+# (video, apps, disk images) are not documents and are not a gap.
+ARCHIVE_SUFFIXES = ('.zip', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2', '.xz')
+
+
 def coverage(index, scope, stats, hits, top_k, query, match='any'):
     """What one search covered (S7, 9): counted from each file's index state, not from
     this call's OCR delta, so pages left by an earlier search still count as pending.
@@ -210,6 +216,7 @@ def coverage(index, scope, stats, hits, top_k, query, match='any'):
                 enumeration_complete=stats.get("enumeration_complete", True),
                 indexed_files=count["indexed"], failed_files=count["failed"], empty_files=count["empty"],
                 unsupported_files=count["unsupported"], pending_ocr_units=pending, ocr_failed_units=ocr_failed,
+                archive_files=sum(s[1] == "unsupported" and rel.lower().endswith(ARCHIVE_SUFFIXES) for rel, s in states.items()),
                 extract_complete=not (count["failed"] or count["pending_ocr"] or ocr_failed),
                 matched_files=stats.get("matched", 0), returned_files=len(hits),
                 candidate_truncated=stats.get("matched", 0) > len(hits),
@@ -225,6 +232,7 @@ def coverage_line(c):
     if c["pending_ocr_units"]: gaps.append(f"{c['pending_ocr_units']} 个扫描页或图片尚未识别（再次检索会继续）")
     if c["ocr_failed_units"]: gaps.append(f"{c['ocr_failed_units']} 个扫描页或图片识别失败")
     if c["failed_files"]: gaps.append(f"{c['failed_files']} 个文件读取失败")
+    if c.get("archive_files"): gaps.append(f"{c['archive_files']} 个压缩包的内容没有检索（不解压）")
     if c["candidate_truncated"]: gaps.append(f"有词项重合 {c['matched_files']} 个、只返回 {c['returned_files']} 个")
     return ("覆盖缺口：" + "；".join(gaps) + "。不能据此说范围内没有其他相关文件") if gaps else ""
 

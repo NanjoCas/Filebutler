@@ -17,7 +17,7 @@ from typing import Literal
 
 import yaml
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -33,7 +33,7 @@ from agent.prompts import SYSTEM_PROMPT  # noqa: E402
 from rich.console import Console  # noqa: E402
 from safety.confirm import TIMED_OUT, Confirmer  # noqa: E402
 from safety.oplog import OpLog, undo  # noqa: E402
-from safety.sandbox import Sandbox, SandboxError, is_hidden  # noqa: E402
+from safety.sandbox import LibraryMissing, Sandbox, SandboxError, is_hidden, open_library  # noqa: E402
 from tools.fs_read import IMAGE_EXTS, TEXT_EXTS, _fmt_size  # noqa: E402
 from web_render import FileCatalog, WEB_PRESENTATION_GUIDANCE, render_markdown  # noqa: E402
 from web_confirm import build_confirmation  # noqa: E402
@@ -53,7 +53,8 @@ POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="filebutler")
 def _config() -> dict:
     path = HOME / "config.yaml"
     cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
-    cfg["sandbox"] = str((HOME / cfg["sandbox"]).resolve())
+    # A moved, renamed or unplugged library is reported, never silently recreated empty.
+    cfg["sandbox"] = str(open_library(HOME / cfg["sandbox"], STATE_DIR / "libraries.json"))
     return cfg
 
 
@@ -352,7 +353,10 @@ def _recover_outbox():
     yet started gets its web turn now and runs once."""
     from agent.interactions import Interactions, recover
     from agent.task import TaskStore
-    cfg = _config()
+    try:
+        cfg = _config()
+    except LibraryMissing:
+        return  # the requests wait for the library; the page says why
     root = Path(cfg['sandbox'])
     path = Path(cfg.get('task_db') or root / '.oplog' / 'tasks.sqlite3')
     if not path.exists():
@@ -376,6 +380,11 @@ def _recover_outbox():
         _start_turn(pending['session'], row, payload['content'],
                     dict(receipt_id=receipt['receipt_id'], request_id=receipt['request_id'],
                          run_request_id=pending['run_request_id'], answer_id=receipt['answer_id']))
+
+
+@app.exception_handler(LibraryMissing)
+def library_missing(request, exc):
+    return JSONResponse(status_code=503, content={"detail": str(exc), "library_missing": True})
 
 
 @app.get("/", response_class=HTMLResponse)

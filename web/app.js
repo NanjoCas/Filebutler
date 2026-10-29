@@ -775,5 +775,8 @@ for (const name of Object.keys(SIZE_VARS)) {
     // The log page links back with #c=<conversation id>.
     const wanted = new URLSearchParams(location.hash.slice(1)).get("c");
     if (items.length) await openConversation(items.find(item => item.id === wanted)?.id || items[0].id); else await newConversation();
-  } catch (err) { $("health").textContent = "本地服务连接失败"; showError(err.message); }
+  } catch (err) {
+    // 503: the service is up but the configured library is missing (moved, renamed, drive not connected).
+    $("health").textContent = err.status === 503 ? "资料库不可用" : "本地服务连接失败"; showError(err.message);
+  }
 })();

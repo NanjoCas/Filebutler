@@ -228,3 +228,21 @@ def test_text_on_a_later_page_is_found(tmp_path, monkeypatch):
     pdf(tmp_path / "later.pdf", ["", "", "reinforcement learning"])
     hit = PaperIndex().search(Sandbox(tmp_path), "reinforcement")[0][0]
     assert hit["page"] == 3
+
+
+# User decision 2026-10-29: archives are not unpacked, so a search over a folder with
+# archives is not complete; other unsupported files (video, apps) are not a gap.
+
+def test_archives_are_a_coverage_gap_and_other_unsupported_files_are_not(tmp_path):
+    import zipfile
+    sb = Sandbox(tmp_path)
+    (tmp_path / '资料').mkdir()
+    (tmp_path / '资料/notes.txt').write_text('federated learning notes')
+    (tmp_path / '资料/clip.mov').write_bytes(b'\0' * 16)
+    first = dispatch(sb, query='federated', path='资料', view='evidence')
+    assert '覆盖缺口' not in first and '不支持的格式=1' in first
+    with zipfile.ZipFile(tmp_path / '资料/papers.zip', 'w') as z:
+        z.writestr('inner/survey.txt', 'A survey of federated learning.')
+    second = dispatch(sb, query='federated', path='资料', view='evidence')
+    assert '覆盖缺口：1 个压缩包的内容没有检索（不解压）。不能据此说范围内没有其他相关文件' in second
+    assert '不支持的格式=2' in second

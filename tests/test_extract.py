@@ -138,3 +138,32 @@ def test_when_sensitive_checks_are_on_a_docx_is_checked_by_its_text(tmp_path):
     word(tmp_path / 'notes.docx', f'客户身份证 {id_number()}')
     assert '敏感文件' in read(library(tmp_path, sensitive_files=True), 'notes.docx')
     assert id_number() in read(library(tmp_path), 'notes.docx')
+
+
+# User decision 2026-10-29: a PDF that needs a password is not read; say so plainly.
+# Before: AES gave pypdf's "cryptography>=3.1 is required for AES algorithm", RC4
+# "FileNotDecryptedError", neither saying the file has a password.
+
+def pdf(path, **encryption):
+    import pymupdf
+    doc = pymupdf.open(); doc.new_page().insert_text((72, 72), 'Federated learning for hospital records.')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path, **encryption)
+
+
+@pytest.mark.parametrize('method', ['PDF_ENCRYPT_AES_256', 'PDF_ENCRYPT_RC4_128'])
+def test_a_pdf_that_needs_a_password_is_not_read_and_says_why(tmp_path, method):
+    import pymupdf
+    pdf(tmp_path / '资料/locked.pdf', encryption=getattr(pymupdf, method), user_pw='u1', owner_pw='o1')
+    sb = library(tmp_path)
+    text = read(sb, '资料/locked.pdf')
+    assert text.startswith('ERROR: locked.pdf 设有打开密码，FileButler 不读取加密 PDF 的内容')
+    assert 'cryptography' not in text and 'Decrypted' not in text
+    info = registry.dispatch('file_info', json.dumps({'path': '资料/locked.pdf'}), sb)
+    assert '加密: 设有打开密码，不读取内容' in info and '读取失败' not in info
+
+
+def test_an_owner_password_alone_does_not_stop_reading(tmp_path):
+    import pymupdf
+    pdf(tmp_path / '资料/owner.pdf', encryption=pymupdf.PDF_ENCRYPT_AES_256, owner_pw='o1', permissions=0)
+    assert 'Federated learning' in read(library(tmp_path), '资料/owner.pdf')

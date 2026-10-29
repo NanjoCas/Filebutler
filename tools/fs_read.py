@@ -53,13 +53,30 @@ def _paginate(lines: list[str], page: int, max_items: int, max_chars: int = PAGE
     return shown, footer
 
 
+def _pdf_locked(p) -> bool:
+    """PDF 需要打开密码。只有权限密码、不用密码就能打开的不算。判断不了时按未加密处理，交给正常读取。"""
+    try:
+        import pymupdf
+        with pymupdf.open(p) as doc:
+            return bool(doc.needs_pass)
+    except Exception:
+        return False
+
+
+def locked_message(p) -> str:
+    # 用户决定 2026-10-29：加密 PDF 不读取内容（不问密码、不尝试破解）；文件本身照常可以移动、改名、回收。
+    return f"{Path(p).name} 设有打开密码，FileButler 不读取加密 PDF 的内容；这个文件仍可移动、改名或回收"
+
+
 def _pdf_pages(p, start: int = 1, pages: int | None = 2) -> list[str]:
     """优先用 PyMuPDF：真实论文里有字体编码特殊的 PDF，pypdf 抽出来是乱码（51 篇里 1 篇），PyMuPDF 正常且快 3 倍。
-    PyMuPDF 不可用或出错时退回 pypdf。"""
+    PyMuPDF 不可用或出错时退回 pypdf。要密码的 PDF 不读，直接说明原因（否则退回 pypdf 后报的是英文依赖错误）。"""
     try:
         import pymupdf
         pymupdf.TOOLS.mupdf_display_errors(False)  # 不规范的 PDF 会往终端刷 MuPDF error
         with pymupdf.open(p) as doc:
+            if doc.needs_pass:
+                raise ToolError(locked_message(p))
             if start > len(doc):
                 raise ToolError(f"没有第 {start} 页，共 {len(doc)} 页")
             end = len(doc) if pages is None else min(start - 1 + pages, len(doc))
@@ -194,11 +211,14 @@ def file_info(a: PathArgs, sb: Sandbox) -> str:
         except Exception as e:
             info.append(f"图片信息读取失败: {e}")
     elif ext == ".pdf":
-        try:
-            from pypdf import PdfReader
-            info.append(f"页数: {len(PdfReader(p).pages)}")
-        except Exception as e:
-            info.append(f"PDF 读取失败: {e}")
+        if _pdf_locked(p):
+            info.append("加密: 设有打开密码，不读取内容")
+        else:
+            try:
+                from pypdf import PdfReader
+                info.append(f"页数: {len(PdfReader(p).pages)}")
+            except Exception as e:
+                info.append(f"PDF 读取失败: {e}")
     artifacts=getattr(sb,'artifacts',None)
     prefix=f"OK: file:{artifacts.register(sb.rel(p))}\n" if artifacts else "OK:\n"
     return prefix + "\n".join(info)

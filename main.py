@@ -24,7 +24,7 @@ from agent.loop import run_agent  # noqa: E402
 from eval.generator import SCENARIOS, NotGeneratedError, generate  # noqa: E402
 from safety.confirm import Confirmer  # noqa: E402
 from safety.oplog import OpLog, undo  # noqa: E402
-from safety.sandbox import Sandbox, SandboxError  # noqa: E402
+from safety.sandbox import LibraryMissing, Sandbox, SandboxError, open_library  # noqa: E402
 
 
 def load_config(path: Path) -> dict:
@@ -79,6 +79,13 @@ def main():
     if args.model:
         cfg["model"] = args.model
     console = Console()
+    if args.cmd in ("run", "answer", "search", "dedup", "undo"):
+        # Same record as the web page (webapp STATE_DIR): a used library that is gone is reported, not recreated.
+        try:
+            cfg["sandbox"] = str(open_library(cfg["sandbox"], Path(args.config).resolve().parent / ".filebutler-ui" / "libraries.json"))
+        except LibraryMissing as e:
+            console.print(Text(str(e), style="red"))
+            sys.exit(1)
 
     if args.cmd == "ping":
         llm = LLM(cfg)

@@ -1,4 +1,5 @@
 """沙盒路径校验：所有路径都相对沙盒，resolve 后必须仍在沙盒内。"""
+import json
 import os
 import unicodedata
 from pathlib import Path
@@ -8,6 +9,47 @@ PROTECTED = {".trash", ".oplog"}  # 内部目录，模型不能写
 
 class SandboxError(Exception):
     pass
+
+
+class LibraryMissing(SandboxError):
+    """配置的资料库不可用；说明写给用户。"""
+
+
+def open_library(root, known_file) -> Path:
+    """检查配置的资料库（用户决定 2026-10-29，D 组第 1 项）。
+
+    Sandbox() 会自动建出不存在的目录：路径写错、资料库被移走或改名时，界面上就成了一个
+    空资料库，像是"文件全没了"。所以从配置进来的路径先过这里：
+    - 存在：记为用过的资料库；
+    - 不存在、以前用过：不新建，说明可能被移动、改名或硬盘没连接；
+    - 不存在、从没用过（第一次使用）：只建最后一级目录；上级目录也不存在（硬盘没插、
+      路径写错）时不建，说明原因。
+    ``known_file`` 是记录用过的资料库的 JSON 文件。"""
+    root, known_file = Path(root).resolve(), Path(known_file)
+    try:
+        known = set(json.loads(known_file.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        known = set()
+    if root.exists() and not root.is_dir():
+        raise LibraryMissing(f"资料库路径 {root} 不是文件夹，请在 config.yaml 里改成资料库所在的文件夹")
+    if not root.exists():
+        if str(root) in known:
+            raise LibraryMissing(f"找不到资料库 {root}：它之前在这里，可能被移动、改名，或所在的硬盘没有连接。"
+                                 "FileButler 没有新建空文件夹；请找回它，或在 config.yaml 里改成新的位置")
+        if not root.parent.is_dir():
+            raise LibraryMissing(f"找不到资料库 {root}：上级文件夹 {root.parent} 也不存在，可能路径写错，或所在的硬盘没有连接。"
+                                 "FileButler 没有新建文件夹；请检查 config.yaml 里的路径")
+        try:
+            root.mkdir()
+        except OSError as exc:
+            raise LibraryMissing(f"无法新建资料库 {root}：{exc.strerror or exc}") from exc
+    if str(root) not in known:
+        try:
+            known_file.parent.mkdir(parents=True, exist_ok=True)
+            known_file.write_text(json.dumps(sorted(known | {str(root)}), ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass  # 记不下来时下次仍按第一次使用处理，不影响本次
+    return root
 
 
 class Sandbox:
