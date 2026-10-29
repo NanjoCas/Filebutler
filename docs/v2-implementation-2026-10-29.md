@@ -171,3 +171,5 @@
 - C1：新增更正场景 `v2_evidence_then_read_v2` 和判定器 v4.3 的 `answer.first_of`；原场景保持冻结。新场景单独提交冻结，尚未真实运行。
 
 离线全量 633 passed。
+
+第 51 轮（¥0.049，`eval/rounds.py` 首次真实使用）：`v2_evidence_then_read_v2` 3/3 通过；其中 1 次回答带了 ORCHID-2 的提醒，原场景会判失败。
