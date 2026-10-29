@@ -65,3 +65,24 @@ def test_every_case_has_a_fixture_and_checks():
     assert len({c['id'] for c in AMB_CASES}) == len(AMB_CASES) == 7
     for case in AMB_CASES:
         assert case['id'].startswith('amb_') and case['tags'][0] == 'amb-20261029'
+
+
+def test_the_corrected_clear_cases_have_their_folder_and_pass_only_when_done(tmp_path):
+    from eval.ask_cases import ASK_CLR_V2, ask_checks, ask_fixture
+    assert [c['id'] for c in ASK_CLR_V2] == ['ask_clr_size_v2', 'ask_clr_old_v2', 'ask_clr_tidy_v2', 'ask_clr_important_v2']
+    def go(where, steps):
+        ask_fixture(where, 'ask_size_dest')
+        assert (where / 'Big').is_dir()
+        before = snapshot(where, True)
+        session = Session(where)
+        session.run('把「资料」里大于 1MB 的文件移到 Big 文件夹。', steps)
+        return ask_checks('ask_clr_size_v2', 0, where, before, session.sb.runtime, None)
+    moves = [dict(effect='move', source=f'资料/{n}', destination='Big') for n in ('big1.bin', 'big2.bin')]
+    done = tmp_path / 'done'; done.mkdir()
+    assert all(go(done, [step(call('start_task', dict(summary='移动', parts=[dict(kind='organize', description='大于 1MB 移到 Big')])),
+                              call('prepare_file_plan', dict(description='移动', actions=moves), alias='Xaaaaaaaaaaaa')),
+                         step(call('execute_file_plan', {'plan_id': 'Xaaaaaaaaaaaa'})),
+                         step(call('finish_turn', dict(mode='task', reply='已移动。')))]).values())
+    asked = tmp_path / 'asked'; asked.mkdir()
+    checks = go(asked, [step(call('finish_turn', ASK))])
+    assert checks['not_asked'] is False and checks['moved'] is False

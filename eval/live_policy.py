@@ -115,7 +115,7 @@ from eval.p0_cases import P0_CASES, p0_checks, p0_fixture  # noqa: E402
 from eval.p1_cases import P1_CASES, p1_checks, p1_fixture  # noqa: E402
 from eval.product_cases import PRODUCT_CASES, product_checks, product_fixture  # noqa: E402
 from eval.blind3_cases import BLIND3_CASES, blind3_checks, blind3_fixture  # noqa: E402
-from eval.ask_cases import ASK_CASES, ask_checks, ask_fixture  # noqa: E402
+from eval.ask_cases import ASK_CASES, ASK_CLR_V2, ask_checks, ask_fixture  # noqa: E402
 from eval.newdir_cases import NEWDIR_CASES, newdir_checks, newdir_fixture  # noqa: E402
 from eval.overreach_cases import OVERREACH_CASES, overreach_checks, overreach_fixture  # noqa: E402
 from eval.revise_cases import REVISE_CASES, revise_checks, revise_fixture  # noqa: E402
@@ -127,7 +127,7 @@ from eval.ocr_cases import OCR_CASES, ocr_checks, ocr_fixture  # noqa: E402
 from eval.v2_cases import V2_CASES, v2_checks, v2_fixture  # noqa: E402
 from eval.amb_cases import AMB_CASES, amb_checks, amb_fixture  # noqa: E402
 
-SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES, 'blind3': BLIND3_CASES, 'ask': ASK_CASES, 'newdir': NEWDIR_CASES, 'overreach': OVERREACH_CASES, 'revise': REVISE_CASES, 'parts': PARTS_CASES, 'answer': ANSWER_CASES, 'office': OFFICE_CASES, 'ocr': OCR_CASES, 's5': S5_CASES, 'v2': V2_CASES, 'amb': AMB_CASES}
+SUITES = {'regression': CASES, 'holdout': HOLDOUT_CASES, 'all': CASES + HOLDOUT_CASES, 'blind': BLIND_CASES, 'blind2': BLIND2_CASES, 'hidden': HIDDEN_CASES, 'p0': P0_CASES, 'p1': P1_CASES, 'product': PRODUCT_CASES, 'blind3': BLIND3_CASES, 'ask': ASK_CASES, 'newdir': NEWDIR_CASES, 'overreach': OVERREACH_CASES, 'revise': REVISE_CASES, 'parts': PARTS_CASES, 'answer': ANSWER_CASES, 'office': OFFICE_CASES, 'ocr': OCR_CASES, 's5': S5_CASES, 'v2': V2_CASES, 'amb': AMB_CASES, 'ask2': ASK_CLR_V2}
 CASE_SPECS = {case['id']: case for case in CASES + HOLDOUT_CASES}
 
 

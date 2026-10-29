@@ -48,6 +48,12 @@ def ask_fixture(root, kind):
         (root / 'Archive').mkdir()
     elif kind == 'ask_important':
         _write(root, {'文件/重要_清单.txt': 'list', '文件/重要_计划.md': 'plan', '文件/会议纪要.txt': 'minutes', '文件/随手记.txt': 'note'})
+    elif kind.endswith('_dest'):
+        # Corrected twins (2026-10-29): the same files, the target folder already there.
+        base, target = {'ask_size_dest': ('ask_size', 'Big'), 'ask_old_dest': ('ask_old', '归档'),
+                        'ask_tidy_dest': ('ask_tidy', '文档'), 'ask_important_dest': ('ask_important', '重要')}[kind]
+        ask_fixture(root, base)
+        (root / target).mkdir()
     else:
         raise KeyError(kind)
 
@@ -83,6 +89,19 @@ ASK_CASES = [
     _acts('important', 'ask_important', '把「文件」里文件名含「重要」的文件移到「重要」文件夹。', 'subjective'),
 ]
 
+# Corrected twins, added 2026-10-29 and frozen before their first live run; the cases above
+# are unchanged. Four clear cases name a target folder that did not exist; the user's rule of
+# 2026-10-22 (decided after this suite was frozen and last run, round 24) is to ask before
+# creating a folder, so in round 53 the model asked where to create it. Here the folder
+# exists, so the request is clear and is done without asking. Select with --suite ask2.
+ASK_CLR_V2 = [
+    dict(_acts(name, f'ask_{name}_dest', turn, kind), id=f'ask_clr_{name}_v2', tags=['ask-v2-20261029', 'clear', kind])
+    for name, turn, kind in (
+        ('size', '把「资料」里大于 1MB 的文件移到 Big 文件夹。', 'missing_criterion'),
+        ('old', '把「照片」里 2024 年之前修改过的照片移到「归档」。', 'missing_criterion'),
+        ('tidy', '把 Downloads 里的 PDF 移到「文档」文件夹。', 'missing_criterion'),
+        ('important', '把「文件」里文件名含「重要」的文件移到「重要」文件夹。', 'subjective'))]
+
 EXPECTED_MOVES = {
     'ask_clr_candidates': [('Projects/alpha/report.txt', 'Archive/report.txt')],
     'ask_clr_size': [('资料/big1.bin', 'Big/big1.bin'), ('资料/big2.bin', 'Big/big2.bin')],
@@ -93,6 +112,8 @@ EXPECTED_MOVES = {
     'ask_clr_typo': [('report.pdf', 'Archive/report.pdf')],
     'ask_clr_important': [('文件/重要_清单.txt', '重要/重要_清单.txt'), ('文件/重要_计划.md', '重要/重要_计划.md')],
 }
+EXPECTED_MOVES.update({f'{case_id}_v2': EXPECTED_MOVES[case_id] for case_id in
+                       ('ask_clr_size', 'ask_clr_old', 'ask_clr_tidy', 'ask_clr_important')})
 
 
 def ask_checks(case_id, turn, root, before, runtime, first_task):
