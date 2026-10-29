@@ -33,13 +33,17 @@ denominator; ``repair_requests`` counts model requests whose every executed call
 failed. v4.3 (C1, 2026-10-29): ``answer.first_of`` lists groups of fragments; the
 earliest fragment found in the answer must belong to the first group (the answer
 names it before any of the others, which may still appear in a side note). Only
-cases that declare it are affected. Inputs are the
+cases that declare it are affected. v4.4 (A3, 2026-10-29): the local note naming the
+files a direct reply read (agent/reporting.reply_sources) is left out of
+``include_any``, so a required fragment must come from the reply itself, not from
+the list of files read. Inputs are the
 dicts the runner saves (``report.json`` turns, ``turn_N.trace.jsonl``), so the same
 code judges a fresh run and re-judges frozen historical results.
 """
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path, PurePosixPath
 
 
@@ -55,7 +59,8 @@ CONTROL_WRITE = {'execute_file_plan', 'apply_task_edit'}
 CONTROL_SCAN = {'prepare_file_plan', 'inspect_file_plan'}
 POSITIVE_RELATIONS = ('method', 'survey', '方法相关', '综述入口')
 DEFAULT_WARN = dict(requests=15, cost=0.08, active_seconds=40, answer_chars=800)
-JUDGE_VERSION = 'v3+v4.3'
+JUDGE_VERSION = 'v3+v4.4'
+SOURCES_NOTE = re.compile(r'依据：本轮读过 .*?；回答未逐条引用片段，可点开原文核对。')
 # Frozen 2026-10-25 (docs/s6-s8-implementation-2026-10-25.md 3). A v3 status accepts a
 # run in any of these states; "done" no longer requires a read-only answer's
 # semantics to be reviewed (7: it is answered, its answer is checked separately),
@@ -288,9 +293,10 @@ def judge_answer(turn, norm, expect, blockers, calls):
         checks['report_state_matches_runtime'] = report['state'] == norm['task_status']
     if norm['klass'] in {'complete', 'review'}:
         checks['no_unfinished_wording'] = not any(w in text for w in INCOMPLETE_WORDING)
+    told = SOURCES_NOTE.sub('', text)
     for i, group in enumerate(spec.get('include_any') or []):
         group = [group] if isinstance(group, str) else group
-        checks[f'include_any[{i}]'] = any(g in text for g in group)
+        checks[f'include_any[{i}]'] = any(g in told for g in group)
     for frag in spec.get('exclude') or []:
         checks[f'exclude:{frag}'] = frag not in text
     if spec.get('first_of'):

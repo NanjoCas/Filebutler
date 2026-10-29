@@ -130,6 +130,30 @@ def stopped_report(task, operations, state):
     return dict(version=1, state=state, summary=summary.replace('。。', '。'), sections=[])
 
 
+def reply_sources(artifacts, observations, limit=5):
+    """User decision A3 (2026-10-29, option 2): a direct reply after reading file content
+    cites nothing locally checkable, so name the files this run read. A statement of
+    where the reply came from, not a check that it is right. None when the run cited
+    its evidence (report_findings) or read no content."""
+    if not artifacts or any(o['tool'] == 'report_findings' for o in observations):
+        return None
+    pages = {}
+    for o in observations:
+        for ref in o.get('references') or []:
+            row = artifacts.data['evidence'].get(ref['id']) if ref['collection'] == 'evidence' else None
+            if row and row['file_id'] in artifacts.data['files']:
+                pages.setdefault(row['file_id'], set()).update([row['page']] if row.get('page') else [])
+    if not pages:
+        return None
+    def link(fid):
+        path = artifacts.data['files'][fid]['path']
+        nums = sorted(pages[fid])
+        where = ('（第 ' + '、'.join(map(str, nums[:6])) + (' 等' if len(nums) > 6 else '') + ' 页）') if nums else ''
+        return f'[{label(path)}](file:{fid}' + (f'#page={nums[0]}' if nums else '') + ')' + where
+    shown = '、'.join(link(f) for f in list(pages)[:limit]) + (f' 等 {len(pages)} 个文件' if len(pages) > limit else '')
+    return f'依据：本轮读过 {shown}；回答未逐条引用片段，可点开原文核对。'
+
+
 def build_report(task, model_summary, records, reply=''):
     state = task['status']
     operations = task.get('operations', [])

@@ -247,6 +247,10 @@ class Finishing:
             self.stop_reason = 'unverified_answer'
             return
         self.final_answer = content
+        from agent.reporting import reply_sources
+        sources = reply_sources(getattr(self.sb, 'artifacts', None), self._pretask)
+        if sources:
+            self.final_answer += '\n\n' + sources
         if self.blocked:
             # Without a task no write was opened. Keep the reply (often a
             # question for the user) and state the local facts beside it.

@@ -127,4 +127,61 @@ def test_the_corrected_evidence_case_accepts_a_side_note_and_still_rejects_the_w
     assert [passed('v2_evidence_then_read', t) for t in R47] == [False, True, False]  # frozen case, unchanged
     assert [passed('v2_evidence_then_read_v2', t) for t in R47] == [True, True, True]
     assert [passed('v2_evidence_then_read_v2', t) for t in WRONG] == [False, False]
-    assert judge.JUDGE_VERSION == 'v3+v4.3'
+    assert judge.JUDGE_VERSION == 'v3+v4.4'
+
+
+# A3 option 2 (user decision 2026-10-29): a direct reply after reading content names what was read.
+
+def reply(text):
+    return step(call('finish_turn', dict(mode='reply', reply=text)))
+
+
+def test_a_direct_reply_after_reading_names_the_files_read_with_links(tmp_path):
+    from eval.v2_cases import v2_fixture
+    v2_fixture(tmp_path, 'v2_same_names')
+    session = Session(tmp_path)
+    result, _ = session.run('登革热那篇的模型代号？', [
+        step(call('read_file', {'path': '资料/项目/2024/登革热/预测研究_最终版.txt'})),
+        step(call('read_file', {'path': '资料/其他/预测研究_最终版.txt'})), reply('是 HALCYON-9。')])
+    assert result.stop_reason == 'answered' and result.final.startswith('是 HALCYON-9。')
+    note = result.final.split('\n\n')[-1]
+    # Same-named files: the full paths tell them apart; each links to the file.
+    assert note.startswith('依据：本轮读过 [资料/项目/2024/登革热/预测研究_最终版.txt](file:F')
+    assert '[资料/其他/预测研究_最终版.txt](file:F' in note and note.endswith('回答未逐条引用片段，可点开原文核对。')
+    assert '尚未全部完成' not in result.final
+    from eval.judge import SOURCES_NOTE
+    assert SOURCES_NOTE.fullmatch(note)  # the judge leaves exactly this note out of include_any
+    from web_render import FileCatalog, render_markdown
+    html = render_markdown(note, FileCatalog(session.sb, session.sb.artifacts))  # as webapp.py builds it
+    assert html.count('class="file-reference"') == 2 and 'data-file-path="资料/其他/预测研究_最终版.txt"' in html
+
+
+def test_no_note_when_the_reply_cited_its_evidence_or_read_no_content(tmp_path):
+    holdout_fixture(tmp_path, 'notes_combo')
+    session = Session(tmp_path)
+    cited, _ = session.run('找笔记', [step(*read_calls(['note_01.txt'])),
+                                    step(call('report_findings', dict(findings=[finding(0)]))), reply('是 note_01。')])
+    assert '依据：本轮读过' not in cited.final
+    listed, _ = session.run('有什么', [step(call('list_dir', {'path': 'Notes'})), reply('有几份笔记。')])
+    assert listed.final == '有几份笔记。'
+
+
+def test_many_files_read_are_cut_to_five_and_counted(tmp_path):
+    from eval.v2_cases import v2_fixture
+    v2_fixture(tmp_path, 'v2_many_matches')
+    session = Session(tmp_path)
+    result, _ = session.run('几份？', [step(*[call('read_file', {'path': f'资料/笔记/笔记_{n:02d}.txt'}) for n in range(1, 8)]),
+                                     reply('12 份。')])
+    note = result.final.split('\n\n')[-1]
+    assert note.count('](file:') == 5 and '等 7 个文件' in note
+
+
+def test_a_file_named_only_in_the_sources_note_does_not_satisfy_include_any():
+    from eval import judge
+    from agent.reporting import reply_sources  # noqa: F401  the note's wording is the product's
+    note = '依据：本轮读过 [Inbox/report.pdf](file:Faaaaaaaaaa)；回答未逐条引用片段，可点开原文核对。'
+    spec = dict(answer=dict(include_any=[['report.pdf']]))
+    norm = dict(klass='complete', task_status=None)
+    check = lambda text: judge.judge_answer(dict(final=text), norm, spec, [], [])[0]['include_any[0]']
+    assert not check('已平铺。\n\n' + note)
+    assert check('report.pdf 同名，已保留两份。\n\n' + note)
